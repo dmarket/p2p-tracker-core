@@ -1,0 +1,70 @@
+# CodeQL code scanning (advanced setup).
+#
+# Why a workflow instead of GitHub's default setup: default setup ignores
+# .github/codeql/codeql-config.yml unless an organisation-level repository
+# property points at it, and its Java/Kotlin autobuild fails on this Kotlin
+# Multiplatform build (it runs `gradlew testClasses`, which does not exist here).
+# This workflow applies the config (excludes vendored artifacts) and compiles the
+# Kotlin JVM targets explicitly so the Kotlin sources are actually analysed.
+#
+# CI for build/test/publish stays on CircleCI; this workflow only runs CodeQL.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: java-kotlin
+            build-mode: manual
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (runs Gradle; compile toolchain is provisioned by the build)
+        if: matrix.build-mode == 'manual'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        if: matrix.build-mode == 'manual'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Compile Kotlin JVM targets
+        if: matrix.build-mode == 'manual'
+        run: ./gradlew :domain:compileKotlinJvm :core:compileKotlinJvm --no-daemon --stacktrace
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
