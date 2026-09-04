@@ -12,7 +12,7 @@ pluginManagement {
 // Auto-provision the JDK 17 toolchain used for compilation/tests (the only locally
 // installed JDK is 25; this downloads a matching 17 on first build).
 plugins {
-    id("org.gradle.toolchains.foojay-resolver-convention") version "0.9.0"
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
 
 dependencyResolutionManagement {
