@@ -1,11 +1,11 @@
 [versions]
-kotlin = "2.4.0"
+kotlin = "2.4.10"
 
 coroutines = "1.11.0"
 serialization = "1.11.0"
 turbine = "1.2.1"
 
-ktor = "3.5.1"
+ktor = "3.5.2"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
