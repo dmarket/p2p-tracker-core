@@ -62,7 +62,7 @@ DMarket backend** — that audit boundary is why the clients are open-source.
 
 | | |
 |---|---|
-| **Language** | Kotlin 2.4.0, Kotlin Multiplatform |
+| **Language** | Kotlin 2.4.10, Kotlin Multiplatform |
 | **Targets** | JS (web extension — shipping) · iOS XCFramework · Android AAR *(both on request)* |
 | **Modules** | `:domain` (pure, zero-IO) · `:core` (IO + platform glue) · `:debug-harness` (dev-only, unpublished) |
 | **Backend contract** | `/exchange/v1/p2p/ext/` — heartbeat, trade-events, notary, trade-actions, inventory |
