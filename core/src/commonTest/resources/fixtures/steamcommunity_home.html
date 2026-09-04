@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<!--
+  Minimal steamcommunity.com page fixture for KtorSteamSessionScraperTest.
+
+  JWT payload: {"exp":1781697600,"sub":"76561198000000001"}
+    exp  = FakeClock epoch (1781611200) + 86400s (24 h in the future → credential is fresh)
+    sub  = matches g_steamID below
+
+  Full token:
+    eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9
+    .eyJleHAiOjE3ODE2OTc2MDAsInN1YiI6Ijc2NTYxMTk4MDAwMDAwMDAxIn0
+    .dGVzdA
+-->
+<html>
+<head><title>Steam Community</title></head>
+<body
+  data-loyalty_webapi_token="&quot;eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3ODE2OTc2MDAsInN1YiI6Ijc2NTYxMTk4MDAwMDAwMDAxIn0.dGVzdA&quot;"
+>
+<script type="text/javascript">
+    var g_steamID = "76561198000000001";
+</script>
+</body>
+</html>

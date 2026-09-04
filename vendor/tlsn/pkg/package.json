@@ -1,0 +1,19 @@
+{
+  "name": "client-wasm",
+  "type": "module",
+  "description": "Wasm bindings (browser-extension prover) over client-core: initialize()/prove()/present() + JsIo adapter, packaged via wasm-pack.",
+  "version": "0.1.0",
+  "files": [
+    "client_wasm_bg.wasm",
+    "client_wasm.js",
+    "client_wasm.d.ts",
+    "client_wasm_bg.wasm.d.ts",
+    "spawn.js",
+    "snippets/"
+  ],
+  "main": "client_wasm.js",
+  "types": "client_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

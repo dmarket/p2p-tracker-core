@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "DMarket P2P Tracker — Integration Log",
+  "version": "0.4.0",
+  "description": "Dev-only integration-test harness for the P2P trade-tracker core: real DMarket FE + backend + live Steam, self-driving session, FE create-trade via postMessage, and a persisted per-request session log (redacted unless the local revealSecrets setting is on).",
+  "permissions": ["storage", "cookies", "alarms", "tabs", "declarativeNetRequestWithHostAccess"],
+  "host_permissions": [
+    "https://steamcommunity.com/*",
+    "https://login.steampowered.com/*",
+    "https://store.steampowered.com/*",
+    "https://api.steampowered.com/*",
+    "https://api.dmarket.com/*",
+    "https://dmarket.com/*",
+    "https://www.dmarket.com/*"
+  ],
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://dmarket.com/*", "https://www.dmarket.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Open P2P Debug Console"
+  },
+  "options_page": "dashboard.html"
+}

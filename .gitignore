@@ -1,0 +1,45 @@
+# Gradle
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Kotlin
+.kotlin/
+
+# Local config
+local.properties
+*.local
+
+# Node (KMP/JS toolchain + dist)
+node_modules/
+kotlin-js-store/
+
+# IDE
+.idea/
+*.iml
+.fleet/
+
+# Debug harness — generated bundle (built by `:debug-harness:assembleDebugExtension`)
+tools/debug-extension/vendor/
+
+# Debug extension — local-only environment overrides (never commit)
+tools/debug-extension/settings.local.js
+tools/debug-extension/manifest.local.json
+
+# Downloaded steam-provenance artifact tarballs. The prover itself IS vendored, unpacked, under
+# vendor/tlsn/ — see vendor/tlsn/INTEGRATION.md; only the archives stay out of the tree.
+client-wasm-*.tgz
+client-wasm-*.tgz.sha256
+client-wasm-steam-provenance-*/
+
+# OS
+.DS_Store
+
+# Logs / secrets
+*.log
+*.gpg
+secring.*
+
+# CI: release vars emitted by core/npm/prepare-package.sh
+release.env

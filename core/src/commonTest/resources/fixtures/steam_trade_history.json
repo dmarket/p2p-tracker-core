@@ -1,0 +1,77 @@
+{
+  "response": {
+    "more": true,
+    "trades": [
+      {
+        "tradeid": "594063027056175076",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760511,
+        "status": 3,
+        "assets_given": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "51978272357"
+          }
+        ],
+        "rollback_trade": "731422815690175777"
+      },
+      {
+        "tradeid": "594063027056175078",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760511,
+        "status": 3,
+        "assets_received": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "20725626846"
+          }
+        ],
+        "rollback_trade": "744933614571240779"
+      },
+      {
+        "tradeid": "731422815690175777",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760349,
+        "status": 12,
+        "assets_given": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "51978272357"
+          }
+        ],
+        "time_mod": 1785760511
+      },
+      {
+        "tradeid": "744933614571240779",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760384,
+        "status": 12,
+        "assets_received": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "20725626846"
+          }
+        ],
+        "time_mod": 1785760511
+      },
+      {
+        "tradeid": "723541516341221347",
+        "steamid_other": "76561199497281579",
+        "time_init": 1785747967,
+        "status": 3,
+        "assets_given": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "50520000968"
+          }
+        ],
+        "time_settlement": 1786356000
+      }
+    ]
+  }
+}

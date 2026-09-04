@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an enhancement or new capability for the library
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Please search existing issues first.
+
+        Note: this repository is a **headless library** — it ships no UI. Requests should concern the
+        core's behavior, API, or platform support, not end-user interface.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what's getting in the way?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API or behavior you'd like. Sketch signatures if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Links, prior art, or anything else that helps.
+    validations:
+      required: false

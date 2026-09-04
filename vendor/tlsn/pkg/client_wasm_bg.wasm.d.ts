@@ -1,0 +1,32 @@
+/* tslint:disable */
+/* eslint-disable */
+export const __wbg_proveoutput_free: (a: number, b: number) => void;
+export const initialize: (a: number, b: number) => any;
+export const present: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const prove: (a: any, b: any, c: any, d: any, e: number) => any;
+export const proveoutput_attestation: (a: number) => [number, number];
+export const proveoutput_response: (a: number) => any;
+export const proveoutput_secrets: (a: number) => [number, number];
+export const __wbg_spawner_free: (a: number, b: number) => void;
+export const __wbg_workerdata_free: (a: number, b: number) => void;
+export const spawner_intoRaw: (a: number) => number;
+export const spawner_run: (a: number, b: number, c: number) => any;
+export const startSpawner: () => any;
+export const web_spawn_recover_spawner: (a: number) => number;
+export const web_spawn_start_worker: (a: number) => void;
+export const ring_core_0_17_14__bn_mul_mont: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const wasm_bindgen_1fa5c626ec3a32f9___convert__closures_____invoke___wasm_bindgen_1fa5c626ec3a32f9___JsValue__core_b7b33017ae0f8bb5___result__Result_____wasm_bindgen_1fa5c626ec3a32f9___JsError___true_: (a: number, b: number, c: any) => [number, number];
+export const wasm_bindgen_1fa5c626ec3a32f9___convert__closures_____invoke___js_sys_27d0ccca2911ffcd___Function_fn_wasm_bindgen_1fa5c626ec3a32f9___JsValue_____wasm_bindgen_1fa5c626ec3a32f9___sys__Undefined___js_sys_27d0ccca2911ffcd___Function_fn_wasm_bindgen_1fa5c626ec3a32f9___JsValue_____wasm_bindgen_1fa5c626ec3a32f9___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+export const wasm_bindgen_1fa5c626ec3a32f9___convert__closures_____invoke___wasm_bindgen_1fa5c626ec3a32f9___JsValue______true_: (a: number, b: number, c: any) => void;
+export const wasm_bindgen_1fa5c626ec3a32f9___convert__closures_____invoke___js_sys_27d0ccca2911ffcd___futures__task__wait_async_polyfill__MessageEvent______true_: (a: number, b: number, c: any) => void;
+export const memory: WebAssembly.Memory;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_destroy_closure: (a: number, b: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_thread_destroy: (a?: number, b?: number, c?: number) => void;
+export const __wbindgen_start: (a: number) => void;

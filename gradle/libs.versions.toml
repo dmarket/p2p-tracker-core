@@ -1,0 +1,30 @@
+[versions]
+kotlin = "2.4.0"
+
+coroutines = "1.11.0"
+serialization = "1.11.0"
+turbine = "1.2.1"
+
+ktor = "3.5.1"
+
+[libraries]
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }
+ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+
+# Only the two Kotlin plugins are declared here: the root build applies them with `apply false` so
+# the Kotlin Gradle plugin is loaded once on the root classpath. Every other plugin (kover, spotless)
+# is applied by id from the `dmarket.kmp.library` convention plugin, which pins its own versions in
+# build-logic/build.gradle.kts — build-logic cannot easily read this catalog, so declaring them here
+# too would just be a second source of truth that can drift.
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

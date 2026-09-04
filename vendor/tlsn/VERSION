@@ -1,0 +1,14 @@
+# client-wasm artifact provenance. Shell-sourceable; all values quoted.
+# Correlate with a notary image by GIT_SHA, never by DOCKER_VERSION (its build
+# number belongs to the wasm job, which runs before build_images).
+DOCKER_VERSION="steam-provenance-main-99e090a-728"
+GIT_SHA="99e090a347a235ccaa5d1bc790d69a55283cca44"
+GIT_BRANCH="main"
+BUILD_NUM="728"
+BUILD_URL="https://circleci.com/gh/dmarket/steam-provenance/728"
+CLIENT_WASM_VERSION="0.1.0"
+TRANSPORT_VERSION="0.2.0"
+TLSN_SUBMODULE_SHA="unknown"
+RUSTC_VERSION="rustc 1.98.0-nightly (13f1859f2 2026-06-27)"
+WASM_PACK_VERSION="wasm-pack 0.15.0"
+WASM_SHA256="2b8f09b69d7b7f9638381aebf4105e20d189a52092430877005ad31b5e390a35"

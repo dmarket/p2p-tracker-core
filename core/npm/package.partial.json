@@ -1,0 +1,29 @@
+{
+  "name": "@dmarket/p2p-tracker-core",
+  "description": "Shared Kotlin Multiplatform core for the DMarket P2P trade-tracker (web-extension JS distribution).",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "DMarket",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmarket/p2p-tracker-core.git"
+  },
+  "homepage": "https://github.com/dmarket/p2p-tracker-core#readme",
+  "bugs": {
+    "url": "https://github.com/dmarket/p2p-tracker-core/issues"
+  },
+  "keywords": [
+    "dmarket",
+    "p2p",
+    "steam",
+    "trade-tracker",
+    "kotlin-multiplatform"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "dependencies": {}
+}

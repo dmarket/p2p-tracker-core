@@ -1,0 +1,28 @@
+{
+  "name": "client-wasm-transport",
+  "version": "0.2.0",
+  "description": "WebSocket IoChannel transport + injection-based pass-through prover façade for the client-wasm browser-extension prover.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "sideEffects": false,
+  "devDependencies": {
+    "typescript": ">=5.6.0"
+  }
+}

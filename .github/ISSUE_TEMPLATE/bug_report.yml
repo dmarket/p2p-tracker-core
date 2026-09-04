@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a defect in the trade-tracker core library
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please search existing issues first to avoid duplicates.
+
+        ⚠️ **Do not report security vulnerabilities here.** Use private reporting instead — see the
+        [Security Policy](https://github.com/dmarket/p2p-tracker-core/blob/main/SECURITY.md).
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps (ideally a snippet) that reproduce the behavior.
+      placeholder: |
+        1. Call `startTracker(...)` with …
+        2. …
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any error messages or stack traces (redact secrets/tokens).
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target / consumer
+      description: Which distribution are you using?
+      options:
+        - Web extension (npm / JS)
+        - JVM
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Library version
+      description: The `@dmarket/p2p-tracker-core` version or the Maven coordinate version (or a commit SHA).
+      placeholder: "e.g. 0.1.0-SNAPSHOT.85"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Runtime and OS details (browser + version, Node version, JDK version, etc.).
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: This is not a security vulnerability (those are reported privately via the Security Policy).
+          required: true
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true

@@ -1,0 +1,16 @@
+{
+  "reports": [
+    {
+      "trade_id": "trade-abc123",
+      "source": "offer",
+      "steam_status_code": 3,
+      "client_timestamp_ms": 1781611200000
+    },
+    {
+      "trade_id": "trade-def456",
+      "source": "history",
+      "steam_status_code": 12,
+      "client_timestamp_ms": 1781611260000
+    }
+  ]
+}

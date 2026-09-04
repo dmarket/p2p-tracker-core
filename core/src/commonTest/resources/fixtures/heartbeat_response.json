@@ -1,0 +1,19 @@
+{
+  "active_tracking": [
+    { "trade_id": "trade-abc123", "steam_offer_id": "offer-111", "watch": ["GetTradeStatus"], "proof_required": false },
+    { "trade_id": "trade-def456", "steam_offer_id": null, "watch": ["GetTradeHistory"], "proof_required": true }
+  ],
+  "directives": [
+    {
+      "directive_id": "d-1",
+      "trade_id": "trade-ghi789",
+      "action": "create_offer",
+      "partner_steam_id": "76561198000000002",
+      "asset_ids": ["19876543210"],
+      "trade_token": "abcd-efgh"
+    },
+    { "directive_id": "d-2", "trade_id": "trade-abc123", "action": "cancel_offer", "steam_offer_id": "offer-111" }
+  ],
+  "server_time_ms": 1781611200000,
+  "unknown_future_field": "should_be_ignored"
+}

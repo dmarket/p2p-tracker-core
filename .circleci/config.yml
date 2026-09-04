@@ -1,0 +1,201 @@
+version: 2.1
+
+# CI/CD for @dmarket/p2p-tracker-core (the :core Kotlin/JS library distribution).
+#
+# Release model: version-bump auto-publish. Editing VERSION_NAME in gradle.properties and merging to
+# main is the ONLY action a release needs — CI builds, patches package.json, and publishes to npm,
+# then creates the git tag + GitHub Release itself (no manual tags).
+#   - "<x.y.z>-SNAPSHOT"  -> npm prerelease "<x.y.z>-SNAPSHOT.<commits>" under dist-tag "snapshot"
+#                            (no tag / no GitHub Release).
+#   - "<x.y.z>"           -> npm "latest" + annotated tag v<x.y.z> + GitHub Release from CHANGELOG.
+#
+# Publish branches: `main` (snapshots AND stable) and `feat/p2p` (SNAPSHOTS ONLY — a stable version
+# on a non-main branch is skipped cleanly, not failed, so no error emails).
+#
+# Opt-out: a commit message containing "[skip publish]" (case-insensitive) skips the publish only —
+# build, tests and the JS dist packaging still run. Nothing is published, tagged or released. Use it
+# for doc/CI/WIP commits that would otherwise mint a new npm snapshot. (Contrast with CircleCI's own
+# "[skip ci]", which skips the whole pipeline including the tests.)
+#
+# npm auth = TRUSTED PUBLISHING via OIDC (no stored NPM_TOKEN). The publish job mints a short-lived
+# OIDC token (`circleci run oidc get`) that the npm CLI (>= 11.11.0 for CircleCI) exchanges for a scoped publish
+# token. Prerequisites (one-time):
+#   1. The package must have been published once already (bootstrap publish — see the release runbook).
+#   2. Configure the Trusted Publisher on npmjs.com → package Settings → Trusted Publishing → CircleCI
+#      (needs the CircleCI Org ID, Project ID, Pipeline Definition ID, and VCS origin URL).
+# Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
+# releases from main. Snapshots need no secrets at all.
+
+executors:
+  jdk-node:
+    docker:
+      - image: cimg/openjdk:17.0-node
+    resource_class: large
+  node-publish:
+    docker:
+      # Trusted publishing needs Node >= 22.14 and, for the CIRCLECI OIDC provider specifically,
+      # npm >= 11.11.0 (npm/cli#8925 — the generic 11.5.1 floor only covers GitHub Actions/GitLab;
+      # older npm silently skips the token exchange and dies with ENEEDAUTH). Node 24.18 bundles
+      # npm 11.16.0, so no in-job npm upgrade is normally needed (a version guard in the publish
+      # job self-heals if the image's bundled npm ever falls behind).
+      - image: cimg/node:24.18
+
+commands:
+  restore_gradle_cache:
+    steps:
+      - restore_cache:
+          keys:
+            # Exact-revision key first, then same-deps fallback, then anything. The revision segment
+            # matters because CircleCI's save_cache is a no-op for an existing key: without it the
+            # cached Gradle build cache (~/.gradle/caches/build-cache-1) would be frozen at the first
+            # build after a dependency bump and source-only commits would never reuse task outputs.
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ .Revision }}
+            - gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-
+            - gradle-v1-
+  save_gradle_cache:
+    steps:
+      - save_cache:
+          key: gradle-v1-{{ checksum "gradle/wrapper/gradle-wrapper.properties" }}-{{ checksum "gradle/libs.versions.toml" }}-{{ .Revision }}
+          paths:
+            - ~/.gradle/caches
+            - ~/.gradle/wrapper
+
+jobs:
+  # Single Gradle job: `check` and the JS library distribution share one container, one cache
+  # restore, one configuration phase, and one set of compiled klibs (a separate package job used to
+  # recompile all Kotlin/JS from scratch). The dist + npm packaging also run on non-publish branches
+  # — after `check` they are cheap incremental work, and publish_npm stays branch-filtered.
+  build_and_test:
+    executor: jdk-node
+    steps:
+      - checkout
+      - run:
+          # The vendored TLSN prover is a ~10 MB binary that review cannot inspect, and it is
+          # redistributed inside the npm package. Verify it against the digests published with the
+          # upstream artifact before anything builds or ships. A tampered prover would run MPC code with
+          # access to the device Steam cookie and a live DMarket token.
+          #
+          # Also pins provenance: GIT_SHA must match the notary the prover talks to, because a
+          # prover/notary version mismatch surfaces as an opaque MPC failure, not a clean error.
+          name: Verify the vendored TLSN prover against its published checksums
+          command: |
+            cd vendor/tlsn
+            sha256sum -c SHA256SUMS
+            grep -E '^(GIT_SHA|WASM_SHA256|TRANSPORT_VERSION)=' VERSION
+      - restore_gradle_cache
+      - run:
+          name: Check (spotless + JVM/JS tests + kover gate) + JS library distribution
+          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution --no-daemon --stacktrace
+      - save_gradle_cache
+      - run:
+          name: Collect test results
+          when: always
+          command: |
+            mkdir -p ~/test-results
+            find . -path '*/build/test-results/*/*.xml' -exec cp {} ~/test-results/ \; 2>/dev/null || true
+      - store_test_results:
+          path: ~/test-results
+      - run:
+          name: Prepare npm package.json (name + version + dist-tag) and release.env
+          command: bash core/npm/prepare-package.sh
+      - persist_to_workspace:
+          root: .
+          paths:
+            - core/build/dist/js/productionLibrary
+            - release.env
+
+  publish_npm:
+    executor: node-publish
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Load release vars
+          command: cat release.env >> "$BASH_ENV"
+      - run:
+          name: Ensure npm supports CircleCI trusted publishing (>= 11.11.0)
+          # 11.11.0 is when npm's OIDC flow learned about CircleCI (not the 11.5.1 GA floor, which
+          # is GitHub Actions/GitLab only). Normally a no-op version check; the upgrade only runs
+          # if the bundled npm is too old, and it pins the npm 11 line (npm 12 wants newer Node ->
+          # EBADENGINE risk on image bumps).
+          command: |
+            REQUIRED="11.11.0"
+            CURRENT="$(npm --version)"
+            if [ "$(printf '%s\n' "$REQUIRED" "$CURRENT" | sort -V | head -n1)" != "$REQUIRED" ]; then
+              echo "npm $CURRENT < $REQUIRED — upgrading to the npm 11 line."
+              npm install -g npm@11
+            fi
+            npm --version
+      - run:
+          name: Publish to npm via OIDC (+ tag & GitHub Release for stable versions)
+          command: |
+            set -euo pipefail
+            PKG_DIR="core/build/dist/js/productionLibrary"
+            NAME="$(node -p "require('./$PKG_DIR/package.json').name")"
+            echo "Target: $NAME@$VERSION (dist-tag: $DIST_TAG, snapshot: $IS_SNAPSHOT, branch: $CIRCLE_BRANCH)"
+
+            # --- Opt-out guard: "[skip publish]" in the commit message (resolved in prepare-package.sh). ---
+            if [ "${SKIP_PUBLISH:-false}" = "true" ]; then
+              echo "Skipping: commit message contains [skip publish] — no npm publish, no tag, no Release."
+              exit 0
+            fi
+
+            # --- Branch guard: stable only from main; feature branches publish snapshots only. ---
+            if [ "$IS_SNAPSHOT" = "false" ] && [ "$CIRCLE_BRANCH" != "main" ]; then
+              echo "Skipping: stable release ($VERSION) is only published from main, not '$CIRCLE_BRANCH'."
+              exit 0
+            fi
+
+            # --- Idempotency guard: never re-publish an existing version (also loop-safe). ---
+            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION already on npm — nothing to do."
+              exit 0
+            fi
+
+            # --- Changelog guard: a stable release must have a matching CHANGELOG section. ---
+            if [ "$IS_SNAPSHOT" = "false" ] && ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
+              echo "ERROR: CHANGELOG.md is missing a '## [$VERSION]' section for this stable release." >&2
+              exit 1
+            fi
+
+            # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
+            NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
+            export NPM_ID_TOKEN
+            (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
+            echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
+
+            # --- Stable releases: annotated tag + GitHub Release from the changelog section. ---
+            if [ "$IS_SNAPSHOT" = "false" ]; then
+              git config user.name "circleci-bot"
+              git config user.email "ci@dmarket.com"
+              git tag -a "v$VERSION" -m "Release v$VERSION"
+              git push "https://x-access-token:${GITHUB_TOKEN}@github.com/dmarket/p2p-tracker-core.git" "v$VERSION"
+
+              awk "/^## \[$VERSION\]/{f=1;next} /^## \[/{f=0} /^\[[^]]*\]:/{f=0} f" CHANGELOG.md >/tmp/notes.md
+              # A hyphenated version is a SemVer prerelease (e.g. 1.0.0-beta.1) — flag the GitHub
+              # Release as one. A plain x.y.z stays a full release.
+              node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:v.includes("-")}))' >/tmp/release.json
+              curl -sSf -X POST \
+                -H "Authorization: token ${GITHUB_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/repos/dmarket/p2p-tracker-core/releases \
+                -d @/tmp/release.json
+              echo "Created git tag v$VERSION and GitHub Release."
+            fi
+
+  # TODO(Maven Central): when Android/iOS targets land, apply com.vanniktech.maven.publish and add a
+  # publish_maven job here (see the POM_* properties in gradle.properties).
+
+workflows:
+  ci:
+    jobs:
+      - build_and_test
+      - publish_npm:
+          requires:
+            - build_and_test
+          filters:
+            branches:
+              only:
+                - main
+                - feat/p2p

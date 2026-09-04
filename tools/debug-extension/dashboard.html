@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>P2P Tracker — Integration Log</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+      header { padding: 8px 14px; border-bottom: 1px solid #8884; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      header h1 { font-size: 14px; margin: 0 8px 0 0; }
+      #settings { padding: 8px 14px; border-bottom: 1px solid #8884; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+      #settings label { display: inline-flex; gap: 4px; align-items: center; }
+      #settings input { font: inherit; padding: 2px 4px; }
+      #settings input.url { width: 230px; }
+      button { font: inherit; padding: 4px 8px; cursor: pointer; }
+      .pill { padding: 1px 6px; border-radius: 8px; background: #8882; font-size: 11px; }
+      .pill.on { background: #2ecc7133; }
+      .pill.off { background: #e74c3c33; }
+      /* Scrape-status traffic lights: green = available+fresh, orange = available+stale, red = not available. */
+      .pill.scrape { display: inline-flex; gap: 5px; align-items: center; }
+      .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #8888; }
+      .pill.green  .dot { background: #2ecc71; } .pill.green  { background: #2ecc7133; }
+      .pill.orange .dot { background: #f39c12; } .pill.orange { background: #f39c1233; }
+      .pill.red    .dot { background: #e74c3c; } .pill.red    { background: #e74c3c33; }
+      #out { overflow-y: auto; padding: 10px 14px; }
+      #logToolbar { position: sticky; top: 0; display: flex; gap: 8px; align-items: center; padding-bottom: 6px; }
+      .entry { border: 1px solid #8884; border-radius: 4px; margin-bottom: 6px; }
+      summary.head { padding: 3px 8px; background: #8881; display: flex; justify-content: space-between; gap: 8px; align-items: center; cursor: pointer; list-style: none; }
+      summary.head::-webkit-details-marker { display: none; }
+      summary.head > span:first-child::before { content: "▸"; opacity: .5; margin-right: 4px; }
+      .entry[open] > summary.head > span:first-child::before { content: "▾"; }
+      .entry pre { margin: 0; padding: 6px 8px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+      .cat { padding: 0 5px; border-radius: 6px; font-size: 11px; }
+      .cat-network { background: #3498db33; }
+      .cat-lifecycle { background: #9b59b633; }
+      .cat-command { background: #2ecc7133; }
+      .cat-error, .cat-raw { background: #e74c3c33; }
+      .seq { opacity: .55; }
+      .muted { opacity: .6; }
+      .tickdiv { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; color: #3498db; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+      .tickdiv::before, .tickdiv::after { content: ""; flex: 1; height: 2px; background: currentColor; opacity: .35; }
+      .entry .blocklabel { padding: 5px 8px 0; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; opacity: .5; }
+      .entry .blocklabel.resp { color: #3498db; opacity: .85; }
+      .entry .blocklabel.err { color: #e74c3c; opacity: .9; }
+      /* Syntax highlighting (theme-aware via light-dark); no external lib — MV3 CSP forbids remote code. */
+      .tok-key  { color: light-dark(#0550ae, #79b8ff); }
+      .tok-str  { color: light-dark(#0a7d33, #7ee787); }
+      .tok-num  { color: light-dark(#953800, #ffab70); }
+      .tok-bool { color: light-dark(#8250df, #d2a8ff); }
+      .tok-null { color: light-dark(#8250df, #d2a8ff); font-style: italic; }
+      .tok-cmd  { color: light-dark(#cf222e, #ff7b72); font-weight: bold; }
+      .tok-flag { color: light-dark(#0969da, #79c0ff); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>P2P Integration Log</h1>
+      <span id="version" class="pill">…</span>
+      <span id="session" class="pill">session: …</span>
+      <span id="dmarketScrape" class="pill scrape" title="dmarket scrape: …"><span class="dot"></span> dmarket</span>
+      <span id="steamScrape" class="pill scrape" title="steam scrape: …"><span class="dot"></span> steam</span>
+      <span class="muted">Real DMarket FE + BE · live Steam. Trigger create-trade via the dmarket.com FE (or its DevTools console).</span>
+    </header>
+
+    <section id="settings">
+      <label>Env <select id="envPreset"></select></label>
+      <label>DMarket base URL <input id="dmarketBaseUrl" class="url" type="text" /></label>
+      <label>FE URL (token) <input id="dmarketFeUrl" class="url" type="text" /></label>
+      <button id="apply" type="button">Apply &amp; restart</button>
+      <span class="muted">Steam is LIVE — a create POSTs a real (unconfirmed) offer.</span>
+    </section>
+
+    <section id="out">
+      <div id="logToolbar">
+        <strong>Session log</strong>
+        <span id="logCount" class="pill">0</span>
+        <button id="forceTick" type="button">force tick</button>
+        <span id="tickCountdown" class="pill">next tick: …</span>
+        <button id="exportLog" type="button">export</button>
+        <button id="clearLog" type="button">clear</button>
+        <label class="muted"><input id="autoscroll" type="checkbox" checked /> autoscroll</label>
+      </div>
+      <div id="log"></div>
+    </section>
+
+    <script type="module" src="dashboard.js"></script>
+  </body>
+</html>
