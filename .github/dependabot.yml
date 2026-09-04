@@ -1,0 +1,19 @@
+# Dependency updates. Security updates are enabled separately in the repository settings; this file
+# adds routine version bumps so the toolchain does not silently age.
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per week for all minor/patch bumps instead of a dozen — each still runs `./gradlew check`.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Kotlin, KSP and the Kotlin-adjacent toolchain move in lockstep and need a human: a major/minor
+      # bump here changes the emitted JS/.d.ts contract the extension pins against.
+      - dependency-name: "org.jetbrains.kotlin*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
