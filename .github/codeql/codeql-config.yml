@@ -1,0 +1,10 @@
+# CodeQL configuration, honoured by GitHub's default code-scanning setup.
+#
+# `vendor/` holds third-party build artifacts vendored verbatim (compiled JS/WASM
+# from an upstream CI pipeline; provenance in vendor/tlsn/VERSION). It is never
+# edited in this repo, so findings there cannot be fixed here — they belong
+# upstream. Excluding it keeps the alert list focused on code this repo owns.
+name: "p2p-tracker-core"
+
+paths-ignore:
+  - vendor
