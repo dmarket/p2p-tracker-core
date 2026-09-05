@@ -546,6 +546,40 @@ class P2pSerializationTest {
     }
 
     @Test
+    fun a_refusal_report_echoes_the_action_the_backend_named() {
+        // The point of carrying rawAction at all. An unsupported report must name the command the backend
+        // leased, not this client's `"unknown"` placeholder — that string is the only thing on the report
+        // that tells them WHICH action their newer build asked an older one to run.
+        val unsupported = DirectiveOutcome(
+            directiveId = DirectiveId("dir-1"),
+            action = DirectiveAction.UNKNOWN,
+            status = DirectiveStatus.UNSUPPORTED,
+            dealId = DealId("d1"),
+            rawAction = "settle_offer",
+        ).toDto()
+        assertEquals("settle_offer", unsupported.action)
+        assertEquals("unsupported", unsupported.status)
+
+        // A known action needs no echo, and gets the same string either way.
+        val malformed = DirectiveOutcome(
+            directiveId = DirectiveId("dir-2"),
+            action = DirectiveAction.CANCEL_OFFER,
+            status = DirectiveStatus.MALFORMED,
+            dealId = DealId("d2"),
+            error = "cancel_offer missing steam_offer_id",
+        ).toDto()
+        assertEquals("cancel_offer", malformed.action)
+        assertEquals("malformed", malformed.status)
+    }
+
+    @Test
+    fun an_unknown_directive_action_keeps_its_wire_string() {
+        val directive = DirectiveDto(directiveId = "dir-1", action = "settle_offer", dealId = "d1").toDomain()
+        assertEquals(DirectiveAction.UNKNOWN, directive.action, "the client cannot execute what it cannot name")
+        assertEquals("settle_offer", directive.rawAction, "but it can still report what it was asked for")
+    }
+
+    @Test
     fun report_directives_response_parses_a_partial_batch() {
         // A backend may answer fewer results than actions; the mapper must surface exactly what it said and let
         // the caller treat the missing ones as unaccepted.

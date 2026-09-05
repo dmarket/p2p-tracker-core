@@ -97,6 +97,9 @@ fun DirectiveDto.toDomain(): Directive = Directive(
     tradeToken = tradeToken,
     contextId = contextId,
     steamOfferId = steamOfferId?.takeIf { it.isNotBlank() }?.let(::OfferId),
+    // Kept rather than discarded once [DirectiveAction.fromWire] has collapsed it: an action this build
+    // does not know is reported back, and the report has to name what the backend asked for.
+    rawAction = action.takeIf { it.isNotBlank() },
 )
 
 fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(
@@ -147,7 +150,10 @@ fun SubmitProofResponseDto.toDomain(): ProofResult = ProofResult(dealId = DealId
 fun DirectiveOutcome.toDto(): ReportDirectiveRequestDto = ReportDirectiveRequestDto(
     directiveId = directiveId.value,
     dealId = dealId?.value,
-    action = action.wireName,
+    // The backend's own token wins over ours. They are the same string for every action this build
+    // knows; they differ exactly when the action does not parse, which is the case this field exists
+    // for — echoing our `"unknown"` placeholder there would name nothing the backend leased.
+    action = rawAction ?: action.wireName,
     status = status.wireName,
     steamOfferId = steamOfferId?.value,
     error = error,

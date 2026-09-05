@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 
 /**
@@ -15,12 +16,16 @@ import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
  * stored outcome (never re-executes the Steam write).
  *
  * [dropped] are directives of a **known** action the planner refused to execute, each paired with the
- * reason: either the payload is malformed for that action (a `create_offer` missing a field, a
- * `cancel_offer` without an offer id, …), or it is a **second non-idempotent write for a deal already
- * claimed in this same batch** (two `create_offer`s for one `deal_id` would mean two live Steam offers,
- * whatever their `directive_id`s). Unlike [DirectiveAction.UNKNOWN], which is silently
- * forward-compatible, the loop surfaces these as a lifecycle event: a systematically malformed directive
- * is re-leased forever, so a silent drop would stall the deal invisibly.
+ * reason and with the [DropKind] that decides whether the refusal is answerable — see there. [unsupported]
+ * are directives whose action this build does not know at all.
+ *
+ * **Both are refusals the backend has to hear about.** A directive nobody answers keeps its Redis lease
+ * until the TTL, is re-served on the next heartbeat, and the deal stands still — indefinitely, and
+ * indistinguishably from a healthy idle client. The loop therefore reports them on `/trade-actions`
+ * ([com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus.MALFORMED] /
+ * [com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus.UNSUPPORTED]) as well as surfacing them as a
+ * lifecycle event. An unknown action used to be dropped here in silence on forward-compatibility grounds,
+ * which is right about not *executing* it and wrong about not *answering* it.
  */
 data class DirectivePlan(
     val creates: List<Directive> = emptyList(),
@@ -28,27 +33,56 @@ data class DirectivePlan(
     val inventoryScans: List<Directive> = emptyList(),
     val alreadyHandled: List<Directive> = emptyList(),
     val dropped: List<DroppedDirective> = emptyList(),
+    val unsupported: List<Directive> = emptyList(),
 ) {
     /**
      * Nothing to *execute* — [alreadyHandled] may still carry outcomes for the loop to re-report, and
-     * [dropped] may still carry directives for the loop to surface as events.
+     * [dropped]/[unsupported] may still carry refusals for the loop to report and surface as events.
+     * Those two are answered **before** the loop consults this, so widening it would only hide them.
      */
     val isEmpty: Boolean get() = creates.isEmpty() && cancels.isEmpty() && inventoryScans.isEmpty()
+
+    /** The refusals to report, paired with the wire status each is reported under. */
+    val refusals: List<Pair<Directive, DirectiveStatus>>
+        get() = unsupported.map { it to DirectiveStatus.UNSUPPORTED } +
+            dropped.filter { it.kind == DropKind.PAYLOAD_INVALID }.map { it.directive to DirectiveStatus.MALFORMED }
 
     companion object {
         val EMPTY: DirectivePlan = DirectivePlan()
     }
 }
 
-/** A directive dropped as malformed, with the reason its payload failed validation for its action. */
-data class DroppedDirective(val directive: Directive, val reason: String)
+/** Why a directive of a known action was not executed — and whether the client may answer for it. */
+enum class DropKind {
+    /**
+     * The payload cannot satisfy its own action, so nothing valid could be attempted. Answerable, and
+     * worth answering: a systematically malformed directive is re-leased forever.
+     */
+    PAYLOAD_INVALID,
+
+    /**
+     * A second non-idempotent write for a deal already claimed in this same batch (two `create_offer`s
+     * for one `deal_id` would mean two live Steam offers, whatever their `directive_id`s).
+     *
+     * **Never reported.** This directive is well-formed and the backend may well still want it done —
+     * dropping it is safe precisely *because* it gets re-leased, and answering it would end that lease
+     * while telling the backend its payload was broken when it was not. It also has to stay re-servable
+     * for [DealWriteGuard]'s stored-outcome replay, which is what restates the real `steam_offer_id`
+     * for a deal this device has already written.
+     */
+    DUPLICATE_WRITE,
+}
+
+/** A directive the planner refused, with the reason it failed and the [DropKind] that classifies it. */
+data class DroppedDirective(val directive: Directive, val reason: String, val kind: DropKind = DropKind.PAYLOAD_INVALID)
 
 /**
  * Pure planning over a `HeartbeatResponse`'s `directives[]`. The backend already leases each directive
  * to this device (the Redis lease); the client's remaining job is **single-flight** — never execute a
  * `directive_id` it has already handled this session, and never execute two non-idempotent writes for
- * one deal out of a single batch — and to drop unknown/malformed actions. No IO, no clock; the loop
- * gathers the heartbeat + the handled set and executes the returned plan.
+ * one deal out of a single batch — and to classify the directives it will not execute so the loop can
+ * answer for them. No IO, no clock; the loop gathers the heartbeat + the handled set and executes the
+ * returned plan.
  *
  * Cross-batch / cross-caller duplicate protection is *not* here: it needs stored state, and lives in
  * [DealWriteGuard] plus the loop's claim store.
@@ -66,6 +100,7 @@ object DirectivePlanner {
         val inventoryScans = mutableListOf<Directive>()
         val alreadyHandled = mutableListOf<Directive>()
         val dropped = mutableListOf<DroppedDirective>()
+        val unsupported = mutableListOf<Directive>()
         // One non-idempotent Steam write per (deal, action) per batch — see the same-deal drop below.
         val claimedWrites = mutableSetOf<Pair<DealId, DirectiveAction>>()
 
@@ -83,7 +118,17 @@ object DirectivePlanner {
                 dropped += DroppedDirective(
                     directive,
                     "duplicate ${directive.action.wireName} for deal ${writeKey.first.value} in one heartbeat",
+                    DropKind.DUPLICATE_WRITE,
                 )
+                continue
+            }
+            if (directive.action == DirectiveAction.UNKNOWN) {
+                // Still never executed — that part of forward-compatibility was always right. It is now
+                // ANSWERED, though: an unrecognised action left unreported holds its lease until the TTL
+                // and comes back on every heartbeat, so the deal parks for as long as the version skew
+                // lasts. Its own bucket rather than a `dropped` entry, because the wire status must be a
+                // function of which bucket a directive landed in and not of a parsed reason string.
+                unsupported += directive
                 continue
             }
             // Each validity check returns the reason it failed (null = valid), so the drop decision and
@@ -92,7 +137,7 @@ object DirectivePlanner {
                 DirectiveAction.CREATE_OFFER -> creates to directive.invalidCreateReason()
                 DirectiveAction.CANCEL_OFFER -> cancels to directive.invalidCancelReason()
                 DirectiveAction.REPORT_INVENTORY -> inventoryScans to directive.invalidInventoryReason()
-                DirectiveAction.UNKNOWN -> null to null // forward-compatible: silently ignore, never dropped
+                DirectiveAction.UNKNOWN -> null to null // unreachable: handled above
             }
             when {
                 bucket == null -> Unit
@@ -106,7 +151,7 @@ object DirectivePlanner {
             }
         }
 
-        val plan = DirectivePlan(creates, cancels, inventoryScans, alreadyHandled, dropped)
+        val plan = DirectivePlan(creates, cancels, inventoryScans, alreadyHandled, dropped, unsupported)
         return if (plan == DirectivePlan.EMPTY) DirectivePlan.EMPTY else plan
     }
 

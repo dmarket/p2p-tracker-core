@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
@@ -31,6 +32,7 @@ class DirectivePlannerTest {
         assetIds: List<String> = listOf("asset-1"),
         tradeToken: String? = "token-1",
         steamOfferId: String? = null,
+        rawAction: String? = null,
     ) = Directive(
         directiveId = DirectiveId(id),
         action = action,
@@ -39,6 +41,7 @@ class DirectivePlannerTest {
         assetIds = assetIds.map(::AssetId),
         tradeToken = tradeToken,
         steamOfferId = steamOfferId?.let(::OfferId),
+        rawAction = rawAction,
     )
 
     private fun heartbeat(vararg directives: Directive) =
@@ -137,12 +140,32 @@ class DirectivePlannerTest {
     }
 
     @Test
-    fun unknown_action_is_ignored_not_dropped() {
-        // UNKNOWN is forward-compatible: silently ignored, NOT surfaced as a dropped (malformed) directive.
-        val unknown = createDirective(action = DirectiveAction.UNKNOWN)
+    fun unknown_action_is_never_executed_but_is_answerable() {
+        // Forward-compatible about EXECUTING it, not about answering for it: an unreported unknown action
+        // keeps its lease and comes back every heartbeat, parking the deal for the life of the skew.
+        val unknown = createDirective(action = DirectiveAction.UNKNOWN, rawAction = "settle_offer")
         val plan = DirectivePlanner.plan(heartbeat(unknown), emptySet())
-        assertTrue(plan.dropped.isEmpty())
-        assertTrue(plan.isEmpty)
+        assertTrue(plan.isEmpty, "nothing to execute")
+        assertTrue(plan.dropped.isEmpty(), "an unknown action is not a malformed payload")
+        assertEquals(listOf(unknown), plan.unsupported)
+        assertEquals(listOf(unknown to DirectiveStatus.UNSUPPORTED), plan.refusals)
+    }
+
+    @Test
+    fun a_malformed_payload_is_answered_and_a_duplicate_write_is_not() {
+        // The two DropKinds differ in exactly one respect, and it is this one. A malformed directive is
+        // answered so the backend stops re-serving it; a duplicate is well-formed and MUST keep being
+        // re-served — answering it would end the lease and blame the payload for a client-side race.
+        val malformed = createDirective(id = "dir-bad", partnerSteamId = null)
+        val first = createDirective(id = "dir-1")
+        val duplicate = createDirective(id = "dir-2")
+        val plan = DirectivePlanner.plan(heartbeat(malformed, first, duplicate), emptySet())
+
+        assertEquals(
+            listOf(DropKind.PAYLOAD_INVALID, DropKind.DUPLICATE_WRITE),
+            plan.dropped.map { it.kind },
+        )
+        assertEquals(listOf(malformed to DirectiveStatus.MALFORMED), plan.refusals)
     }
 
     @Test
