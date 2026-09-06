@@ -2,20 +2,26 @@ version: 2.1
 
 # CI/CD for @dmarket/p2p-tracker-core (the :core Kotlin/JS library distribution).
 #
-# Release model: version-bump auto-publish. Editing VERSION_NAME in gradle.properties and merging to
-# main is the ONLY action a release needs — CI builds, patches package.json, and publishes to npm,
-# then creates the git tag + GitHub Release itself (no manual tags).
+# Release model: a release BRANCH plus a human approval — mirroring the extension repository, so one
+# mental model covers both halves of the plugin. `main` publishes nothing: merging there is merging,
+# not shipping. A release is proposed by pushing `release/v<x.y.z>` (VERSION_NAME in gradle.properties
+# must equal that exact string) and happens when someone approves `hold_release`.
+#
+# The version string still decides the channel:
 #   - "<x.y.z>-SNAPSHOT"  -> npm prerelease "<x.y.z>-SNAPSHOT.<commits>" under dist-tag "snapshot"
-#                            (no tag / no GitHub Release).
+#                            (no tag / no GitHub Release). Branch: `release/v<x.y.z>-SNAPSHOT`.
 #   - "<x.y.z>"           -> npm "latest" + annotated tag v<x.y.z> + GitHub Release from CHANGELOG.
 #
-# Publish branches: `main` (snapshots AND stable) and `feat/p2p` (SNAPSHOTS ONLY — a stable version
-# on a non-main branch is skipped cleanly, not failed, so no error emails).
+# Why the branch and not the merge: a version bump reaching main used to publish on its own, which
+# made every doc commit on a publish branch a potential npm release and left "[skip publish]" as the
+# only brake. Now the trigger is explicit and revocable — a release branch that is never approved
+# ships nothing, and a push to any other branch cannot reach the publish job at all.
 #
-# Opt-out: a commit message containing "[skip publish]" (case-insensitive) skips the publish only —
-# build, tests and the JS dist packaging still run. Nothing is published, tagged or released. Use it
-# for doc/CI/WIP commits that would otherwise mint a new npm snapshot. (Contrast with CircleCI's own
-# "[skip ci]", which skips the whole pipeline including the tests.)
+# Opt-out: a commit message containing "[skip publish]" (case-insensitive) makes the publish job a
+# no-op — build, tests and the JS dist packaging still run. Less load-bearing than it was, now that
+# reaching the job needs a release branch and an approval, but it still lets a fix land on a release
+# branch (a changelog typo, a CI tweak) without re-proposing the release. (Contrast with CircleCI's
+# own "[skip ci]", which skips the whole pipeline including the tests.)
 #
 # npm auth = TRUSTED PUBLISHING via OIDC (no stored NPM_TOKEN). The publish job mints a short-lived
 # OIDC token (`circleci run oidc get`) that the npm CLI (>= 11.11.0 for CircleCI) exchanges for a scoped publish
@@ -24,7 +30,7 @@ version: 2.1
 #   2. Configure the Trusted Publisher on npmjs.com → package Settings → Trusted Publishing → CircleCI
 #      (needs the CircleCI Org ID, Project ID, Pipeline Definition ID, and VCS origin URL).
 # Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
-# releases from main. Snapshots need no secrets at all.
+# releases. Snapshots need no secrets at all.
 
 executors:
   jdk-node:
@@ -141,10 +147,14 @@ jobs:
               exit 0
             fi
 
-            # --- Branch guard: stable only from main; feature branches publish snapshots only. ---
-            if [ "$IS_SNAPSHOT" = "false" ] && [ "$CIRCLE_BRANCH" != "main" ]; then
-              echo "Skipping: stable release ($VERSION) is only published from main, not '$CIRCLE_BRANCH'."
-              exit 0
+            # --- Branch/version agreement: the branch names the version it releases. ---
+            # A hard failure, not a skip: reaching this job means a human approved a release, and the
+            # only ways to get here disagreeing are a bump that was forgotten or a branch cut from the
+            # wrong place. Both would publish a version nobody proposed.
+            BRANCH_VERSION="${CIRCLE_BRANCH#release/v}"
+            if [ "$BRANCH_VERSION" != "$VERSION_NAME" ]; then
+              echo "ERROR: branch '$CIRCLE_BRANCH' proposes $BRANCH_VERSION but gradle.properties says $VERSION_NAME." >&2
+              exit 1
             fi
 
             # --- Idempotency guard: never re-publish an existing version (also loop-safe). ---
@@ -191,11 +201,25 @@ workflows:
   ci:
     jobs:
       - build_and_test
-      - publish_npm:
+      # Releasing is a manual act. Nothing is published, tagged or released until someone approves
+      # this, so a push to a release branch is a proposal rather than a publication — and a proposal
+      # that is never approved leaves no trace on npm.
+      #
+      # Scoped to `release/v<x.y.z>`, which is what keeps the approval meaningful: it appears only
+      # where releasing is the point. Approving one that releases nothing anyway (the version is
+      # already on npm, or the commit says [skip publish]) is still safe — publish_npm prints why and
+      # goes green.
+      - hold_release:
+          type: approval
           requires:
             - build_and_test
-          filters:
+          filters: &release_branches
             branches:
-              only:
-                - main
-                - feat/p2p
+              # `release/v1.0.1`, with an optional prerelease suffix (`release/v1.0.1-SNAPSHOT`,
+              # `release/v1.1.0-beta.1`). publish_npm then requires gradle.properties' VERSION_NAME
+              # to be exactly the part after the `v`.
+              only: /^release\/v\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/
+      - publish_npm:
+          requires:
+            - hold_release
+          filters: *release_branches

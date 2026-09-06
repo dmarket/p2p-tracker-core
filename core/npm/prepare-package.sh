@@ -115,6 +115,9 @@ node -e 'const p=require(process.argv[1]);console.log(JSON.stringify({name:p.nam
 # Emit release vars for the publish job (workspace file) and, if same-job, $BASH_ENV.
 {
   echo "export VERSION='$VERSION'"
+  # The declared version, unsuffixed. VERSION carries a snapshot's commit count, so the publish job's
+  # branch/version agreement check needs the string a release branch can actually be named after.
+  echo "export VERSION_NAME='$VERSION_NAME'"
   echo "export DIST_TAG='$DIST_TAG'"
   echo "export IS_SNAPSHOT='$IS_SNAPSHOT'"
   echo "export SKIP_PUBLISH='$SKIP_PUBLISH'"
