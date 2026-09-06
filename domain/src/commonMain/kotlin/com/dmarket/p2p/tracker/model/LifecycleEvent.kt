@@ -57,11 +57,14 @@ sealed interface LifecycleEvent {
     data class HandledDirectiveSkipped(val kind: String, val directiveId: String) : LifecycleEvent
 
     /**
-     * A directive of a **known** action was dropped because its payload is malformed for that action
-     * (e.g. a `create_offer` missing a field). Distinct from an [DirectiveAction.UNKNOWN] action, which
-     * is silently forward-compatible: a malformed known directive is re-leased on every heartbeat, so
-     * without this event the deal stalls invisibly. [reason] names the missing/invalid field. [kind] is
-     * the directive's action wire name.
+     * A directive this client will not execute, whatever the cause: a payload malformed for its action,
+     * an action no build of this client knows, a duplicate write for a deal already claimed in the
+     * batch, or a loop built with directive execution switched off entirely. [reason] separates them,
+     * and it is worth reading rather than counting: only some are answered on `/trade-actions`, and
+     * an unanswered one is re-leased on every heartbeat while its deal stands still.
+     *
+     * [kind] is the action's wire name — for an unrecognised action, the string the **backend** sent,
+     * not this client's `unknown` placeholder.
      */
     data class DirectiveDropped(val kind: String, val directiveId: String, val reason: String) : LifecycleEvent
 

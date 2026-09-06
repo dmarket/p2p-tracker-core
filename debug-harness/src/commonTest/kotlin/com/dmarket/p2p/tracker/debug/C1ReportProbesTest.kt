@@ -193,6 +193,28 @@ class C1ReportProbesTest {
     }
 
     @Test
+    fun report_directive_sends_an_unsupported_action_verbatim() = runTest {
+        // The one status whose whole point is an action this build cannot resolve, so the strict lookup
+        // must stand aside — and the string that reaches the wire is the backend's, not our sentinel.
+        probes("$extBase/trade-actions", acceptedAction())
+            .reportDirective("dir-1", "d-1", action = "settle_offer", status = "unsupported", steamOfferId = null)
+
+        val action = sentAction()
+        assertEquals("settle_offer", action["action"]!!.jsonPrimitive.content)
+        assertEquals("unsupported", action["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun report_directive_refuses_an_unknown_action_under_malformed() = runTest {
+        // `malformed` says the payload was unusable for an action we DID recognise, so an unresolvable
+        // name here is a typo in the probe rather than a version skew — the leniency stops at unsupported.
+        assertFailsWith<IllegalArgumentException> {
+            probesThatMustNotSend().reportDirective("dir-1", "d-1", action = "settle_offer", status = "malformed", steamOfferId = null)
+        }
+        assertNull(sentBody)
+    }
+
+    @Test
     fun report_directive_carries_the_error_detail_on_a_failed_outcome() = runTest {
         probes("$extBase/trade-actions", acceptedAction()).reportDirective(
             directiveId = "dir-1",

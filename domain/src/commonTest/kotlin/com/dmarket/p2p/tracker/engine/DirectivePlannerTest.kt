@@ -148,7 +148,7 @@ class DirectivePlannerTest {
         assertTrue(plan.isEmpty, "nothing to execute")
         assertTrue(plan.dropped.isEmpty(), "an unknown action is not a malformed payload")
         assertEquals(listOf(unknown), plan.unsupported)
-        assertEquals(listOf(unknown to DirectiveStatus.UNSUPPORTED), plan.refusals)
+        assertEquals(listOf(DirectiveRefusal(unknown, DirectiveStatus.UNSUPPORTED, reason = null)), plan.refusals)
     }
 
     @Test
@@ -165,7 +165,10 @@ class DirectivePlannerTest {
             listOf(DropKind.PAYLOAD_INVALID, DropKind.DUPLICATE_WRITE),
             plan.dropped.map { it.kind },
         )
-        assertEquals(listOf(malformed to DirectiveStatus.MALFORMED), plan.refusals)
+        assertEquals(
+            listOf(DirectiveRefusal(malformed, DirectiveStatus.MALFORMED, "create_offer missing partner_steam_id")),
+            plan.refusals,
+        )
     }
 
     @Test

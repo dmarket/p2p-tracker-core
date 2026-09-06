@@ -18,6 +18,7 @@ import com.dmarket.p2p.tracker.engine.DealRoleBinding
 import com.dmarket.p2p.tracker.engine.DealWriteGuard
 import com.dmarket.p2p.tracker.engine.DirectiveAcknowledgement
 import com.dmarket.p2p.tracker.engine.DirectivePlanner
+import com.dmarket.p2p.tracker.engine.DirectiveRefusal
 import com.dmarket.p2p.tracker.engine.ExpeditedTransitions
 import com.dmarket.p2p.tracker.engine.FreshProofDemand
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
@@ -135,6 +136,13 @@ private const val THROTTLED_WRITE_ERROR = "deferred: this device is backing off 
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
+
+/**
+ * Lifecycle reason for a directive whose action this build does not know. Deliberately says nothing
+ * about *what* was asked — [LifecycleEvent.DirectiveDropped.kind] already carries the backend's own
+ * token, and this build has no name of its own for the command.
+ */
+private const val UNSUPPORTED_ACTION_REASON = "refused: this client version does not know this action"
 
 /**
  * Why a report was not sent. Names the *dependency*, not the mechanism: the backend will refuse this exact
@@ -486,6 +494,38 @@ class TradeTrackerLoop(
             )
         }
         return paired.associate { it.outcome.directiveId to it.accepted }
+    }
+
+    /**
+     * Answers the planner's [refusals] on `/trade-actions` — the directives this client will not run.
+     *
+     * **In a call of its own, and that isolation is the point rather than a structuring preference.**
+     * These two statuses are minted client-side (the wire field is a plain string, so they can be), and
+     * [reportOutcomes] treats any non-2xx as a failure of the *whole* batch. Sharing the write batch
+     * would mean a gateway that rejects a token it does not recognise also voids the acknowledgements of
+     * every real create and cancel in the same call — leaving their stored outcomes unpruned and their
+     * leases held for a reason that has nothing to do with them.
+     *
+     * Nothing is stored and nothing is marked handled: a refusal report is a pure function of the
+     * heartbeat, so an unaccepted one is simply re-derived when the backend re-leases the directive.
+     * Storing it could not work anyway — an unknown action does not parse back out of the outcome store —
+     * and marking it handled would route the re-lease into [resendHandledOutcomes], which has no row to
+     * resend and would report a skip on every beat instead.
+     */
+    private suspend fun reportRefusals(refusals: List<DirectiveRefusal>) {
+        if (refusals.isEmpty()) return
+        reportOutcomes(
+            refusals.map { (directive, status, reason) ->
+                DirectiveOutcome(
+                    directiveId = directive.directiveId,
+                    action = directive.action,
+                    status = status,
+                    dealId = directive.dealId,
+                    error = reason,
+                    rawAction = directive.rawAction,
+                )
+            },
+        )
     }
 
     /**
@@ -1466,11 +1506,24 @@ class TradeTrackerLoop(
         val handled = progress.loadHandledDirectives()
         val plan = DirectivePlanner.plan(heartbeat, handled)
         resendHandledOutcomes(plan.alreadyHandled)
-        // Surface directives the planner dropped as malformed: the backend re-leases them every
-        // heartbeat, so a silent drop stalls the deal invisibly. (UNKNOWN actions are not dropped.)
+        // Surface every directive this client refuses, then answer for the ones that are answerable.
         plan.dropped.forEach {
             emit(LifecycleEvent.DirectiveDropped(it.directive.action.wireName, it.directive.directiveId.value, it.reason))
         }
+        plan.unsupported.forEach {
+            emit(
+                LifecycleEvent.DirectiveDropped(
+                    // The backend's own token, not our UNKNOWN placeholder — see DirectiveDropped.kind.
+                    kind = it.rawAction ?: it.action.wireName,
+                    directiveId = it.directiveId.value,
+                    reason = UNSUPPORTED_ACTION_REASON,
+                ),
+            )
+        }
+        // ABOVE the executability gate on purpose: a heartbeat that leases nothing but refusals is
+        // exactly the case this reporting exists for, and returning first would leave those leases held
+        // until their TTL — every heartbeat, for as long as the cause lasts.
+        reportRefusals(plan.refusals)
         if (plan.isEmpty) return 0
 
         var done = 0

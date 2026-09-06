@@ -4342,6 +4342,61 @@ class TradeTrackerLoopTest {
     }
 
     @Test
+    fun a_heartbeat_carrying_only_refusals_still_answers_them() = runTest {
+        // The case the reporting exists for, and the one an executability gate hides: nothing here is
+        // runnable, so a loop that returned before reporting would leave both leases held until their TTL
+        // and meet the same two directives again on the next beat, forever.
+        val unknown = Directive(
+            directiveId = DirectiveId("dir-unknown"),
+            action = DirectiveAction.UNKNOWN,
+            dealId = DealId("deal-1"),
+            rawAction = "settle_offer",
+        )
+        val malformed = createDirective(id = "dir-bad", dealId = "deal-2").copy(partnerSteamId = null)
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(unknown, malformed), ttlSeconds = 300),
+        )
+        val observer = RecordingEventObserver()
+        val outcome = loop(marketplace = mp, eventObserver = observer, directivesEnabled = true).runOnce()
+
+        assertEquals(1, mp.directiveCalls, "one call, and not the write batch's")
+        assertEquals(
+            listOf(DirectiveStatus.UNSUPPORTED, DirectiveStatus.MALFORMED),
+            mp.directiveOutcomes.map { it.status },
+        )
+        assertEquals("settle_offer", mp.directiveOutcomes.first().rawAction, "the backend's own token, echoed")
+        assertEquals(
+            "create_offer missing partner_steam_id",
+            mp.directiveOutcomes.last().error,
+            "the malformed report names the field, so their alert is actionable",
+        )
+        assertEquals(0, outcome.directivesExecuted, "answering is not executing")
+        assertEquals(2, observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().size)
+    }
+
+    @Test
+    fun a_duplicate_write_directive_is_dropped_but_never_answered() = runTest {
+        // The one drop that must keep its lease. Both directives are well-formed; the second is refused
+        // only because this batch already claimed that deal's create. Answering it would end a lease the
+        // backend should re-serve — and the deal would never get the write it is still waiting for.
+        val first = createDirective(id = "dir-1")
+        val duplicate = createDirective(id = "dir-2")
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(first, duplicate), ttlSeconds = 300),
+        )
+        val observer = RecordingEventObserver()
+        loop(marketplace = mp, creator = FakeSteamOfferCreator(), eventObserver = observer, directivesEnabled = true).runOnce()
+
+        assertEquals(
+            listOf(DirectiveId("dir-1")),
+            mp.directiveOutcomes.map { it.directiveId },
+            "only the executed create is reported",
+        )
+        val dropped = observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().single()
+        assertEquals("dir-2", dropped.directiveId, "visible to the host, silent to the backend")
+    }
+
+    @Test
     fun a_leased_create_directive_is_refused_when_the_browser_session_is_another_account() = runTest {
         val creator = FakeSteamOfferCreator()
         val mp = FakeMarketplaceClient(

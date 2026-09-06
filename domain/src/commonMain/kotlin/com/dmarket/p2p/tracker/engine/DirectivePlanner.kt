@@ -42,10 +42,14 @@ data class DirectivePlan(
      */
     val isEmpty: Boolean get() = creates.isEmpty() && cancels.isEmpty() && inventoryScans.isEmpty()
 
-    /** The refusals to report, paired with the wire status each is reported under. */
-    val refusals: List<Pair<Directive, DirectiveStatus>>
-        get() = unsupported.map { it to DirectiveStatus.UNSUPPORTED } +
-            dropped.filter { it.kind == DropKind.PAYLOAD_INVALID }.map { it.directive to DirectiveStatus.MALFORMED }
+    /**
+     * The refusals to answer on `/trade-actions`, already carrying the status each is reported under —
+     * so the loop reports what the planner decided instead of re-deriving it from a reason string.
+     */
+    val refusals: List<DirectiveRefusal>
+        get() = unsupported.map { DirectiveRefusal(it, DirectiveStatus.UNSUPPORTED, reason = null) } +
+            dropped.filter { it.kind == DropKind.PAYLOAD_INVALID }
+                .map { DirectiveRefusal(it.directive, DirectiveStatus.MALFORMED, it.reason) }
 
     companion object {
         val EMPTY: DirectivePlan = DirectivePlan()
@@ -75,6 +79,15 @@ enum class DropKind {
 
 /** A directive the planner refused, with the reason it failed and the [DropKind] that classifies it. */
 data class DroppedDirective(val directive: Directive, val reason: String, val kind: DropKind = DropKind.PAYLOAD_INVALID)
+
+/**
+ * A refusal the client answers for: the directive, the wire status it is answered under, and the
+ * [reason] to put on the report's `error` field.
+ *
+ * [reason] is `null` for an unrecognised action, deliberately: the status and the echoed action already
+ * say the whole of it, and any sentence this build could add would be about a command it cannot name.
+ */
+data class DirectiveRefusal(val directive: Directive, val status: DirectiveStatus, val reason: String?)
 
 /**
  * Pure planning over a `HeartbeatResponse`'s `directives[]`. The backend already leases each directive

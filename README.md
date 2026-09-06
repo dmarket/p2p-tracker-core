@@ -161,8 +161,10 @@ inputs through ports, calls the engine, and is then a *dumb executor* of the ret
 - [`DirectivePlanner.plan(heartbeat, handled)`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DirectivePlanner.kt)
   filters the heartbeat's `directives[]` down to what this tick should execute, partitioned into a
   `DirectivePlan` (`creates` / `cancels` / `inventoryScans`). It enforces **single-flight** — a
-  `directive_id` already in the `handled` set is never re-executed — and drops malformed or unknown
-  actions (forward-compatible).
+  `directive_id` already in the `handled` set is never re-executed — and classifies the rest: a
+  malformed payload or an action this build does not know is never executed, but *is* answered on
+  `/trade-actions` (`malformed` / `unsupported`) so its device lease is released instead of being
+  re-served on every heartbeat.
 - [`TrackerTick.reduce(now, activeTracking, observed, reported)`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/TrackerTick.kt)
   is the pure change-detector for the watch loop: per tracked deal it compares the freshly observed
   raw Steam codes (both axes) against the last-reported baseline (`ReportedStatus`) and emits a
@@ -236,7 +238,7 @@ The backend derives the account from the Bearer token, so **no request carries a
 | `heartbeat(request)` | `POST …/ext/heartbeat` | Presence + `device_id`; returns `active_tracking[]` + `directives[]` + `ttl_seconds`. The sole presence + work-dispatch call. |
 | `reportTradeStatus(reports)` | `POST …/ext/trade-events` | Batch **raw** `steam_status_code` ints (no proof); one `TradeStatusResult` per report. |
 | `submitProof(proof)` | `POST …/ext/notary` | A TLSN proof for a decisive transition (`proof_required` deals only). |
-| `reportDirective(outcome)` | `POST …/ext/trade-actions` | Report a `create_offer`/`cancel_offer` directive outcome (releases the Redis lease). |
+| `reportDirective(outcome)` | `POST …/ext/trade-actions` | Report a directive outcome — a `create_offer`/`cancel_offer` result, or a refusal (`unsupported`/`malformed`). Either way it releases the Redis lease. |
 | `reportInventory(report)` | `POST …/ext/inventory` | The present-`asset_ids` snapshot; the backend computes the stale diff. |
 | `acceptDeal(id)` | `POST /p2p/deals/{id}/accept` | The seller COMMIT (`applied=false` if too late) — a **DMarket app convenience**, not part of the tracker's directive loop. |
 | `getDeal(id)` | `GET /p2p/deals/{id}` | A single deal snapshot (host convenience). |

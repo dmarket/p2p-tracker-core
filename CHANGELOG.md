@@ -11,6 +11,12 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+### Added
+
+- Directives the client refuses are now reported on `/trade-actions` as `unsupported` (unknown
+  action) or `malformed` (unusable payload), releasing the device lease instead of being re-served
+  every heartbeat.
+
 ## [1.0.0-beta.1] - 2026-09-04
 
 First public release of the trade-tracker core. It is the **seller plugin core** of DMarket's P2P

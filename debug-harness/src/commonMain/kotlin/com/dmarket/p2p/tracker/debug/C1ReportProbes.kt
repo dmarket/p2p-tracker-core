@@ -106,13 +106,16 @@ class C1ReportProbes(private val marketplace: MarketplaceClient) {
         steamOfferId: String?,
         error: String? = null,
     ): JsonObject {
+        val reported = directiveStatus(status)
+        val (resolvedAction, rawAction) = reportedAction(action, reported)
         val outcome = DirectiveOutcome(
             directiveId = DirectiveId(directiveId),
-            action = directiveAction(action),
-            status = directiveStatus(status),
+            action = resolvedAction,
+            status = reported,
             dealId = dealId?.let { DealId(it) },
             steamOfferId = steamOfferId?.let { OfferId(it) },
             error = error,
+            rawAction = rawAction,
         )
         // `/trade-actions` takes a batch; this probe deliberately sends a one-element one so a human can poke a
         // single directive, and reads the single result back out.
@@ -179,11 +182,29 @@ class C1ReportProbes(private val marketplace: MarketplaceClient) {
         ?: rejectUnknown("trade-status source", wire, TradeStatusSource.entries.map { it.wireName })
 
     private fun directiveAction(wire: String): DirectiveAction {
-        // UNKNOWN is an inbound-only sentinel — reporting it back as an outcome would be meaningless.
+        // UNKNOWN is not a name the client may put on the wire — see reportedAction for the one status
+        // that legitimately reports an action this build cannot resolve, and what it sends instead.
         val reportable = DirectiveAction.entries.filter { it != DirectiveAction.UNKNOWN }
         return reportable.firstOrNull { it.wireName == wire }
             ?: rejectUnknown("directive action", wire, reportable.map { it.wireName })
     }
+
+    /**
+     * The action to report, and the raw wire string to echo with it.
+     *
+     * A probe reporting [DirectiveStatus.UNSUPPORTED] is exercising precisely the case where the action
+     * is one this build cannot name, so the strict lookup must not stand in its way — the unresolved
+     * string *is* the payload of such a report. Every other status still has to name a known action,
+     * [DirectiveStatus.MALFORMED] included: that one says the payload was unusable for an action we did
+     * recognise, so an unknown name there is a mistake in the probe rather than a version skew.
+     */
+    private fun reportedAction(wire: String, status: DirectiveStatus): Pair<DirectiveAction, String?> =
+        if (status == DirectiveStatus.UNSUPPORTED) {
+            require(wire.isNotBlank()) { "an unsupported report must still name the action the backend sent" }
+            DirectiveAction.UNKNOWN to wire
+        } else {
+            directiveAction(wire) to null
+        }
 
     private fun directiveStatus(wire: String): DirectiveStatus = DirectiveStatus.entries.firstOrNull { it.wireName == wire }
         ?: rejectUnknown("directive status", wire, DirectiveStatus.entries.map { it.wireName })
