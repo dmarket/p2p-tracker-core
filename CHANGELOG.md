@@ -17,6 +17,11 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   action) or `malformed` (unusable payload), releasing the device lease instead of being re-served
   every heartbeat.
 
+### Changed
+
+- Offer states `8 InvalidItems` and `10 CanceledBySecondFactor` are decisive transitions, so a
+  `proof_required` deal now proves them instead of having the closure refused.
+
 ## [1.0.0-beta.1] - 2026-09-04
 
 First public release of the trade-tracker core. It is the **seller plugin core** of DMarket's P2P

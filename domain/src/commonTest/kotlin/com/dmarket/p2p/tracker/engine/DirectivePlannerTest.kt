@@ -670,6 +670,8 @@ class DecisiveTransitionsTest {
             "offer_accepted" to (TradeStatusSource.OFFER to 3),
             "offer_declined (countered)" to (TradeStatusSource.OFFER to 4),
             "offer_cancelled" to (TradeStatusSource.OFFER to 6),
+            "offer_cancelled (invalid items)" to (TradeStatusSource.OFFER to 8),
+            "offer_cancelled (second factor)" to (TradeStatusSource.OFFER to 10),
             "offer_declined" to (TradeStatusSource.OFFER to 7),
             "trade_completed" to (TradeStatusSource.HISTORY to 3),
             "trade_reversed" to (TradeStatusSource.HISTORY to 12),
@@ -688,10 +690,18 @@ class DecisiveTransitionsTest {
     }
 
     @Test
+    fun offer_8_and_10_are_decisive_because_the_cancellation_place_enforces_them() {
+        // Regression for a measured cost, not a preference: both reach the enforced `offer_cancelled`
+        // place, so an unsigned report of either was refused every time and the deal drifted to the
+        // 18-hour deadline, charging the buyer for the seller's action.
+        assertTrue(DecisiveTransitions.isDecisive(TradeStatusSource.OFFER, 8), "InvalidItems")
+        assertTrue(DecisiveTransitions.isDecisive(TradeStatusSource.OFFER, 10), "CanceledBySecondFactor")
+    }
+
+    @Test
     fun other_offer_codes_are_not_decisive() {
-        // 8 InvalidItems and 10 CanceledBySecondFactor are out by the host's ruling, not by oversight;
         // 9 is the pre-confirmation state the offer passes THROUGH on its way to 2.
-        for (code in listOf(0, 1, 5, 8, 9, 10, 11)) {
+        for (code in listOf(0, 1, 5, 9, 11)) {
             assertFalse(DecisiveTransitions.isDecisive(TradeStatusSource.OFFER, code), "offer code $code")
         }
     }
