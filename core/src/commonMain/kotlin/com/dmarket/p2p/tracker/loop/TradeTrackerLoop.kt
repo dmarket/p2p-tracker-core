@@ -152,12 +152,11 @@ private const val UNSUPPORTED_ACTION_REASON = "refused: this client version does
 private const val REPORT_AWAITS_PROOF = "withheld until this transition's proof verifies"
 
 /**
- * `ProofSuppressed.reason` for a demand this build cannot answer because no real prover is selected — every
- * host with no proving context, Firefox today and any caller that passes no prover at all. Said out loud
- * rather than skipped silently, because from the backend's side it is indistinguishable from a client that
- * never received the mark.
+ * `TradeStatusReportDeferred.reason` for a decisive report already claimed unproven once. Separate from
+ * [REPORT_AWAITS_PROOF] because the two are opposite situations that would otherwise read alike: that one
+ * is waiting for a verdict, this one has given up on getting any and has already said so.
  */
-private const val NO_PROVER_FOR_DEMAND = "a fresh proof was demanded but no notary prover is configured"
+private const val REPORT_CLAIM_SPENT = "already reported unproven; awaiting a prover for its proof"
 
 /**
  * `ProofSuppressed.reason` for a transition whose proof this cycle skips because a freshness demand on the
@@ -823,6 +822,17 @@ class TradeTrackerLoop(
 
     /** Serializes cycles so a scheduled wake and a delivered push never run [runOnce] concurrently. */
     private val cycleMutex = Mutex()
+
+    /**
+     * Whether this host can prove at all — Firefox today, and any caller that passes no prover.
+     *
+     * Keyed on the prover's own id rather than on config, because the id is what the prover asserts about
+     * itself and is already the field [LifecycleEvent.ProofSubmitted] carries for this distinction. Fed to
+     * [ProofMintPolicy], so "cannot prove" is one decision made in one place: [NoOpNotaryProver] answers
+     * with an EMPTY payload, which is delivered and *refused*, and every path that treats that as a verdict
+     * about the trade withholds the trade's report for good.
+     */
+    private val proverAvailable: Boolean get() = notary.id != NoOpNotaryProver.id
 
     /**
      * `true` if the last background Steam credential refresh failed because no authenticated session
@@ -1975,20 +1985,17 @@ class TradeTrackerLoop(
         }
         for (demand in freshness.demands) {
             emit(LifecycleEvent.FreshProofDemanded(demand.dealId.value, demand.tradeId.value, demand.proveAfter.toString()))
-            // Every host with no proving context — Firefox today, and any caller that passes no prover at
-            // all: `NoOpNotaryProver` answers with an EMPTY payload, which is delivered and refused, so
-            // without this gate the ladder would engage on a proof that could never have worked and every
-            // marked deal would POST `/notary` for nothing.
-            // Keyed on the prover's own id rather than on the config, because the id is what the prover
-            // asserts about itself and is already the field `ProofSubmitted` carries for this distinction.
-            if (notary.id == NoOpNotaryProver.id) {
-                emit(LifecycleEvent.ProofSuppressed(demand.dealId.value, FreshProofDemand.AXIS.wireName, NO_PROVER_FOR_DEMAND))
-                continue
-            }
             val now = clock.now()
             val standing = freshProgress[demand.dealId]
             val verdict =
-                ProofMintPolicy.decideFreshness(standing, now, notaryThrottle.parkedUntil(now), mintedThisCycle, proofDeadline)
+                ProofMintPolicy.decideFreshness(
+                    standing,
+                    now,
+                    proverAvailable,
+                    notaryThrottle.parkedUntil(now),
+                    mintedThisCycle,
+                    proofDeadline,
+                )
             if (verdict is ProofMintVerdict.Skip) {
                 emit(
                     LifecycleEvent.ProofSuppressed(
@@ -2126,6 +2133,7 @@ class TradeTrackerLoop(
                 refused = proofRejected,
                 accepted = acceptedProofs,
                 acceptedTtlMs = config.tunables.notary.acceptedProofTtlMs,
+                proverAvailable = proverAvailable,
                 proverParkedUntil = notaryThrottle.parkedUntil(now),
                 mintedThisCycle = mintedThisCycle,
                 cycleDeadline = proofDeadline,

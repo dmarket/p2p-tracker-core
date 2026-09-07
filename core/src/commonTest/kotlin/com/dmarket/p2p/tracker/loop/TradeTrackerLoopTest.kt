@@ -2841,13 +2841,36 @@ class TradeTrackerLoopTest {
             proofVerified = false
             proofReason = "empty proof_payload"
         }
-        loop(marketplace = mp, reader = reader, notary = NoOpNotaryProver, eventObserver = events).runOnce()
+        loop(marketplace = mp, reader = reader, notary = FakeNotaryProver(), eventObserver = events).runOnce()
 
         val submitted = events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>()
         assertEquals(1, submitted.size)
         assertEquals(false, submitted[0].verified)
         assertEquals("empty proof_payload", submitted[0].reason, "the backend's own diagnosis must survive")
-        assertEquals("noop", submitted[0].prover, "a stub submission must not read like a real proof")
+        assertEquals("unknown", submitted[0].prover, "the event names which prover produced the rejected proof")
+    }
+
+    @Test
+    fun a_host_with_no_prover_submits_nothing_at_all() = runTest {
+        // The other half of the distinction the event above exists for, and it is now made BEFORE the POST:
+        // a stub prover answers with an empty payload that the backend can only refuse, and that refusal used
+        // to latch as this transition's verdict — a fact about the client's plumbing recorded as a fact about
+        // the trade, which then withheld the trade's report for good.
+        val offerId = OfferId("offer-1")
+        val reader = FakeSteamReadClient(initialOffers = mapOf(offerId to 3))
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
+                ttlSeconds = 60,
+            ),
+        )
+        loop(marketplace = mp, reader = reader, notary = NoOpNotaryProver, eventObserver = events).runOnce()
+
+        assertTrue(mp.proofsSubmitted.isEmpty(), "nothing to submit: there is no prover to produce it")
+        assertTrue(events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>().isEmpty())
+        val suppressed = events.events.filterIsInstance<LifecycleEvent.ProofSuppressed>().single()
+        assertEquals(ProofSkipReason.NO_PROVER.message, suppressed.reason)
     }
 
     @Test

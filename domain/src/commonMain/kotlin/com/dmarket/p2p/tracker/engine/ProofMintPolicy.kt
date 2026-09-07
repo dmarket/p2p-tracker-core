@@ -41,6 +41,17 @@ enum class ProofSkipReason(val message: String) {
     FRESHNESS_RETRY_PENDING("the demanded fresh proof was refused; its retry window has not elapsed"),
 
     /**
+     * There is no proving context on this host at all — Firefox today, and any caller that passes no
+     * prover. Ranked below the settled answers and above the affordability gates: it is not a spending
+     * decision (nothing can be spent), but a verdict the backend has already given still stands.
+     *
+     * Without it, a stub prover answers with an empty payload that is delivered and refused, so the
+     * transition would latch as [ALREADY_REFUSED] — a verdict about the client's plumbing recorded as a
+     * verdict about the trade, and one that withholds that trade's report for good.
+     */
+    NO_PROVER("no notary prover is configured on this host"),
+
+    /**
      * The prover has failed often enough in a row to be parked. Carries a deadline — see
      * `LifecycleEvent.ProofSuppressed.retryAfterSeconds`.
      */
@@ -59,6 +70,22 @@ enum class ProofSkipReason(val message: String) {
      * disagree, which is exactly the bug that shipped when the budget check was evaluated before this one.
      */
     val corroborated: Boolean get() = this == ALREADY_ACCEPTED
+
+    /**
+     * Whether **no verdict will arrive** for this transition — nothing was submitted, so the backend will
+     * neither accept nor refuse a proof of it.
+     *
+     * This is what lets the loop report the transition *unproven* rather than withholding it. The
+     * distinction is not cosmetic: a decisive report withheld for want of a proof is withheld
+     * indefinitely, because the dedup baseline only advances on an accepted report — so on a host that
+     * cannot prove, a closure the backend would have refused (and acted on) becomes a closure it never
+     * hears about at all, and the deal drifts to its deadline instead.
+     *
+     * Derived here rather than carried alongside, for the same reason as [corroborated]: the report gate
+     * and the mint decision cannot then disagree. Deliberately **false** for the two settled answers —
+     * a verdict exists for those, and it reached the backend through the submission that produced it.
+     */
+    val unprovable: Boolean get() = this == NO_PROVER || this == PROVER_PARKED || this == BUDGET_SPENT
 }
 
 /** Whether a due proof should be minted now, and if not, why not. */
@@ -82,8 +109,9 @@ sealed interface ProofMintVerdict {
  * that has already cost a shipped bug exists once.
  *
  * **Why the order is load-bearing, and why it is enforced here rather than by prose.** The first two reasons
- * cost no prover at all — they are answers the backend has already given. The last two are about whether this
- * client may spend an MPC session *right now*. Evaluating a spending gate before a settled answer withholds a
+ * cost no prover at all — they are answers the backend has already given. The rest are about this client's own
+ * ability to spend an MPC session: whether it has a prover at all, and whether it may spend one *right now*.
+ * Evaluating a spending gate before a settled answer withholds a
  * report for a reason that has nothing to do with it: that shipped once, when the budget check was placed
  * above [ProofSkipReason.ALREADY_ACCEPTED] and a transition the backend had already corroborated was
  * suppressed as "budget spent". Ordering it inside one function makes that mistake unrepresentable, and
@@ -123,13 +151,14 @@ object ProofMintPolicy {
         refused: Set<ProofIntent>,
         accepted: Map<ProofIntent, Instant>,
         acceptedTtlMs: Int,
+        proverAvailable: Boolean,
         proverParkedUntil: Instant?,
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
     ): ProofMintVerdict = when {
         intent in refused -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED)
         isCorroborated(intent, now, accepted, acceptedTtlMs) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
-        else -> spendingGates(now, proverParkedUntil, mintedThisCycle, cycleDeadline)
+        else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline)
     }
 
     /**
@@ -165,6 +194,7 @@ object ProofMintPolicy {
     fun decideFreshness(
         progress: FreshProofProgress?,
         now: Instant,
+        proverAvailable: Boolean,
         proverParkedUntil: Instant?,
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
@@ -177,7 +207,7 @@ object ProofMintPolicy {
                 retryAfterSeconds = CooldownLadder.retryAfterSeconds(retryAt, now),
             )
         }
-        return spendingGates(now, proverParkedUntil, mintedThisCycle, cycleDeadline)
+        return spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline)
     }
 
     /**
@@ -189,10 +219,15 @@ object ProofMintPolicy {
      */
     private fun spendingGates(
         now: Instant,
+        proverAvailable: Boolean,
         proverParkedUntil: Instant?,
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
     ): ProofMintVerdict = when {
+        // Ahead of the two affordability gates because it is not about affording anything: a host with no
+        // prover does not become able to prove when the breaker clears or the next cycle starts, and
+        // saying "parked" or "budget spent" about it would send the operator after the wrong cause.
+        !proverAvailable -> ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER)
         proverParkedUntil != null -> ProofMintVerdict.Skip(
             ProofSkipReason.PROVER_PARKED,
             retryAfterSeconds = CooldownLadder.retryAfterSeconds(proverParkedUntil, now),

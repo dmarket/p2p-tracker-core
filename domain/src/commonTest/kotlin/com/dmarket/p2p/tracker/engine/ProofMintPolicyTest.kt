@@ -23,10 +23,11 @@ class ProofMintPolicyTest {
         refused: Set<ProofIntent> = emptySet(),
         accepted: Map<ProofIntent, Instant> = emptyMap(),
         acceptedTtlMs: Int = ttlMs,
+        proverAvailable: Boolean = true,
         parkedUntil: Instant? = null,
         minted: Boolean = true,
         deadline: Instant? = null,
-    ) = ProofMintPolicy.decide(intent, now, refused, accepted, acceptedTtlMs, parkedUntil, minted, deadline)
+    ) = ProofMintPolicy.decide(intent, now, refused, accepted, acceptedTtlMs, proverAvailable, parkedUntil, minted, deadline)
 
     @Test
     fun nothing_in_the_way_mints() {
@@ -42,6 +43,10 @@ class ProofMintPolicyTest {
         assertEquals(
             ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
             decide(accepted = mapOf(intent to T0)),
+        )
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER),
+            decide(proverAvailable = false),
         )
         assertEquals(
             ProofMintVerdict.Skip(ProofSkipReason.PROVER_PARKED, retryAfterSeconds = 90),
@@ -82,6 +87,47 @@ class ProofMintPolicyTest {
         // one that carries a deadline a host can render.
         val verdict = decide(parkedUntil = T0 + 45.seconds, deadline = T0)
         assertEquals(ProofMintVerdict.Skip(ProofSkipReason.PROVER_PARKED, retryAfterSeconds = 45), verdict)
+    }
+
+    @Test
+    fun a_settled_verdict_outranks_having_no_prover() {
+        // The whole reason NO_PROVER is not the first gate. Reachable on every respawn onto a host that
+        // cannot prove (Firefox, or a failed prover import) while the acceptance is still on record — and
+        // ranking it first would report that transition unproven and spend its one claim, for a transition
+        // the backend has already verified. This is the ordering mistake this file has shipped once before.
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
+            decide(accepted = mapOf(intent to T0), proverAvailable = false),
+        )
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED),
+            decide(refused = setOf(intent), proverAvailable = false),
+        )
+    }
+
+    @Test
+    fun having_no_prover_outranks_both_spending_gates() {
+        // A host with no prover does not become able to prove when the breaker clears or the next cycle
+        // starts, so naming either would send whoever reads the event after the wrong cause.
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER),
+            decide(proverAvailable = false, parkedUntil = T0 + 45.seconds, deadline = T0),
+        )
+    }
+
+    @Test
+    fun exactly_the_reasons_that_submit_nothing_are_unprovable() {
+        // The property the report gate reads to decide between withholding a decisive report and reporting
+        // it unproven. True where nothing was submitted, so no verdict can ever arrive; false for the two
+        // settled answers, whose verdict reached the backend through the submission that produced it.
+        val unprovable = ProofSkipReason.entries.filter { it.unprovable }
+        assertEquals(
+            listOf(ProofSkipReason.NO_PROVER, ProofSkipReason.PROVER_PARKED, ProofSkipReason.BUDGET_SPENT),
+            unprovable,
+        )
+        for (reason in unprovable) {
+            assertFalse(reason.corroborated, "$reason cannot both hold a verdict and be missing one")
+        }
     }
 
     @Test
@@ -172,6 +218,7 @@ class ProofMintPolicyTest {
                 ProofSkipReason.ALREADY_REFUSED -> decide(refused = setOf(intent))
                 ProofSkipReason.ALREADY_ACCEPTED -> decide(accepted = mapOf(intent to T0))
                 ProofSkipReason.FRESHNESS_RETRY_PENDING -> decideFreshness(progress = laddered(T0 + 30.seconds))
+                ProofSkipReason.NO_PROVER -> decide(proverAvailable = false)
                 ProofSkipReason.PROVER_PARKED -> decide(parkedUntil = T0 + 30.seconds)
                 ProofSkipReason.BUDGET_SPENT -> decide(deadline = T0)
             }
@@ -188,10 +235,11 @@ class ProofMintPolicyTest {
     private fun decideFreshness(
         progress: FreshProofProgress? = null,
         now: Instant = T0,
+        proverAvailable: Boolean = true,
         parkedUntil: Instant? = null,
         minted: Boolean = true,
         deadline: Instant? = null,
-    ) = ProofMintPolicy.decideFreshness(progress, now, parkedUntil, minted, deadline)
+    ) = ProofMintPolicy.decideFreshness(progress, now, proverAvailable, parkedUntil, minted, deadline)
 
     @Test
     fun a_first_demand_mints() {
