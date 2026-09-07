@@ -112,6 +112,15 @@ object DeviceVaultKeys {
     const val DEAL_WRITE_CLAIMS = "tracker_deal_write_claims"
 
     /**
+     * Stores the JSON-encoded list of **decisive transitions already reported unproven** (deal + axis +
+     * Steam code), so the claim is spent once rather than once per wake. Without it an MV3 respawn would
+     * re-POST the same unprovable closure on every cycle for as long as the deal lives, and the backend
+     * refuses each one — it needs the claim exactly once. Pruned when the deal leaves the tracked set or
+     * its report is finally accepted. See `PersistedUnprovenClaimStore`.
+     */
+    const val UNPROVEN_CLAIMS = "tracker_unproven_claims"
+
+    /**
      * Stores the JSON-encoded `create_offer` back-pressure state (per-partner cooldowns after a Steam
      * rate-limit refusal, plus the surface-wide breaker) so a cooldown outlives a process death. The
      * heartbeat TTL is shorter than the MV3 idle timeout, so a worker respawns between most cycles — an

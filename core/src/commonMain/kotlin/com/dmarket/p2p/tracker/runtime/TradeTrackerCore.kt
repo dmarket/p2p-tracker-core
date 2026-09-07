@@ -23,9 +23,11 @@ import com.dmarket.p2p.tracker.loop.NotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedDealWriteClaimStore
 import com.dmarket.p2p.tracker.loop.PersistedNotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
+import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
 import com.dmarket.p2p.tracker.loop.SteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.TrackerProgressStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
+import com.dmarket.p2p.tracker.loop.UnprovenClaimStore
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
@@ -101,6 +103,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         marketplaceCredentials: MarketplaceCredentialProvider? = null,
         progress: TrackerProgressStore = InMemoryTrackerProgressStore(),
         claims: DealWriteClaimStore = PersistedDealWriteClaimStore(platformKeyValueStore()),
+        unprovenClaims: UnprovenClaimStore = PersistedUnprovenClaimStore(platformKeyValueStore()),
         throttle: SteamWriteThrottleStore = PersistedSteamWriteThrottleStore(
             limits = config.tunables.steamWrites,
             storage = platformKeyValueStore(),
@@ -138,6 +141,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             marketplaceCredentials = marketplaceCredentials,
             progress = progress,
             claims = claims,
+            unprovenClaims = unprovenClaims,
             throttle = throttle,
             notaryThrottle = notaryThrottle,
             loopState = loopState,

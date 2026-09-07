@@ -135,6 +135,7 @@ class TradeTrackerLoopTest {
         notary: NotaryProver = FakeNotaryProver(),
         progress: TrackerProgressStore = InMemoryTrackerProgressStore(),
         claims: DealWriteClaimStore = PersistedDealWriteClaimStore(),
+        unprovenClaims: UnprovenClaimStore = PersistedUnprovenClaimStore(),
         inventoryReader: SteamInventoryReader = NoOpSteamInventoryReader,
         directivesEnabled: Boolean = false,
         credential: Boolean = true,
@@ -190,6 +191,7 @@ class TradeTrackerLoopTest {
             marketplaceCredentials = marketplaceCredentials,
             progress = progress,
             claims = claims,
+            unprovenClaims = unprovenClaims,
             throttle = throttle,
             notifications = notifications,
             loopState = loopState,
@@ -2168,10 +2170,13 @@ class TradeTrackerLoopTest {
         val suppressed = events.events.filterIsInstance<LifecycleEvent.ProofSuppressed>()
         assertEquals(1, suppressed.size, "the proof the budget refused must say so, not vanish")
         assertEquals("this cycle's proving budget is spent; the next heartbeat is due", suppressed[0].reason)
-        // The report it would have corroborated is withheld, not sent — a budget skip is not a verdict.
-        assertEquals(2, mp.tradeStatusReports.size)
-        val deferred = events.events.filterIsInstance<LifecycleEvent.TradeStatusReportDeferred>()
-        assertEquals(listOf("d3"), deferred.map { it.dealId })
+        // The report it would have corroborated goes out UNPROVEN, precisely because a budget skip is not a
+        // verdict: nothing was submitted, so no verdict is coming, and withholding it would mean the backend
+        // never learns this closure happened at all. Claimed once, so the next cycle does not re-send it.
+        assertEquals(3, mp.tradeStatusReports.size)
+        assertTrue(events.events.filterIsInstance<LifecycleEvent.TradeStatusReportDeferred>().isEmpty())
+        val claimed = events.events.filterIsInstance<LifecycleEvent.TradeStatusClaimedUnproven>()
+        assertEquals(listOf("d3"), claimed.map { it.dealId })
     }
 
     @Test
@@ -2201,7 +2206,12 @@ class TradeTrackerLoopTest {
             notary.proven.last().first,
             "the deal the budget skipped must be proved on a later cycle, not dropped",
         )
-        assertEquals(3, mp.tradeStatusReports.size)
+        // FOUR reports for three deals: d3's closure was claimed unproven in the first cycle (no verdict was
+        // coming, so the backend heard about it), and reported AGAIN in the second once its proof verified.
+        // The claim suppresses a repeat while the transition is unproven; it must never suppress the proven
+        // report, which is the one the backend can actually act on.
+        assertEquals(4, mp.tradeStatusReports.size)
+        assertEquals(2, mp.tradeStatusReports.count { it.dealId == DealId("d3") })
     }
 
     @Test
@@ -2848,6 +2858,67 @@ class TradeTrackerLoopTest {
         assertEquals(false, submitted[0].verified)
         assertEquals("empty proof_payload", submitted[0].reason, "the backend's own diagnosis must survive")
         assertEquals("unknown", submitted[0].prover, "the event names which prover produced the rejected proof")
+    }
+
+    @Test
+    fun a_host_that_cannot_prove_claims_the_closure_once_and_then_stays_quiet() = runTest {
+        // The regression this whole rule exists for. A decisive report used to be withheld until its proof
+        // verified — indefinitely, because a refused report never enters the dedup baseline — so on a host
+        // with no prover the closure the backend would have refused (and acted on) became one it never heard
+        // about, and the deal drifted to its 18-hour deadline.
+        val offerId = OfferId("offer-1")
+        val reader = FakeSteamReadClient(initialOffers = mapOf(offerId to 6))
+        val events = RecordingEventObserver()
+        val claims = PersistedUnprovenClaimStore()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
+                ttlSeconds = 60,
+            ),
+        ).apply { tradeStatusAccepted = false } // the enforced place refuses an unsigned closure
+        val l = loop(
+            marketplace = mp,
+            reader = reader,
+            notary = NoOpNotaryProver,
+            unprovenClaims = claims,
+            eventObserver = events,
+        )
+
+        l.runOnce()
+        assertEquals(listOf(6), mp.tradeStatusReports.map { it.steamStatusCode }, "the closure is reported unproven")
+        assertEquals(1, events.events.filterIsInstance<LifecycleEvent.TradeStatusClaimedUnproven>().size)
+
+        l.runOnce()
+        assertEquals(1, mp.tradeStatusReports.size, "claimed once, not once per wake")
+        val deferred = events.events.filterIsInstance<LifecycleEvent.TradeStatusReportDeferred>().single()
+        assertEquals("already reported unproven; awaiting a prover for its proof", deferred.reason)
+    }
+
+    @Test
+    fun a_claim_is_not_spent_on_a_report_the_backend_never_received() = runTest {
+        // A transport failure synthesizes non-accepted acknowledgements that are shape-identical to a backend
+        // rejection. Reading those as "delivered" would burn the one claim on a report nobody received, and
+        // this closure would then be silent for the life of the deal.
+        val offerId = OfferId("offer-1")
+        val reader = FakeSteamReadClient(initialOffers = mapOf(offerId to 6))
+        val claims = PersistedUnprovenClaimStore()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
+                ttlSeconds = 60,
+            ),
+        ).apply { reportTradeStatusThrows = true }
+        val l = loop(marketplace = mp, reader = reader, notary = NoOpNotaryProver, unprovenClaims = claims)
+
+        l.runOnce()
+        assertTrue(claims.load().isEmpty(), "nothing reached the backend, so nothing is claimed")
+
+        mp.reportTradeStatusThrows = false
+        l.runOnce()
+        // Two attempts recorded by the fake, one of which the backend actually received — and it is that
+        // second one that spends the claim.
+        assertEquals(listOf(6, 6), mp.tradeStatusReports.map { it.steamStatusCode }, "the closure is re-sent, not lost")
+        assertEquals(1, claims.load().size)
     }
 
     @Test

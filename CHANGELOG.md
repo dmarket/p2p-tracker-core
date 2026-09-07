@@ -21,6 +21,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 - Offer states `8 InvalidItems` and `10 CanceledBySecondFactor` are decisive transitions, so a
   `proof_required` deal now proves them instead of having the closure refused.
+- A decisive report is withheld only while a verdict on its proof is still coming. When none can
+  arrive — no prover, prover parked, budget spent — the raw code is reported once, unproven, instead
+  of being withheld indefinitely.
 
 ## [1.0.0-beta.1] - 2026-09-04
 

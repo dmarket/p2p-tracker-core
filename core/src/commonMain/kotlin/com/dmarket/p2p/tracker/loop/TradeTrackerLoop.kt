@@ -261,6 +261,13 @@ class TradeTrackerLoop(
     private val progress: TrackerProgressStore = InMemoryTrackerProgressStore(),
     private val claims: DealWriteClaimStore = PersistedDealWriteClaimStore(),
     /**
+     * Which decisive transitions were already reported unproven. Persisted for the same reason as the write
+     * claims: the backend refuses such a report (the place is enforced), so the transition is re-detected on
+     * every cycle, and an in-memory marker would be forgotten on nearly every MV3 respawn — turning "claim
+     * this closure once" into "re-POST it forever".
+     */
+    private val unprovenClaims: UnprovenClaimStore = PersistedUnprovenClaimStore(),
+    /**
      * The `create_offer` back-pressure ledger. Persisted by default for the same reason the claim store is:
      * the heartbeat TTL is shorter than the MV3 idle timeout, so an in-memory cooldown would be forgotten on
      * nearly every wake and the client would re-hit a partner Steam is still refusing.
@@ -2090,7 +2097,12 @@ class TradeTrackerLoop(
         // different transition and must not inherit this one's verdict.
         val proofVerified = mutableSetOf<ProofIntent>()
         val proofFailed = mutableSetOf<Pair<DealId, TradeStatusSource>>()
+        // Which transitions will get NO verdict this cycle, so their report goes out unproven instead of
+        // waiting for one. Kept apart from `proofFailed` because they answer different questions: that set
+        // is about not advancing a baseline, this one is about whether the backend hears anything at all.
+        val proofUnprovable = mutableSetOf<ProofIntent>()
         val acceptedProofs = loadAcceptedProofs(tracking)
+        val claimSpent = loadUnprovenClaims(tracking)
         // What earlier refusals taught about each deal's online-decryption budget.
         //
         // Read only when there is a proof to spend it on, unlike the ledger above — that read is unconditional
@@ -2115,6 +2127,11 @@ class TradeTrackerLoop(
         for (intent in plan.proofIntents) {
             if ((intent.dealId to intent.source) in demandedAxes) {
                 emit(LifecycleEvent.ProofSuppressed(intent.dealId.value, intent.source.wireName, SUPERSEDED_BY_DEMAND))
+                // No verdict for THIS transition this cycle — the demand proves the same read but attests
+                // whatever Steam says now, which may be a different code. So the report goes out unproven
+                // rather than waiting: if the demand's proof happens to satisfy this transition too, the
+                // next cycle sends it again, proven, and that path outranks the spent claim.
+                proofUnprovable += intent
                 continue
             }
             // Whether this proof is spent at all is [ProofMintPolicy]'s call, not this loop's: four reasons it
@@ -2142,6 +2159,10 @@ class TradeTrackerLoop(
                 // An ALREADY_ACCEPTED skip still counts as verified, so the report it corroborates goes out.
                 // Read off the reason rather than re-derived here, so the two cannot disagree.
                 if (verdict.reason.corroborated) proofVerified += intent
+                // …and a skip that submitted nothing means no verdict is coming for this transition, so its
+                // report goes out unproven instead of waiting for one that will never arrive. Also read off
+                // the reason, for the same reason: the gate and the decision share one source.
+                if (verdict.reason.unprovable) proofUnprovable += intent
                 emit(
                     LifecycleEvent.ProofSuppressed(
                         intent.dealId.value,
@@ -2170,6 +2191,9 @@ class TradeTrackerLoop(
             // already had its say (ProofFailed, the breaker fold, any budget lesson). Retry next tick.
             val result = mintAndSubmit(binding, intent.source, credential, now, onlineBudgets) ?: run {
                 proofFailed += intent.dealId to intent.source
+                // The backend never saw it, so it will never rule on it — same standing as a skip that
+                // submitted nothing. Report the transition unproven and keep retrying the proof.
+                proofUnprovable += intent
                 continue
             }
             // Delivered but verified=false is terminal (the MVP mock verify always says false); resubmitting
@@ -2214,21 +2238,44 @@ class TradeTrackerLoop(
         // acknowledgement matching below exists for). A report with NO intent — `proofRequired` false, or a
         // non-decisive code — is untouched and still goes out unconditionally: there is no proof for it to
         // wait for, and gating it would mean a broken prover stopped the backend learning anything at all.
+        // **The gate withholds on "a verdict is coming", not on "the code is decisive"**, and the order of
+        // these three tests is the whole rule:
+        //
+        //  1. no proof was due, or one has verified          -> send (unchanged);
+        //  2. no verdict will EVER arrive (nothing submitted) -> send unproven, ONCE per transition;
+        //  3. otherwise                                       -> withhold, awaiting the verdict.
+        //
+        // Withholding used to be everything but (1), which withheld indefinitely: a refused report never
+        // enters the dedup baseline, so the transition is re-detected forever and the report never leaves.
+        // On a host that cannot prove, a closure the backend would have refused — and acted on — became a
+        // closure it never heard about, and the deal drifted to its 18-hour deadline instead.
+        //
+        // (1) is tested BEFORE the spent claim, which is the seam that would fail silently: a transition
+        // claimed unproven while the prover was down must still report once the proof finally verifies.
         val dueProofs = plan.proofIntents.toSet()
+        val claimable = mutableSetOf<ProofIntent>()
         val (sendable, withheld) = plan.reports.partition { report ->
             val intent = ProofIntent(report.dealId, report.source, report.steamStatusCode)
-            intent !in dueProofs || intent in proofVerified
+            when {
+                intent !in dueProofs || intent in proofVerified -> true
+                intent !in proofUnprovable -> false
+                intent in claimSpent -> false
+                else -> claimable.add(intent)
+            }
         }
         // A withheld report sends nothing, so it has to SAY so. Silence would make it indistinguishable from
         // a cycle that observed nothing — the exact failure mode every other event on this path exists to
         // break, and the one that cost a live debugging session when the proof latch skipped in silence.
         for (report in withheld) {
+            val intent = ProofIntent(report.dealId, report.source, report.steamStatusCode)
             emit(
                 LifecycleEvent.TradeStatusReportDeferred(
                     report.dealId.value,
                     report.source.wireName,
                     report.steamStatusCode,
-                    REPORT_AWAITS_PROOF,
+                    // The two reasons are opposite situations that would otherwise read alike: waiting for a
+                    // verdict, versus having given up on one and already said so.
+                    if (intent in claimSpent) REPORT_CLAIM_SPENT else REPORT_AWAITS_PROOF,
                 ),
             )
         }
@@ -2240,14 +2287,30 @@ class TradeTrackerLoop(
         // filtered out in silence, and a thrown batch vanished entirely).
         var accepted = emptyList<TradeStatusReport>()
         if (sendable.isNotEmpty()) {
+            // Whether the batch was DELIVERED, which is a different question from whether any row in it was
+            // accepted — and the difference is load-bearing for the unproven claims below. On a transport
+            // failure the fold synthesizes non-accepted acks that are shape-identical to a backend rejection,
+            // so reading "not accepted" as "delivered" would spend a claim on a report the backend never saw,
+            // and that transition would then stay silent for good.
+            var delivered = true
             val acks = runCatching { marketplace.reportTradeStatus(sendable) }.fold(
                 onSuccess = { ReportAcknowledgement.match(sendable, it) },
                 onFailure = { failure ->
+                    delivered = false
                     val reason = failure.redactedSummary()
                     sendable.map { ReportAck(it, accepted = false, reason = reason) }
                 },
             )
             accepted = acks.filter { it.accepted }.map { it.report }
+            // Spend each unproven claim only once its report actually reached the backend. Written before the
+            // event is emitted, so a worker that dies between the two has recorded the claim rather than
+            // announced one it did not keep.
+            if (delivered) {
+                for (intent in claimable) {
+                    runCatching { unprovenClaims.claim(intent) }
+                    emit(LifecycleEvent.TradeStatusClaimedUnproven(intent.dealId.value, intent.source.wireName, intent.steamStatusCode))
+                }
+            }
             for (ack in acks) {
                 val report = ack.report
                 if (ack.accepted) {
@@ -2288,14 +2351,34 @@ class TradeTrackerLoop(
         // accepted reports, and a seeded offer code is the backend's claim, not ours. Passing the merged map
         // would write that claim into our ledger the first time some *other* axis of the same deal was
         // accepted — quietly making a value we chose not to trust indistinguishable from one we earned.
+        // An UNPROVEN report is excluded too, and for the same reason as a failed proof: the transition still
+        // owes its proof. Advancing the baseline on the strength of a report the backend merely *accepted*
+        // would close the transition for good — no further intent would ever be planned for it — and the
+        // acceptance says only that the closure was heard, not that it was corroborated or acted on. So the
+        // code stays re-detectable, the proof keeps being attempted, and it is the CLAIM (not the baseline)
+        // that stops the report itself from repeating.
+        val unprovenReported = plan.reports
+            .filter { ProofIntent(it.dealId, it.source, it.steamStatusCode) in proofUnprovable }
+            .mapTo(HashSet()) { it.dealId to it.source }
         persistReported(
-            accepted.filterNot { (it.dealId to it.source) in proofFailed || (it.dealId to it.source) in attributionPending },
+            accepted.filterNot {
+                (it.dealId to it.source) in proofFailed ||
+                    (it.dealId to it.source) in attributionPending ||
+                    (it.dealId to it.source) in unprovenReported
+            },
             reportedBaseline,
         )
         // An accepted report is the end of that transition: its code is now in the dedup baseline, so no
         // further intent will be planned for it and the stored verdict has nothing left to corroborate.
         // Pruned here rather than left to expire so the ledger tracks live work only.
-        clearAcceptedProofs(accepted.map { ProofIntent(it.dealId, it.source, it.steamStatusCode) }.toSet())
+        val acceptedIntents = accepted.map { ProofIntent(it.dealId, it.source, it.steamStatusCode) }.toSet()
+        clearAcceptedProofs(acceptedIntents)
+        // The unproven claims are released on the same event, MINUS the ones that were just claimed: those
+        // transitions are still open by the paragraph above, so releasing their claim would re-send the same
+        // unproven report on the next cycle, and every cycle after it. A claim is released when the
+        // transition genuinely settles — its report accepted with a proof behind it.
+        val settled = acceptedIntents.filterNotTo(HashSet()) { it in proofUnprovable }
+        if (settled.isNotEmpty()) runCatching { unprovenClaims.release(settled) }
         return accepted.size to proofsSubmitted
     }
 
@@ -2400,6 +2483,24 @@ class TradeTrackerLoop(
         val trackedIds = tracking.mapTo(HashSet()) { it.dealId }
         val stale = stored.keys.filterTo(HashSet()) { it.dealId !in trackedIds }
         if (stale.isNotEmpty()) clearAcceptedProofs(stale)
+        return stored - stale
+    }
+
+    /**
+     * The transitions already reported unproven, narrowed to the deals still being tracked — and the rows for
+     * the rest released, which is this ledger's only prune.
+     *
+     * **Fail-open**, like the budgets and the freshness standing: an unreadable ledger reads as "nothing
+     * claimed", so a closure is reported once more. That costs one refused POST. The opposite default would
+     * read a storage hiccup as "already told them", and the closure the backend never heard about is exactly
+     * what this path exists to prevent.
+     */
+    private suspend fun loadUnprovenClaims(tracking: List<TrackedDeal>): Set<ProofIntent> {
+        val stored = runCatching { unprovenClaims.load() }.getOrElse { return emptySet() }
+        if (stored.isEmpty()) return stored
+        val trackedIds = tracking.mapTo(HashSet()) { it.dealId }
+        val stale = stored.filterTo(HashSet()) { it.dealId !in trackedIds }
+        if (stale.isNotEmpty()) runCatching { unprovenClaims.release(stale) }
         return stored - stale
     }
 

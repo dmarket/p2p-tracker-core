@@ -316,6 +316,21 @@ sealed interface LifecycleEvent {
         LifecycleEvent
 
     /**
+     * A decisive transition on a `proof_required` deal was reported **without** its proof, because no proof
+     * could be produced at all — no prover on this host, the prover parked, the cycle's proving budget spent.
+     *
+     * Not a failure, and not the same thing as [TradeStatusReportDeferred]: that one is waiting for a verdict
+     * that is coming, this one is the client saying what it saw when no verdict ever will. The backend refuses
+     * such a report where the place is enforced, and refusing it is the point — a refused closure is one it
+     * can act on, while a closure it never hears about drifts to the deal's deadline.
+     *
+     * Emitted **once** per transition: the report is claimed in a persisted ledger, because a refused report
+     * never enters the dedup baseline and would otherwise be re-sent on every cycle for the life of the deal.
+     * A proof arriving later still sends the report again, proven.
+     */
+    data class TradeStatusClaimedUnproven(val dealId: String, val source: String, val steamStatusCode: Int) : LifecycleEvent
+
+    /**
      * A cycle ended in a throw rather than a verdict. The driver still re-arms its next wake — the point of
      * the event is that an aborted cycle used to be indistinguishable from a quiet one (on web it reached
      * only the console's final-resort handler, and it took the alarm re-arm down with it). [reason] is a

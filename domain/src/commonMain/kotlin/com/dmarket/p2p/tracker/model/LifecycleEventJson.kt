@@ -162,6 +162,12 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("steamStatusCode", event.steamStatusCode)
             put("reason", event.reason)
         }
+        is LifecycleEvent.TradeStatusClaimedUnproven -> {
+            put("event", "TradeStatusClaimedUnproven")
+            put("dealId", event.dealId)
+            put("source", event.source)
+            put("steamStatusCode", event.steamStatusCode)
+        }
         is LifecycleEvent.CycleFailed -> {
             put("event", "CycleFailed")
             put("reason", event.reason)
