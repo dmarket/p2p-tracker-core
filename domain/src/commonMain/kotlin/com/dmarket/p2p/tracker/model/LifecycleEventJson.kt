@@ -90,6 +90,7 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("dealId", event.dealId)
             put("rows", event.rows)
             put("refetched", event.refetched)
+            put("targeted", event.targeted)
         }
         is LifecycleEvent.DealLookupFailed -> {
             put("event", "DealLookupFailed")

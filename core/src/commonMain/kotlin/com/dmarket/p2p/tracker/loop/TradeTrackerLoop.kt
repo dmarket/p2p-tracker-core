@@ -169,6 +169,23 @@ private const val SUPERSEDED_BY_DEMAND = "a freshness demand on this axis is pro
 private fun CreateOfferResult.Throttled.deferReason(): String = "${scope.name.lowercase()} cooldown standing after a steam refusal"
 
 /**
+ * One cycle's allowance of targeted single-trade history reads, shared by every deal in the pass.
+ *
+ * A bound rather than a rate, and it is per CYCLE rather than per deal on purpose: a deal that stays
+ * uncorrelated must be allowed to try again on a later cycle (a history `12` is deliberately withheld until
+ * its actor resolves, and it can only resolve on a read), while one wake must not turn into a burst against
+ * Steam because a client came back from a long sleep with several deals outside the window at once.
+ */
+private class TargetedReadBudget(private var remaining: Int) {
+    /** Claims one read, or returns `false` when this cycle has spent its allowance. */
+    fun take(): Boolean {
+        if (remaining <= 0) return false
+        remaining--
+        return true
+    }
+}
+
+/**
  * What one attempt at a Steam **write** directive (`create_offer` / `cancel_offer`) left behind: the [outcome]
  * to report in this cycle's single batched `/trade-actions` call (`null` when there is nothing to report),
  * whether it reached Steam ([wroteToSteam] — which is what makes its stored outcome prunable once acked), and,
@@ -2744,6 +2761,11 @@ class TradeTrackerLoop(
         // Stamp only a read that actually happened AND succeeded. A failure must not start the sparse
         // interval — that would turn one Steam blip into an hour of not watching for a rollback.
         if (historyResult?.isSuccess == true) runCatching { loopState.setRevertWatchAt(clock.now()) }
+        // This cycle's remaining budget for targeted single-trade reads, shared across every deal below.
+        // A bound rather than a rate: a client that has been away long enough for the window to move can
+        // have several uncorrelated deals at once, and the ones this cycle does not reach are retried on the
+        // next — which is where they already were.
+        val targetedReads = TargetedReadBudget(config.tunables.steamEndpoints.targetedTradeReadsPerCycle)
         val result = mutableMapOf<DealId, ObservedTrade>()
         for (deal in tracking) {
             val offer = deal.steamOfferId?.let { offerSnapshots[it] }
@@ -2751,8 +2773,11 @@ class TradeTrackerLoop(
             // Keep the matched transfer, not just its status int: reversal attribution needs the row's
             // `time_mod` and counterparty. Correlation is delegated to the pure selector because a
             // rollback puts TWO rows carrying this asset in the payload and only one of them is the deal's.
-            val matched = if (deal.watchesHistory && transfers.isNotEmpty()) {
-                correlateTransfer(deal, transfers, offer, uncorrelated)
+            // Gated on the read having been DUE, not on it having returned rows: a window that answered with
+            // nothing at all is precisely when the targeted per-deal read has something to add, and keying
+            // this on `transfers.isNotEmpty()` would skip the fallback exactly there.
+            val matched = if (deal.watchesHistory && needHistory) {
+                correlateTransfer(deal, transfers, offer, credential, uncorrelated, targetedReads)
             } else {
                 null
             }
@@ -2827,10 +2852,15 @@ class TradeTrackerLoop(
     /**
      * The deal's own transfer row out of the account-wide history read.
      *
-     * **Steam's `tradeid` first.** It is the row's identity and the offer axis already read it — Steam
-     * attaches it to the offer on acceptance — so the join is exact and costs nothing. When it is known and
-     * still finds no row, the row is simply outside the `max_trades` window; falling back to the asset ref
-     * then would be actively wrong, because that key can match a *different* trade of the same asset (an item
+     * **A `tradeid` first.** It is the row's identity — the backend states it on the watch entry, and the
+     * offer axis reads it off an accepted offer — so the join is exact and costs nothing.
+     *
+     * **When the id is known and the window carries no row, ask Steam for that one trade** (bounded by
+     * [TargetedReadBudget]). That case used to end the axis for the deal: the row is simply older than
+     * `max_trades`, or Steam no longer lists the offer at all, and neither resolves itself — so the deal
+     * reported nothing on the history axis for as long as it lived, which is invisible from the backend's
+     * side. Falling back to the asset ref instead would be actively wrong, because that key can match a
+     * *different* trade of the same asset (an item
      * returns under its original id after a rollback and may be sold again).
      *
      * The asset ref is the fallback for a deal with **no** trade id: an offer Steam no longer lists, or one
@@ -2849,10 +2879,32 @@ class TradeTrackerLoop(
         deal: TrackedDeal,
         transfers: List<SteamTransfer>,
         offer: SteamOfferSnapshot?,
+        credential: SteamCredential,
         uncorrelated: MutableSet<DealId>,
+        targetedReads: TargetedReadBudget,
     ): SteamTransfer? {
-        offer?.tradeId?.let { tradeId ->
+        // The BACKEND's id first, then the locally observed one. Both name the same trade while the offer is
+        // still listed; they part company after a rollback, and there the backend's is the trade it means.
+        // It is also the only id left for a deal whose offer Steam no longer lists at all — which is the
+        // second half of what the targeted read below can recover.
+        (deal.steamTradeId ?: offer?.tradeId)?.let { tradeId ->
             TransferCorrelation.selectByTradeId(transfers, tradeId)?.let { return it }
+            // The row is outside the window (or the window was empty), and this deal's trade is known by id —
+            // so ask Steam for that one trade instead of giving up on the axis. Same shape as the offer
+            // axis's bulk→targeted fallback, and the SAME pure selector runs over the answer: it may carry
+            // the rollback partner alongside, and taking the wrong row reports a reversal as a completion.
+            if (targetedReads.take()) {
+                val targeted = runCatching { steamReader.transfersByTradeId(credential, tradeId) }.getOrElse {
+                    emit(LifecycleEvent.SteamReadFailed("history-trade", it.redactedSummary()))
+                    null
+                }
+                if (targeted != null) {
+                    TransferCorrelation.selectByTradeId(targeted, tradeId)?.let { return it }
+                }
+                uncorrelated += deal.dealId
+                emit(LifecycleEvent.HistoryCorrelationMiss(deal.dealId.value, transfers.size, refetched = false, targeted = true))
+                return null
+            }
             uncorrelated += deal.dealId
             emit(LifecycleEvent.HistoryCorrelationMiss(deal.dealId.value, transfers.size, refetched = false))
             return null

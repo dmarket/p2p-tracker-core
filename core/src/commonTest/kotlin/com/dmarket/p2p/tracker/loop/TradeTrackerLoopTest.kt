@@ -1437,6 +1437,113 @@ class TradeTrackerLoopTest {
     }
 
     @Test
+    fun a_row_outside_the_window_is_recovered_by_the_targeted_read() = runTest {
+        // The bite this fallback exists for: the seller's own later trades push the deal's row out of the
+        // 50-row window, so the windowed read stops carrying it — permanently, since nothing brings an aged
+        // row back. The deal's history axis then reported nothing at all for the rest of its life.
+        val tradeId = TradeId("trade-out-of-window")
+        val row = SteamTransfer(
+            partnerSteamId = SteamId(PARTNER),
+            assetIds = setOf(AssetId("asset-77")),
+            status = 3,
+            tradeId = tradeId,
+            initiatedAt = Instant.fromEpochSeconds(1_781_697_600),
+        )
+        val reader = FakeSteamReadClient(initialTransfers = emptyList()).apply {
+            offers = mapOf(OfferId("offer-1") to 3)
+            offerTradeIds = mapOf(OfferId("offer-1") to tradeId)
+            transfersByTradeId = mapOf(tradeId to listOf(row))
+        }
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(historyTracked.copy(steamOfferId = OfferId("offer-1"))),
+                ttlSeconds = 60,
+            ),
+        )
+        loop(marketplace = mp, reader = reader, eventObserver = events).runOnce()
+
+        assertEquals(listOf(tradeId), reader.tradeIdsQueried, "one read, for the one trade we could not see")
+        assertEquals(
+            listOf(3),
+            mp.tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode },
+        )
+        assertTrue(events.events.none { it is LifecycleEvent.HistoryCorrelationMiss }, "nothing was missed")
+        assertEquals(0, mp.getDealCalls, "the id join never costs a deal read")
+    }
+
+    @Test
+    fun the_backend_states_the_trade_id_when_steam_no_longer_lists_the_offer() = runTest {
+        // The other bite, and the reason the id is taken from the WATCH ENTRY first: an offer Steam no longer
+        // lists leaves no local id at all, so this case used to fall through to the asset-ref join — the one
+        // that can match a different trade of the same asset after a rollback.
+        val tradeId = TradeId("trade-from-backend")
+        val row = SteamTransfer(
+            partnerSteamId = SteamId(PARTNER),
+            assetIds = setOf(AssetId("asset-77")),
+            status = 12,
+            tradeId = tradeId,
+            initiatedAt = Instant.fromEpochSeconds(1_781_697_600),
+            modifiedAt = Instant.fromEpochSeconds(1_781_697_600),
+        )
+        val reader = FakeSteamReadClient(initialTransfers = emptyList()).apply {
+            transfersByTradeId = mapOf(tradeId to listOf(row))
+        }
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(historyTracked.copy(steamTradeId = tradeId)),
+                ttlSeconds = 60,
+            ),
+        )
+        loop(marketplace = mp, reader = reader).runOnce()
+
+        assertEquals(listOf(tradeId), reader.tradeIdsQueried)
+        assertEquals(
+            listOf(12),
+            mp.tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode },
+        )
+        assertEquals(0, mp.getDealCalls, "no asset-ref fallback was needed, so no deal read was spent")
+    }
+
+    @Test
+    fun the_targeted_read_is_capped_per_cycle_and_retried_on_the_next() = runTest {
+        // Bounded per CYCLE, deliberately not latched per deal. A history 12 is withheld until its actor
+        // resolves, and that can only resolve on another read — so a deal that missed this cycle's budget has
+        // to be able to try again, while one wake must not become a burst against Steam.
+        val deals = (1..4).map { n ->
+            historyTracked.copy(dealId = DealId("deal-$n"), steamTradeId = TradeId("trade-$n"))
+        }
+        val reader = FakeSteamReadClient(initialTransfers = emptyList())
+        val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(activeTracking = deals, ttlSeconds = 60))
+        val l = loop(marketplace = mp, reader = reader)
+
+        l.runOnce()
+        assertEquals(3, reader.transfersByTradeIdCalls, "the configured per-cycle allowance, not one per deal")
+
+        l.runOnce()
+        assertEquals(6, reader.transfersByTradeIdCalls, "the next cycle brings a fresh allowance")
+    }
+
+    @Test
+    fun a_failed_targeted_read_says_so_and_leaves_the_deal_uncorrelated() = runTest {
+        val reader = FakeSteamReadClient(initialTransfers = emptyList()).apply { transfersByTradeIdThrows = true }
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(historyTracked.copy(steamTradeId = TradeId("trade-1"))),
+                ttlSeconds = 60,
+            ),
+        )
+        loop(marketplace = mp, reader = reader, eventObserver = events).runOnce()
+
+        val failed = events.events.filterIsInstance<LifecycleEvent.SteamReadFailed>().single()
+        assertEquals("history-trade", failed.axis, "named apart from the windowed read, which succeeded")
+        val miss = events.events.filterIsInstance<LifecycleEvent.HistoryCorrelationMiss>().single()
+        assertTrue(miss.targeted, "the miss records that the single-trade read was tried too")
+        assertTrue(mp.tradeStatusReports.none { it.source == TradeStatusSource.HISTORY })
+    }
+
+    @Test
     fun a_history_watched_deal_that_correlates_to_nothing_re_keys_once_then_says_so() = runTest {
         // A wrong join key used to silence a deal's history axis for the life of the worker: the value is
         // cached, never re-validated, and `select` returning null was indistinguishable from "no transfer

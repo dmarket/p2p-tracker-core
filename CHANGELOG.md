@@ -13,17 +13,13 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Added
 
-- Directives the client refuses are now reported on `/trade-actions` as `unsupported` (unknown
-  action) or `malformed` (unusable payload), releasing the device lease instead of being re-served
-  every heartbeat.
+- Refused directives are reported as `unsupported` / `malformed`, releasing their lease.
+- Targeted single-trade history read when the windowed read has no row for a deal.
 
 ### Changed
 
-- Offer states `8 InvalidItems` and `10 CanceledBySecondFactor` are decisive transitions, so a
-  `proof_required` deal now proves them instead of having the closure refused.
-- A decisive report is withheld only while a verdict on its proof is still coming. When none can
-  arrive — no prover, prover parked, budget spent — the raw code is reported once, unproven, instead
-  of being withheld indefinitely.
+- Offer states 8 and 10 are decisive transitions.
+- A decisive closure no proof can cover is reported once, unproven, instead of withheld.
 
 ## [1.0.0-beta.1] - 2026-09-04
 

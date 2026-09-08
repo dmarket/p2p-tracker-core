@@ -122,7 +122,7 @@ sealed interface LifecycleEvent {
      * A Steam read axis threw and its result was substituted with an empty read for this cycle. Auth
      * failures self-heal via the refreshing read client / re-login signal; this surfaces a *persistent*
      * non-auth failure (5xx, parse error) that would otherwise produce silent no-op ticks. [axis] =
-     * `offer`/`history`; [reason] is the failure message.
+     * `offer`/`history`/`history-trade` (the single-trade fallback read); [reason] is the failure message.
      */
     data class SteamReadFailed(val axis: String, val reason: String? = null) : LifecycleEvent
 
@@ -136,8 +136,13 @@ sealed interface LifecycleEvent {
      * signal it is indistinguishable from a deal that is merely still in flight, from a deduped code, and
      * from an aborted cycle. [rows] is how many rows the read returned; [refetched] says whether the deal's
      * cached asset id was discarded and re-read from the backend in response.
+     *
+     * [targeted] says the miss survived a **single-trade** read as well — the deal's trade was known by id,
+     * Steam was asked about that one trade, and it still produced no row. That is a materially stronger
+     * statement than a miss in the windowed read, which is satisfied by the row merely having aged out.
      */
-    data class HistoryCorrelationMiss(val dealId: String, val rows: Int, val refetched: Boolean) : LifecycleEvent
+    data class HistoryCorrelationMiss(val dealId: String, val rows: Int, val refetched: Boolean, val targeted: Boolean = false) :
+        LifecycleEvent
 
     /**
      * The deal read that supplies the history axis's join key (`GET /p2p/deals/{id}`) failed, so the deal's
