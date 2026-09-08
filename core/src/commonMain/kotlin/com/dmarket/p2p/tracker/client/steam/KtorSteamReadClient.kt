@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
@@ -86,6 +87,17 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
             parameter(endpoints.paramMaxTrades, maxTrades)
             parameter(endpoints.paramGetDescriptions, 0)
         }.bodyAsText()
+        return SteamReadResponses.transfers(responseText)
+    }
+
+    override suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer> {
+        val responseText = httpClient.get("${'$'}{endpoints.steamApiBaseUrl}${'$'}{endpoints.getTradeStatusPath}") {
+            parameter(endpoints.paramAccessToken, credential.token)
+            parameter(endpoints.paramTradeId, tradeId.value)
+            parameter(endpoints.paramGetDescriptions, 0)
+        }.bodyAsText()
+        // The SAME parser as the windowed read: `GetTradeStatus` answers with the `GetTradeHistory` row shape
+        // under the same wrapper, so a second decoder here would be a second thing to keep in step with Steam.
         return SteamReadResponses.transfers(responseText)
     }
 }

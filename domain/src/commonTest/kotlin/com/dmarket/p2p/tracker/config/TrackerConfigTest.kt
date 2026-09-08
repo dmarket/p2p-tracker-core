@@ -64,6 +64,9 @@ class TrackerConfigTest {
         // Steam endpoints + scrape
         assertEquals("https://api.steampowered.com", defaults.steamEndpoints.steamApiBaseUrl)
         assertEquals(50, defaults.steamEndpoints.historyMaxTrades)
+        assertEquals("/IEconService/GetTradeStatus/v1/", defaults.steamEndpoints.getTradeStatusPath)
+        assertEquals("tradeid", defaults.steamEndpoints.paramTradeId)
+        assertEquals(3, defaults.steamEndpoints.targetedTradeReadsPerCycle)
         assertEquals("steamLoginSecure", defaults.steamScrape.steamSessionCookieName)
         // Marketplace scrape
         assertEquals("dm-trade-token", defaults.marketplaceScrape.cookieName)

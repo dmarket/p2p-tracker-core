@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.port.steam
 
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
@@ -32,4 +33,19 @@ interface SteamReadClient {
      * a deal whose offer Steam no longer lists (see [SteamTransfer]).
      */
     suspend fun recentTransfers(credential: SteamCredential, maxTrades: Int): List<SteamTransfer>
+
+    /**
+     * The transfer rows Steam holds for the single trade [tradeId] (`GetTradeStatus`) — the per-deal fallback
+     * for a watched deal whose row the windowed [recentTransfers] did not cover, mirroring the offer axis's
+     * bulk→targeted shape.
+     *
+     * **Returns rows, not a row**, and that is deliberate: Steam may answer with the rollback partner
+     * alongside the trade asked for, and the order is undocumented. Selecting among them stays in the pure
+     * correlation (`TransferCorrelation.selectByTradeId`), which keys on the id — a single-transfer signature
+     * would have to pick here, and picking wrong reports a reversal as a completion.
+     *
+     * An empty list means Steam knows nothing of that trade (the same reading [recentTransfers] gives an
+     * absent row); a read failure throws, so the axis fails closed rather than reporting a wrong code.
+     */
+    suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer>
 }

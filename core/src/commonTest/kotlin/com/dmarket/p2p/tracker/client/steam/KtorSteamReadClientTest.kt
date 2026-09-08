@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import kotlin.time.Instant
 
 class KtorSteamReadClientTest {
@@ -211,6 +212,40 @@ class KtorSteamReadClientTest {
 
     /** The captured live payload of a real trade-protection rollback (two records per reverted trade). */
     private suspend fun liveHistory() = steamClient(fixture("steam_trade_history.json")).recentTransfers(credential, maxTrades = 50)
+
+    @Test
+    fun the_targeted_read_asks_for_one_trade_and_shares_the_row_parser() = runTest {
+        // Two things at once, because they are the same claim: the request names the single trade, and the
+        // response goes through the SAME mapper as the windowed read — `GetTradeStatus` answers with the
+        // `GetTradeHistory` row shape, so a second decoder here would be a second thing to keep in step.
+        val endpoints = SteamEndpointsConfig()
+        var query: String? = null
+        val engine = MockEngine { request ->
+            query = request.url.encodedQuery
+            respond(
+                content = fixture("steam_trade_history.json"),
+                headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()),
+            )
+        }
+        val rows = KtorSteamReadClient(httpClient = createHttpClient(engine), endpoints = endpoints)
+            .transfersByTradeId(credential, TradeId("731422815690175777"))
+
+        assertTrue(query!!.contains("${endpoints.paramTradeId}=731422815690175777"), query!!)
+        assertTrue(query!!.contains("${endpoints.paramAccessToken}="), "the read is authorised by the device token")
+        assertEquals(listOf(3, 3, 12, 12, 3), rows.map { it.status }, "same parser, same rows")
+    }
+
+    @Test
+    fun the_targeted_read_returns_every_row_steam_answered_with() = runTest {
+        // Rows, not a row. Steam may answer with the rollback partner alongside the trade asked for, and the
+        // order is undocumented — so picking one here would risk reporting a reversal as a completion. The
+        // choice belongs to the pure correlation, which keys on the id.
+        val rows = steamClient(fixture("steam_trade_history.json"))
+            .transfersByTradeId(credential, TradeId("731422815690175777"))
+
+        assertTrue(rows.size > 1, "the caller sees the whole answer")
+        assertTrue(rows.any { it.rollbackTradeId == TradeId("731422815690175777") }, "including the partner row")
+    }
 
     @Test
     fun recent_transfers_maps_each_trade_to_its_raw_status_in_payload_order() = runTest {

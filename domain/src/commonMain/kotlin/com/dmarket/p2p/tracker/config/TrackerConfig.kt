@@ -893,15 +893,39 @@ data class SteamEndpointsConfig(
      * argument after it onto the wrong field. New parameters are therefore appended, never inserted.
      */
     val paramGetReceivedOffers: String = "get_received_offers",
-    // NB: `GetTradeStatus` — the history axis's proven notary read — is deliberately NOT a field here. It is
-    // never called on the polling path (`TrackedDeal.watches` maps a `GetTradeStatus` watch onto
-    // [getTradeHistoryPath] like any other history watch), and the read it serves is spelled out once, in
-    // `NotaryConfig.historyReadPathTemplate`. A field here would be a second spelling with no reader.
-    //
-    // Consequence worth knowing: on the history axis the POLLED read and the PROVEN read are different
-    // endpoints — the reported code comes from a `GetTradeHistory` row, the proven one from `GetTradeStatus`.
-    // They share a row shape, but they are two reads at two moments, so a code that advances in between is
-    // reported as one value and proven as another.
+    /**
+     * The single-trade history read, `GetTradeStatus`, used as the per-deal fallback when a watched deal's
+     * row is not in the windowed [getTradeHistoryPath] result — the same bulk→targeted shape the offer axis
+     * already has.
+     *
+     * Two reads of one axis, deliberately: the windowed one answers for every watched deal in a single call
+     * and is what the cadence is built around, and this one answers for the deals that call could not cover
+     * (a row pushed out by [historyMaxTrades], or an offer Steam no longer lists). Without it those deals
+     * report nothing at all on the history axis, indefinitely and silently.
+     *
+     * It is also the read the history-axis proof witnesses (`NotaryConfig.historyRead`), which is a second
+     * spelling of the same endpoint and stays that way: that template carries reveal paths and a token
+     * placeholder that belong to the proof binding, not to a polled read.
+     *
+     * ⚠️ Never executed live at the time of writing. Two things to confirm on the first real fallback: that
+     * the endpoint accepts a user `access_token` (every other read here does) rather than a publisher key,
+     * and that the row shape matches [getTradeHistoryPath]'s — the parser is shared, so a drift throws and
+     * the axis fails closed rather than reporting a wrong code.
+     *
+     * Appended last, like its siblings, because the generated `copy()` a JS host calls is positional.
+     */
+    val getTradeStatusPath: String = "/IEconService/GetTradeStatus/v1/",
+    /** Query parameter naming the single trade for [getTradeStatusPath]. */
+    val paramTradeId: String = "tradeid",
+    /**
+     * How many targeted [getTradeStatusPath] reads one cycle may spend, across all deals.
+     *
+     * A bound rather than a rate: the fallback fires per uncorrelated deal, and a client that has been away
+     * long enough for the window to move can have several at once. The cap keeps that from turning one wake
+     * into a burst against Steam; the deals it does not reach are simply retried on the next cycle, which is
+     * where they already were.
+     */
+    val targetedTradeReadsPerCycle: Int = 3,
 ) {
     init {
         SteamHosts.requireAllowed(steamApiBaseUrl, SteamHosts.API, "steamApiBaseUrl")
@@ -910,11 +934,12 @@ data class SteamEndpointsConfig(
         SteamHosts.requireAllowed(storeBaseUrl, SteamHosts.WEB, "storeBaseUrl")
         // The bases alone are not enough: every read below is `steamApiBaseUrl + <path>`, and a path can
         // move the effective host (`"@evil.example.com/"` turns the checked base into userinfo). These
-        // six are the paths that carry the Steam JWT as a query parameter, so each is checked as composed.
+        // are the paths that carry the Steam JWT as a query parameter, so each is checked as composed.
         listOf(
             "getTradeOfferPath" to getTradeOfferPath,
             "getTradeOffersPath" to getTradeOffersPath,
             "getTradeHistoryPath" to getTradeHistoryPath,
+            "getTradeStatusPath" to getTradeStatusPath,
             "getPlayerSummariesPath" to getPlayerSummariesPath,
             "getSteamLevelPath" to getSteamLevelPath,
             "getSteamNotificationsPath" to getSteamNotificationsPath,

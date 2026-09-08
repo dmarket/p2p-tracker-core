@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.createHttpClient
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeCredentialVault
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
@@ -65,6 +66,21 @@ class RefreshingSteamReadClientTest {
         )
 
         val result = client.recentTransfers(fakeSteamCredential(token = "old"), maxTrades = 50)
+
+        assertTrue(result.isEmpty())
+        assertEquals(1, scraper.scrapeCalls)
+    }
+
+    @Test
+    fun the_targeted_trade_read_retries_once_after_401() = runTest {
+        // Every Steam read has to be wrapped, not just the ones that existed when the wrapper was written: a
+        // read left outside it fails on the first expired token and takes its axis dark until the next
+        // scrape happens for some other reason.
+        val (client, scraper) = buildRefreshing(
+            listOf(HttpStatusCode.Unauthorized to "", HttpStatusCode.OK to """{"response": {}}"""),
+        )
+
+        val result = client.transfersByTradeId(fakeSteamCredential(token = "old"), TradeId("7449336145712407"))
 
         assertTrue(result.isEmpty())
         assertEquals(1, scraper.scrapeCalls)

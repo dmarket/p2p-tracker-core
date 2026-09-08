@@ -212,6 +212,23 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         if (recentTransfersThrows) error("simulated recentTransfers failure")
         return transfers
     }
+
+    /**
+     * Rows the targeted single-trade read answers with, per `tradeid`. Deliberately a SEPARATE map from
+     * [transfers]: the whole point of the fallback is a row the windowed read does not carry, so a test that
+     * shared one map could not express the case at all.
+     */
+    var transfersByTradeId: Map<TradeId, List<SteamTransfer>> = emptyMap()
+    var transfersByTradeIdCalls = 0
+    var transfersByTradeIdThrows = false
+    val tradeIdsQueried = mutableListOf<TradeId>()
+
+    override suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer> {
+        transfersByTradeIdCalls++
+        tradeIdsQueried += tradeId
+        if (transfersByTradeIdThrows) error("simulated transfersByTradeId failure")
+        return transfersByTradeId[tradeId].orEmpty()
+    }
 }
 
 // ---- FakeSteamNotificationReader ---------------------------------------------------------------

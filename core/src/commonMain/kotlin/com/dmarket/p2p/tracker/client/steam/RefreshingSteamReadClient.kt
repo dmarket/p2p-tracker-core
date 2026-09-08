@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.client.steam
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
@@ -30,6 +31,9 @@ class RefreshingSteamReadClient(private val delegate: SteamReadClient, private v
 
     override suspend fun recentTransfers(credential: SteamCredential, maxTrades: Int): List<SteamTransfer> =
         withRefreshRetry(credential) { delegate.recentTransfers(it, maxTrades) }
+
+    override suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer> =
+        withRefreshRetry(credential) { delegate.transfersByTradeId(it, tradeId) }
 
     // ---- private -----------------------------------------------------------------------------------
 
