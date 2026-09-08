@@ -157,41 +157,63 @@ jobs:
               exit 1
             fi
 
-            # --- Idempotency guard: never re-publish an existing version (also loop-safe). ---
-            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-              echo "$NAME@$VERSION already on npm — nothing to do."
-              exit 0
-            fi
-
             # --- Changelog guard: a stable release must have a matching CHANGELOG section. ---
             if [ "$IS_SNAPSHOT" = "false" ] && ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
               echo "ERROR: CHANGELOG.md is missing a '## [$VERSION]' section for this stable release." >&2
               exit 1
             fi
 
-            # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
-            NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
-            export NPM_ID_TOKEN
-            (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
-            echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
+            # --- Idempotency: skip the PUBLISH, not the job. ---
+            # Skipping the whole job here is what a re-run after a partial failure would hit: npm has the
+            # version, so the tag and Release below would never be created for it — and there is no second
+            # chance, because this same guard fires on every later attempt. So each step decides for itself
+            # whether its own artefact already exists, and an approved release converges on a published
+            # version WITH its tag however many times it is run.
+            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION already on npm — skipping the publish."
+            else
+              # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
+              NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
+              export NPM_ID_TOKEN
+              (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
+              echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
+            fi
 
             # --- Stable releases: annotated tag + GitHub Release from the changelog section. ---
+            #
+            # The tag is minted HERE, downstream of `hold_release`, and that is the point rather than an
+            # implementation detail: a tag is the durable public statement that a version was released, so it
+            # must not exist for a release nobody approved. Nothing earlier in this pipeline creates one.
             if [ "$IS_SNAPSHOT" = "false" ]; then
               git config user.name "circleci-bot"
               git config user.email "ci@dmarket.com"
-              git tag -a "v$VERSION" -m "Release v$VERSION"
-              git push "https://x-access-token:${GITHUB_TOKEN}@github.com/dmarket/p2p-tracker-core.git" "v$VERSION"
+              # Own idempotency, like the publish above: on a re-run the tag may already be pushed while the
+              # Release below is not, and `git tag` would fail the job before that could be repaired.
+              if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
+                echo "Tag v$VERSION already exists — skipping the tag."
+              else
+                git tag -a "v$VERSION" -m "Release v$VERSION"
+                git push "https://x-access-token:${GITHUB_TOKEN}@github.com/dmarket/p2p-tracker-core.git" "v$VERSION"
+                echo "Created git tag v$VERSION."
+              fi
 
               awk "/^## \[$VERSION\]/{f=1;next} /^## \[/{f=0} /^\[[^]]*\]:/{f=0} f" CHANGELOG.md >/tmp/notes.md
               # A hyphenated version is a SemVer prerelease (e.g. 1.0.0-beta.1) — flag the GitHub
               # Release as one. A plain x.y.z stays a full release.
               node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:v.includes("-")}))' >/tmp/release.json
-              curl -sSf -X POST \
+              if curl -sSf -o /dev/null \
                 -H "Authorization: token ${GITHUB_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
-                https://api.github.com/repos/dmarket/p2p-tracker-core/releases \
-                -d @/tmp/release.json
-              echo "Created git tag v$VERSION and GitHub Release."
+                "https://api.github.com/repos/dmarket/p2p-tracker-core/releases/tags/v$VERSION" 2>/dev/null; then
+                echo "GitHub Release v$VERSION already exists — nothing to create."
+              else
+                curl -sSf -X POST \
+                  -H "Authorization: token ${GITHUB_TOKEN}" \
+                  -H "Accept: application/vnd.github+json" \
+                  https://api.github.com/repos/dmarket/p2p-tracker-core/releases \
+                  -d @/tmp/release.json
+                echo "Created GitHub Release v$VERSION."
+              fi
             fi
 
   # TODO(Maven Central): when Android/iOS targets land, apply com.vanniktech.maven.publish and add a
