@@ -482,9 +482,9 @@ exception living in a dev module.
   ```
 
   Ships as an ES module with bundled TypeScript types (`.d.ts`); the package entry is
-  `p2p-tracker-core.mjs`. The `latest` dist-tag is the current **beta** line (`1.0.0-beta.1`), so a
+  `p2p-tracker-core.mjs`. The `latest` dist-tag is the current **beta** line (`1.0.1-beta`), so a
   plain `npm install` resolves it; because a SemVer prerelease is not matched by a caret range, pin
-  it explicitly (`"@dmarket/p2p-tracker-core": "1.0.0-beta.1"`) rather than `^1.0.0`. Development
+  it explicitly (`"@dmarket/p2p-tracker-core": "1.0.1-beta"`) rather than `^1.0.1`. Development
   builds continue to publish under the `snapshot` dist-tag
   (`npm install @dmarket/p2p-tracker-core@snapshot`).
 - **Android / JVM:** `implementation("com.dmarket.p2p:trade-tracker-core:<version>")`
