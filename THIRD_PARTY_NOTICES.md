@@ -23,18 +23,16 @@ optional TLSNotary proof path.
 
 **Provenance.** Produced by the `dmarket/steam-provenance` project, which embeds
 [TLSNotary](https://github.com/tlsnotary/tlsn) (`dep/tlsn`). These bytes were **not** pulled from a
-package registry. Unlike every earlier refresh, they are **not** a CI artifact either: this one was
-built locally (`make wasm-artifact`) from a clean checkout of `main`, with the toolchain that
-repository pins, because the CI artifact then in use had been built from an unmerged branch that had
-diverged from `main` — and the prover must agree with the deployed notary, which is built from `main`.
-`BUILD_NUM` / `BUILD_URL` therefore read `local`, and `DOCKER_VERSION` carries the `dev-` prefix the
-packaging script uses off-CI so a manual build can never be mistaken for a pipeline one.
+package registry: they are a CI artifact of that repository's `build_wasm_client` job, built from
+`main` with the toolchain it pins. The prover must agree with the deployed notary, which is built from
+the same branch.
 
 | Field | Value |
 |---|---|
-| Artifact | `client-wasm-dev-99e090a.tgz` |
+| Artifact | `client-wasm-steam-provenance-main-99e090a-728.tgz` |
 | `GIT_SHA` | `99e090a347a235ccaa5d1bc790d69a55283cca44` (`main`) |
-| `TLSN_SUBMODULE_SHA` | `8bb356ad3a657096cbfad50baa46ec28c7ce2d62` |
+| `BUILD_NUM` / `BUILD_URL` | `728` / `https://circleci.com/gh/dmarket/steam-provenance/728` |
+| `TLSN_SUBMODULE_SHA` | `unknown` — the CI packaging does not record it; read the pinned `dep/tlsn` revision from that build |
 | `CLIENT_WASM_VERSION` / `TRANSPORT_VERSION` | `0.1.0` / `0.2.0` |
 | Notary subprotocol | `tlsn.notary.v2` |
 
@@ -51,19 +49,19 @@ cd vendor/tlsn && shasum -a 256 -c SHA256SUMS
 The WASM binary itself:
 
 ```
-SHA-256 (pkg/client_wasm_bg.wasm) = b51b8ec6994d95bb01b18efe0822ee2c215f3ce688716766cdb8cc403a54443e
+SHA-256 (pkg/client_wasm_bg.wasm) = 2b8f09b69d7b7f9638381aebf4105e20d189a52092430877005ad31b5e390a35
 ```
 
-A prebuilt binary is not auditable by reading the diff. Before the notary path is enabled for
-production, this digest should be checked in CI against a reproducible `wasm-pack`
-rebuild from the pinned upstream revision — a tampered artifact would run MPC code with access to the
-device `steamLoginSecure` cookie and the notary bearer token.
+The same value is stated in [`vendor/tlsn/SHA256SUMS`](vendor/tlsn/SHA256SUMS) and as `WASM_SHA256` in
+[`VERSION`](vendor/tlsn/VERSION). All three must agree; if they do not, trust none of them.
 
-That check is now within reach, and this refresh is a step towards it rather than the check itself:
-`RUSTC_VERSION` in [`VERSION`](vendor/tlsn/VERSION) came out byte-identical to the CI artifact's
-(`rustc 1.98.0-nightly (13f1859f2 2026-06-27)`), which is what the upstream toolchain pin exists to
-guarantee. It does **not** establish reproducibility, because this build is of a *different* commit
-than the artifact it replaces — proving that would take rebuilding one same commit twice.
+**What that check does and does not prove.** A prebuilt binary is not auditable by reading the diff,
+and `shasum -c` compares the vendored tree against a manifest committed beside it — it catches
+corruption in transit or in the tree, not substitution by anyone who can commit both. Establishing
+that these bytes are what the pinned upstream revision compiles to still requires a reproducible
+`wasm-pack` rebuild from that revision, checked in CI. That check does not exist yet, and it is the
+gap that matters here: a tampered artifact would run MPC code with access to the device Steam access
+token and the notary bearer token.
 
 **License — `Apache-2.0 OR MIT`.** The upstream TLSNotary project declares that all of its crates are
 licensed under **either** the Apache License, Version 2.0 **or** the MIT license, at your option. The
