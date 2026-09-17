@@ -1930,6 +1930,42 @@ class TradeTrackerLoopTest {
         assertTrue(progress.loadDirectiveOutcomes().isEmpty())
     }
 
+    @Test
+    fun a_failed_cancel_reports_steams_own_reason_not_a_flat_string() = runTest {
+        // The give-up budget on the backend is fixed and small, so the `error` on a FAILED cancel is the
+        // only thing that can tell "this offer is already gone, stop asking" apart from "a 5xx, ask again".
+        // The port authors the string (`failOnRefusal` → "Steam cancel refused with EResult <n>"); this
+        // pins that the loop forwards it instead of flattening every cause to one word.
+        val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("Steam cancel refused with EResult 26"))
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective()), ttlSeconds = 60),
+        )
+        loop(marketplace = mp, canceller = canceller, directivesEnabled = true).runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.FAILED, outcome.status)
+        // The exception CLASS rides along too — it is what separates a Steam refusal from a transport throw.
+        assertEquals("IllegalStateException: Steam cancel refused with EResult 26", outcome.error)
+    }
+
+    @Test
+    fun a_cancel_failure_reason_is_redacted_and_capped_like_every_other_outgoing_summary() = runTest {
+        // The reason is POSTed to DMarket and persisted, so it goes through the same scrubber as the create
+        // surface: a token in a Steam error message must not ride out of the core inside a directive report.
+        val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("refused for access_token=supersecret"))
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective()), ttlSeconds = 60),
+        )
+        loop(marketplace = mp, canceller = canceller, directivesEnabled = true).runOnce()
+
+        val error = mp.directiveOutcomes.single().error
+        assertNotNull(error)
+        // Asserted positively, not just as the absence of the secret: "the reason was dropped entirely"
+        // also contains no secret, so a negative-only assertion would pass against the very bug this
+        // covers. The scrubbed reason must ARRIVE, with the secret replaced in place.
+        assertEquals("IllegalStateException: refused for access_token=<redacted>", error)
+    }
+
     // ---- report_inventory ------------------------------------------------------------------
 
     private fun inventoryDirective(id: String = "dir-inv", vararg assetIds: String = arrayOf("a1", "a2")) = Directive(

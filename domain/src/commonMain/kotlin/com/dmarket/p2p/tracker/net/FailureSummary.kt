@@ -5,7 +5,8 @@ package com.dmarket.p2p.tracker.net
  * has to be described in a string that **leaves the core**:
  * - `LifecycleEvent.SteamReadFailed.reason` / `DirectiveReportFailed.reason` → the host (and, on the web
  *   target, its crash reporter),
- * - a `create_offer` directive outcome's `error` → POSTed to DMarket, persisted, and handed to the web page.
+ * - a `create_offer` / `cancel_offer` directive outcome's `error` → POSTed to DMarket, persisted, and (for
+ *   the create) handed to the web page.
  *
  * The core's own exceptions are already sanitized at the source (see
  * [com.dmarket.p2p.tracker.client.HttpStatusException] and the `exceptionsWithDebugInfo = false` posture in

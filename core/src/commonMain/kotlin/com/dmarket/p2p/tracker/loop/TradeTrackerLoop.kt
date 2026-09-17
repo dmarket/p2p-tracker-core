@@ -1901,10 +1901,19 @@ class TradeTrackerLoop(
                 WriteAttempt(countedOutOfBand = resendClaimedOutcome(verdict.claim, directive.directiveId) != null)
             },
         ) {
-            val status = runCatching { offerCanceller.cancelOffer(credential, offerId) }
-                .fold(onSuccess = { DirectiveStatus.SUCCESS }, onFailure = { DirectiveStatus.FAILED })
-            val cancelled = status == DirectiveStatus.SUCCESS
-            val outcome = directive.outcome(status, error = if (cancelled) null else "cancel failed")
+            // Steam's own (redacted) refusal travels with the FAILED outcome, exactly as it does on the
+            // create surface — the port goes out of its way to produce it (`failOnRefusal` throws
+            // "Steam cancel refused with EResult <n>", and a non-OK HTTP status throws its own sanitized
+            // summary), and a flat "cancel failed" threw all of it away. That string is the only thing the
+            // backend can tell two very different situations apart by: an offer Steam has already killed or
+            // cannot find — where re-leasing the directive can never succeed and the offer is not in fact
+            // dangling — versus a transport blip or a 5xx, where the next re-lease very likely works. Without
+            // it every failure looks identical, so the retries run out their fixed budget and the give-up
+            // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
+            val failure = runCatching { offerCanceller.cancelOffer(credential, offerId) }.exceptionOrNull()?.redactedSummary()
+            val cancelled = failure == null
+            val status = if (cancelled) DirectiveStatus.SUCCESS else DirectiveStatus.FAILED
+            val outcome = directive.outcome(status, error = failure)
             // Marked handled before the report leaves, which is what makes the deferred (batched) report safe:
             // a worker that dies in between re-sends the stored outcome instead of re-cancelling.
             //
