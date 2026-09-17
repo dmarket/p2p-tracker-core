@@ -13,12 +13,20 @@ updates:
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
-      # Kotlin, KSP and the Kotlin-adjacent toolchain move in lockstep and need a human: any bump here
-      # can change the emitted JS/.d.ts contract the extension pins against, and it outruns CodeQL's
-      # Kotlin extractor (the java-kotlin analysis goes dark until GitHub ships a matching bundle).
+      # Kotlin bumps are a deliberate hand-driven change here, never an automated one. Both reasons
+      # were measured on the 2.4.10 -> 2.4.20 bump this rule was written for:
+      #   - Codegen weight. 2.4.20 stopped minimizing member names, so every emitted member went from
+      #     `d4f_1` to `handlers_1`. The generated .d.mts stayed byte-identical — the public contract
+      #     is not what moves — but the ESM output grew ~11% and the extension's background bundle
+      #     32% (1.37 MB -> 1.82 MB, and again the same in the prover worker, which bundles the core
+      #     a second time). Those are property names, so a downstream bundler cannot mangle them back:
+      #     esbuild leaves them alone, and -Xir-minimized-member-names=true is accepted by 2.4.20 but
+      #     has no effect. The version pin is the only control.
+      #   - CodeQL. A fresh Kotlin outruns the java-kotlin extractor, and the whole analysis fails
+      #     with a configuration error until GitHub ships a bundle that supports that version.
       # All three update-types are listed because Kotlin does not version by SemVer: a feature release
       # bumps the third component by ten (2.4.10 -> 2.4.20), so it reads as a patch to Dependabot and
-      # slips past a major/minor-only filter. Bump Kotlin by hand instead.
+      # slips past a major/minor-only filter.
       - dependency-name: "org.jetbrains.kotlin*"
         update-types:
           - "version-update:semver-major"
