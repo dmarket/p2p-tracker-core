@@ -66,7 +66,7 @@ DMarket backend** — that audit boundary is why the clients are open-source.
 | **Targets** | JS (web extension — shipping) · iOS XCFramework · Android AAR *(both on request)* |
 | **Modules** | `:domain` (pure, zero-IO) · `:core` (IO + platform glue) · `:debug-harness` (dev-only, unpublished) |
 | **Backend contract** | `/exchange/v1/p2p/ext/` — heartbeat, trade-events, notary, trade-actions, inventory |
-| **Version** | `1.0.0-beta.1` |
+| **Version** | `1.0.1-beta` (source of truth: `VERSION_NAME` in `gradle.properties`) |
 | **Coverage gate** | `:domain` ≥70% (`koverVerify`), currently ~90%+ |
 | **HTTP** | Ktor multiplatform (OkHttp / Darwin / JS-fetch per target) |
 | **License** | MIT |
@@ -170,8 +170,8 @@ inputs through ports, calls the engine, and is then a *dumb executor* of the ret
   raw Steam codes (both axes) against the last-reported baseline (`ReportedStatus`) and emits a
   `ReportPlan` — one `TradeStatusReport` per **changed** axis (raw code, no verdict — the backend
   maps it) plus a `ProofIntent` when the deal is `proof_required` and the code is decisive
-  ([`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt):
-  offer 2/3/4/6/7, history 3/12).
+  ([`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt)
+  — see its KDoc for the enforced places and the codes that reach them).
 - [`ProofFreshness.due(tracking, progress)`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/ProofFreshness.kt)
   is the second, independent reason a proof is minted: the backend stamps a `prove_after`
   mark on a deal's watch entry when its protection hold expires, and releases the payout only against
@@ -347,9 +347,9 @@ pending DMarket security sign-off.
 
 ### TLSN proofs
 
-TLSN is **pending DMarket security review** — launch-blocking for production, but non-TLSN tracking
-is fully functional: v1 runs **client-reported mode** (no proofs) until the backend flips per-trade
-`proof_required`.
+TLSN proof generation ships behind a **host-supplied proving context** and stays inert until the
+backend flips per-trade `proof_required`. Tracking itself is fully functional and independent of it:
+a deal the backend has not flagged reports exactly as it would with no prover at all.
 
 **The notary is off unless the host supplies a proving context, and that is enforced in code, not by
 convention.** The real prover is selected on one condition: a host proof delegate. `TrackerConfig.notary
@@ -362,15 +362,16 @@ The prover ships inside the package (`vendor/tlsn/`, copied next to the library'
 but is `import()`ed **lazily on the first proof**, so a build that never enables it never loads the
 ~10 MB module. Bundling notes: [vendor/tlsn/INTEGRATION.md](vendor/tlsn/INTEGRATION.md).
 
-Proof routing is driven by `proof_required` + the **fixed decisive set** (offer
-2/3/6, history 12 —
-[`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt)),
-not a client capability. When a `proof_required` deal crosses a decisive transition, the loop asks
-[`NotaryProver.proveTransition(dealId, source, credential)`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/port/notary/NotaryProver.kt)
-for the proof and POSTs it to `/notary`. **MVP** uses
-[`NoOpNotaryProver`](core/src/commonMain/kotlin/com/dmarket/p2p/tracker/adapter/notary/NoOpNotaryProver.kt) —
-a **stub presentation**, so the flow runs end-to-end against the backend's mock verify until the
-real WASM prover (`dmarket/steam-provenance` — P-256, MaxConcurrency=2) is wired.
+Proof routing is driven by `proof_required` + the **fixed decisive set**
+([`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt)),
+not a client capability. That file's KDoc is the authoritative table of enforced places and the Steam
+codes that reach them; the codes are deliberately **not** restated here, because a second copy is what
+drifts — and this one had. When a `proof_required` deal crosses a decisive transition, the loop asks
+[`NotaryProver.proveTransition(binding, source, credential)`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/port/notary/NotaryProver.kt)
+for the proof and POSTs it to `/notary`. A build that supplies no proving context gets
+[`NoOpNotaryProver`](core/src/commonMain/kotlin/com/dmarket/p2p/tracker/adapter/notary/NoOpNotaryProver.kt)
+instead — a stub presentation, which the backend rejects rather than settling on an unproven
+settlement.
 
 ### Multi-game
 
@@ -764,7 +765,7 @@ and a default; substitute platform implementations as you enable iOS/Android.
 | `SteamOfferCreator` | **Create** a Steam trade for the buyer, stopping at `CreatedNeedsConfirmation` — never confirms. | `FetchSteamOfferCreator` / `NoOpSteamOfferCreator` |
 | `SteamOfferCanceller` | **Cancel** a sent offer (the only other write surface). | `FetchSteamOfferCanceller` / `NoOpSteamOfferCanceller` |
 | `SteamSessionRefresher` / `SteamWebSessionGateway` | Keep the `steamLoginSecure` web session alive in the background. | `DefaultSteamSessionRefresher` / `FetchSteamWebSessionGateway` · `NoOpSteamSessionRefresher` |
-| `NotaryProver` | Generate a TLSN proof for a decisive transition on a `proof_required` deal (`POST /notary`). | `NoOpNotaryProver` (MVP stub presentation) |
+| `NotaryProver` | Generate a TLSN proof for a decisive transition on a `proof_required` deal (`POST /notary`). | `DelegatingNotaryProver` when the host supplies a proving context · `NoOpNotaryProver` (stub presentation) otherwise |
 | `PushChannel` | Backend→client push wake-up (transport-agnostic). | `NoOpPushChannel` (poll-only) |
 
 ---
@@ -784,12 +785,12 @@ The whole point of the pure core is that the decision surface is testable with n
 
 ## Current limitations (v1)
 
-- **TLSN proofs** use a stub presentation (`NoOpNotaryProver`) against the backend's mock verify; the
-  real WASM prover and production rollout are gated on DMarket security review. v1 runs
-  client-reported mode until the backend flips per-trade `proof_required`.
-- **Directive execution is gated** by `directivesEnabled` (default `false`) until the backend
-  `device_id` Redis lease goes live; the create write surface is additionally pending DMarket
-  security sign-off.
+- **TLSN proof generation** ships behind a host-supplied proving context and stays inert until the
+  backend flips per-trade `proof_required`. A caller that supplies no proving context — mobile today,
+  and Firefox, which cannot host one — gets `NoOpNotaryProver` and runs client-reported.
+- **Directive execution** is off by default: `directivesEnabled` defaults to `false` on
+  `TradeTrackerCore.createLoop`, and the web facade (`Tracker.start`) enables it. The create write
+  surface is additionally pending DMarket security sign-off.
 - **Push** is poll-only by default; the lib parses payloads but owns no push transport (host-delivered
   via `deliverPush`).
 - **iOS / Android targets** are deferred (on request); the web extension is the shipping path.
