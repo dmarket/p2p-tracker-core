@@ -77,9 +77,14 @@ jobs:
       - checkout
       - run:
           # The vendored TLSN prover is a ~10 MB binary that review cannot inspect, and it is
-          # redistributed inside the npm package. Verify it against the digests published with the
-          # upstream artifact before anything builds or ships. A tampered prover would run MPC code with
-          # access to the device Steam cookie and a live DMarket token.
+          # redistributed inside the npm package. A tampered prover would run MPC code with access to
+          # the device Steam access token and a live DMarket token.
+          #
+          # BE PRECISE ABOUT WHAT THIS PROVES: SHA256SUMS is committed beside the bytes it describes,
+          # so this compares the vendored tree against its own manifest. It catches corruption in the
+          # tree or in transit; it does NOT catch substitution by anyone who can commit both. Proving
+          # these bytes are what the pinned upstream revision compiles to needs a reproducible rebuild,
+          # which does not exist yet (THIRD_PARTY_NOTICES.md is honest about the same gap).
           #
           # Also pins provenance: GIT_SHA must match the notary the prover talks to, because a
           # prover/notary version mismatch surfaces as an opaque MPC failure, not a clean error.
