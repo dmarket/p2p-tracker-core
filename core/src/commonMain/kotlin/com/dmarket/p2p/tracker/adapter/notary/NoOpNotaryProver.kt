@@ -11,8 +11,9 @@ import com.dmarket.p2p.tracker.port.notary.NotaryProver
  * The default [NotaryProver]: no real TLSN proof generation.
  *
  * [proveRead] returns a **stub** [ProofSubmission] with an empty payload — clearly not a valid TLSN
- * presentation — so the deal flow runs end-to-end against the backend's MVP mock verify while a production
- * backend with real verification rejects it rather than settling on a forged proof.
+ * presentation, so a backend that verifies proofs rejects it rather than settling on a forged one. That
+ * is why the payload is empty rather than plausible-looking: the fallback must not be able to launder an
+ * unproven settlement.
  *
  * Answers for every [ProvenReadKind] rather than only the trade axes, and does so without performing
  * anything: a stub for a write kind is a stub, not a Steam write. That is the correct behaviour for the

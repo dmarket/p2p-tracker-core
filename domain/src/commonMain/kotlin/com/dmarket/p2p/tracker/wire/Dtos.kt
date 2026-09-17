@@ -157,7 +157,7 @@ data class TradeStatusResultDto(
 @Serializable
 data class ReportTradeStatusResponseDto(@SerialName("results") val results: List<TradeStatusResultDto> = emptyList())
 
-// ---- POST /notary (SubmitProof — decisive set; impl-deferred for MVP) --------------------------
+// ---- POST /notary (SubmitProof — decisive set) -------------------------------------------------
 
 @Serializable
 data class SubmitProofRequestDto(

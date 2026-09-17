@@ -59,7 +59,8 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
      * [vault] + [scraper] and wraps [steamReader] in a [RefreshingSteamReadClient].
      *
      * [deviceId] supplies the install-scoped persistent `device_id` (the directive-lease key) — the
-     * host provides a persistent implementation. [notary] defaults to [NoOpNotaryProver] (MVP stub).
+     * host provides a persistent implementation. [notary] defaults to [NoOpNotaryProver] (stub — a host
+     * that supplies no proving context runs client-reported).
      * [offerCreator]/[offerCanceller]/[inventoryReader] default to no-ops; the web path injects real
      * ones. [vault] defaults to the lib-owned [platformCredentialVault] so the host never sees the
      * plaintext credential.

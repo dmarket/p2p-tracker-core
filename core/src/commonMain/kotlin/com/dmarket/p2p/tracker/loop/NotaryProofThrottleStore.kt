@@ -63,7 +63,7 @@ private fun StoredNotaryThrottleState.toDomain(): NotaryThrottleState = NotaryTh
  * wake — the behaviour this exists to stop.
  *
  * Restore is **lazy**, on first use rather than at construction, so a cycle that never reaches a proof intent
- * (every idle wake, and every wake at all while v1 runs client-reported with no `proof_required`) pays no
+ * (every idle wake, and every wake whose deals the backend has not flagged `proof_required`) pays no
  * storage read. Construct it **once per process** and inject it: the mutex is the atomicity primitive, so a
  * second instance would carry a second, independent lock. Storage failures never propagate — a cooldown that
  * lives only in memory still throttles this worker.

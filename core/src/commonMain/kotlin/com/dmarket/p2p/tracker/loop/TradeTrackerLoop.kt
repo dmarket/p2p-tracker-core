@@ -253,9 +253,10 @@ private const val ROLLBACK_STATUS = 12
  * identity from the Bearer token. There is no `account_id` anywhere in a request.
  *
  * @param deviceId supplies the install-scoped persistent `device_id` (the directive-lease key).
- * @param directivesEnabled the launch gate: keep `false` until the backend `device_id` Redis lease is
- *   live (until then the backend returns no directives anyway; this is belt-and-suspenders).
- * @param notary TLSN proof generator. Defaults to [NoOpNotaryProver] (MVP stub — client-reported).
+ * @param directivesEnabled whether the loop executes the directives the backend leases to this device.
+ *   Defaults to `false`, so a host opts in deliberately; the web facade (`Tracker.start`) enables it.
+ * @param notary TLSN proof generator. Defaults to [NoOpNotaryProver] (stub — client-reported) for a host
+ *   that supplies no proving context.
  * @param progress per-deal reported-code dedup + handled-directive single-flight; defaults to in-memory.
  * @param claims the deal-keyed guard in front of both non-idempotent Steam writes ([DealWriteGuard]), so
  *   one deal can never get two live offers however many times a caller asks. Must be a **single instance
@@ -2132,9 +2133,9 @@ class TradeTrackerLoop(
         // What earlier refusals taught about each deal's online-decryption budget.
         //
         // Read only when there is a proof to spend it on, unlike the ledger above — that read is unconditional
-        // because its stale-row prune rides it, and this one prunes on its own line below. While v1 runs
-        // client-reported (`proofRequired` off everywhere) `proofIntents` is always empty and no mark is
-        // stamped, so this is a storage round-trip per wake that nothing would ever consult.
+        // because its stale-row prune rides it, and this one prunes on its own line below. For a wake whose
+        // deals the backend has not flagged `proof_required`, `proofIntents` is empty and no mark is stamped,
+        // so an unconditional read would be a storage round-trip that nothing would ever consult.
         //
         // Topped up rather than assigned: the demand half above may already have loaded it, and the two mint
         // loops must share one map. `learnOnlineBudget` writes into it as it goes, because two axes of one
@@ -2222,7 +2223,7 @@ class TradeTrackerLoop(
                 proofUnprovable += intent
                 continue
             }
-            // Delivered but verified=false is terminal (the MVP mock verify always says false); resubmitting
+            // Delivered but verified=false is terminal — the backend has ruled on these bytes; resubmitting
             // the identical proof can't change the verdict, so latch it off. Either way it is emitted, because
             // "rejected once, forever" is the outcome least visible from the counters: it moves neither
             // proofsSubmitted nor the retry path.

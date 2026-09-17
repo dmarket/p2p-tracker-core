@@ -83,7 +83,8 @@ data class WasmProveRequest(
  * The thin, injectable seam over the steam-provenance wasm prover (`client-wasm`) + its WebSocket
  * transport (`client-wasm-transport`). Split out from [WasmNotaryProver] so the orchestration logic
  * (concurrency cap, base64 wrapping) is unit-testable with a fake module — the real MPC/notary
- * handshake is exercised only in steam-provenance's own e2e harness.
+ * handshake needs a live notary and is therefore not covered by this repo's tests, which is why the
+ * seam exists rather than being an untested integration gap someone should close.
  *
  * There is deliberately no `teardown()`: the wasm instance is process-wide — the ES module registry
  * keeps the namespace alive and re-initialising hands back the same instance — so dropping references

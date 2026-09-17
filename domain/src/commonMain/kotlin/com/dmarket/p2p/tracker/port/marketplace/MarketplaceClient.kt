@@ -36,8 +36,9 @@ interface MarketplaceClient {
     suspend fun reportTradeStatus(reports: List<TradeStatusReport>): List<TradeStatusResult>
 
     /**
-     * `POST /notary` — a TLSN proof for a decisive transition (decisive set only). Impl-deferred for
-     * MVP (client-reported); the backend's mock verify returns `verified=false` until DMA-109 lands.
+     * `POST /notary` — a TLSN proof for a decisive transition (decisive set only). The verdict is the
+     * backend's alone: a delivered `verified=false` is terminal for that transition, because
+     * resubmitting the identical presentation cannot change the answer.
      */
     suspend fun submitProof(proof: ProofSubmission): ProofResult
 

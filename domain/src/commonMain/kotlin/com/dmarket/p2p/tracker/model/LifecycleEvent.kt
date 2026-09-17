@@ -215,9 +215,10 @@ sealed interface LifecycleEvent {
      * before this event, which is why a deal that died to `"empty proof_payload"` — the backend naming the
      * exact defect — read here as an unexplained `verified=false`.
      *
-     * [prover] names which implementation produced the payload: `"noop"` submits an empty one BY DESIGN (no
-     * notary URL configured), `"tlsn"` ran a real MPC proof. Without it the two are indistinguishable, and
-     * they call for opposite responses — configure the client, versus investigate the proof.
+     * [prover] names which implementation produced the payload: `"noop"` submits an empty one BY DESIGN (the
+     * host supplied no proving context — the notary URL is non-null by default and is not the gate),
+     * `"tlsn"` ran a real MPC proof. Without it the two are indistinguishable, and they call for opposite
+     * responses — fix how the client is built, versus investigate the proof.
      */
     data class ProofSubmitted(
         val dealId: String,

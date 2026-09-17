@@ -67,9 +67,9 @@ interface NotaryProver {
      * Implementations resolve [kind] against `NotaryConfig.enabledReads` and fail loudly for a kind the
      * operator has not enabled, rather than silently proving something nobody asked for.
      *
-     * MVP: the default ([com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver]) returns a **stub** (empty
-     * payload), so the deal flow runs end-to-end against the backend's mock verify until a real prover is
-     * wired.
+     * The default ([com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver]) returns a **stub** (empty
+     * payload) for a host that supplies no proving context — clearly invalid, so a verifying backend
+     * refuses it rather than accepting an unproven settlement.
      */
     suspend fun proveRead(binding: ProvenReadBinding, kind: ProvenReadKind, credential: SteamCredential): ProofSubmission
 

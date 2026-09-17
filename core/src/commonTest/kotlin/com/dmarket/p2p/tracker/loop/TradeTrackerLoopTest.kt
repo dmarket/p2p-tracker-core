@@ -2178,7 +2178,7 @@ class TradeTrackerLoopTest {
         val l = loop(marketplace = mp, reader = reader, notary = notary, progress = progress)
         l.runOnce()
         l.runOnce()
-        assertEquals(1, mp.proofsSubmitted.size, "verified=false is terminal (MVP mock verify) — no retry loop")
+        assertEquals(1, mp.proofsSubmitted.size, "a delivered verified=false is terminal — no retry loop")
     }
 
     @Test
