@@ -289,13 +289,12 @@ data class NotaryConfig(
      * REDIRECTS the prover at a different notary — which is what a test substrate needs — and can no
      * longer switch the prover off, a published `null` not being expressible against a non-null parameter.
      *
-     * Production readiness is still gated on BQ-9 (TLSN security review) + DMA-135 (Steam cipher gate), and
-     * the gate has changed MEDIUM, not owner: it used to be an operator publishing this value, and it is now
-     * the release that ships a proving context. Be clear about what that costs — **there is deliberately no
-     * remote brake left.** Nothing in remote config can stop proofs fleet-wide: this field can only be
-     * redirected, `enabledReads` is `@JsExport.Ignore`d (and would fail every marked deal rather than degrade
-     * to client-reported), and [NotaryBreakerConfig] is reactive, arming only after real failures. Stopping
-     * proofs means shipping a build that withholds the delegate — days, not minutes.
+     * What selects a real prover has changed MEDIUM, not owner: it used to be an operator publishing this
+     * value, and it is now the release that ships a proving context. Be clear about what that costs —
+     * **there is deliberately no remote brake left.** Nothing in remote config can stop proofs fleet-wide:
+     * this field can only be redirected, `enabledReads` is `@JsExport.Ignore`d (and would fail every marked
+     * deal rather than degrade to client-reported), and [NotaryBreakerConfig] is reactive, arming only after
+     * real failures. Stopping proofs means shipping a build that withholds the delegate — days, not minutes.
      *
      * Deliberately not validated in `init`, matching [proxyBaseUrl]: a bad value fails the handshake
      * loudly (`notary handshake failed for …`), while a `require` here would throw inside `copy()` and
