@@ -13,7 +13,14 @@ updates:
       minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
-      # Kotlin, KSP and the Kotlin-adjacent toolchain move in lockstep and need a human: a major/minor
-      # bump here changes the emitted JS/.d.ts contract the extension pins against.
+      # Kotlin, KSP and the Kotlin-adjacent toolchain move in lockstep and need a human: any bump here
+      # can change the emitted JS/.d.ts contract the extension pins against, and it outruns CodeQL's
+      # Kotlin extractor (the java-kotlin analysis goes dark until GitHub ships a matching bundle).
+      # All three update-types are listed because Kotlin does not version by SemVer: a feature release
+      # bumps the third component by ten (2.4.10 -> 2.4.20), so it reads as a patch to Dependabot and
+      # slips past a major/minor-only filter. Bump Kotlin by hand instead.
       - dependency-name: "org.jetbrains.kotlin*"
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+          - "version-update:semver-patch"
