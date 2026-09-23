@@ -11,8 +11,12 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+## [1.0.2-beta] - 2026-09-23
+
 ### Fixed
 
+- A failed `cancel_offer` outcome carries Steam's own (redacted) refusal reason instead of a generic
+  string, so an offer Steam already closed can be told apart from a transient failure.
 - A replacement `create_offer` for a deal whose offer Steam closed without a trade (expired, cancelled,
   declined, invalid items, cancelled by second factor) now creates a new offer instead of re-reporting the
   dead offer's id. The deal's create claim is released when the watch sees the offer closed, and a
@@ -263,6 +267,7 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.1-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...HEAD
+[1.0.2-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.1-beta...v1.0.2-beta
 [1.0.1-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.0-beta.1...v1.0.1-beta
 [1.0.0-beta.1]: https://github.com/dmarket/p2p-tracker-core/releases/tag/v1.0.0-beta.1
