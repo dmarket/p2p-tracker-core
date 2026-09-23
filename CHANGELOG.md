@@ -11,6 +11,13 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+### Fixed
+
+- `create_offer` and `cancel_offer` no longer fail with `no Steam session cookie` after a browser
+  restart. Steam's `sessionid` is a browser-session cookie while the login cookie persists, so a write
+  that fired before the user opened Steam found no `sessionid` and gave up without contacting Steam. The
+  write actuals now mint it with one request to the community root and fail only if it is still absent.
+
 ## [1.0.2-beta] - 2026-09-23
 
 ### Fixed

@@ -11,6 +11,7 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -59,10 +60,35 @@ class FetchSteamOfferCancellerTest {
     }
 
     @Test
-    fun cancel_throws_when_session_cookie_missing() = runTest {
+    fun cancel_throws_without_posting_when_the_mint_sets_no_cookie() = runTest {
         setSessionId(null)
-        val engine = MockEngine { respond(content = "{}") }
+        val requests = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            respond(content = "{}")
+        }
         assertFailsWith<IllegalStateException> { canceller(engine).cancelOffer(fakeSteamCredential(), OfferId("1")) }
+        assertEquals(listOf("GET /"), requests)
+    }
+
+    @Test
+    fun cancel_mints_a_missing_session_cookie_before_posting() = runTest {
+        setSessionId(null)
+        val requests = mutableListOf<String>()
+        var body: String? = null
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            if (request.url.encodedPath == "/") {
+                js("globalThis._testSessionId = 'minted24'")
+                respond(content = "<html></html>")
+            } else {
+                body = (request.body as FormDataContent).bytes().decodeToString()
+                respond(content = """{"tradeofferid":"789"}""")
+            }
+        }
+        canceller(engine).cancelOffer(fakeSteamCredential(), OfferId("789"))
+        assertEquals(listOf("GET /", "POST /tradeoffer/789/cancel"), requests)
+        assertTrue(body.orEmpty().contains("sessionid=minted24"), "expected the minted sessionid: $body")
     }
 
     @Test

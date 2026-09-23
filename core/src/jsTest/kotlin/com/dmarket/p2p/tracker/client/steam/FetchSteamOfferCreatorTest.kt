@@ -83,11 +83,66 @@ class FetchSteamOfferCreatorTest {
     }
 
     @Test
-    fun create_fails_when_session_cookie_missing() = runTest {
+    fun create_does_not_touch_the_root_when_the_session_cookie_is_present() = runTest {
+        setupChrome("sess123")
+        val requests = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            respond(content = """{"tradeofferid":"600"}""")
+        }
+        creator(engine).createOffer(fakeSteamCredential(), draft)
+        assertEquals(listOf("POST /tradeoffer/new/send"), requests)
+    }
+
+    @Test
+    fun create_mints_a_missing_session_cookie_before_posting() = runTest {
+        // The prod shape after a browser restart: steamLoginSecure survives, the session-only sessionid does
+        // not, and a directive fires before the user opens Steam. One GET of the community root sets it.
         setupChrome(null)
-        val engine = MockEngine { respond(content = "{}") }
+        val requests = mutableListOf<String>()
+        var body: String? = null
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            if (request.url.encodedPath == "/") {
+                js("globalThis._testSessionId = 'minted24'")
+                respond(content = "<html></html>")
+            } else {
+                body = (request.body as FormDataContent).bytes().decodeToString()
+                respond(content = """{"tradeofferid":"700","needs_mobile_confirmation":true}""")
+            }
+        }
+
         val result = creator(engine).createOffer(fakeSteamCredential(), draft)
-        assertTrue(result is CreateOfferResult.Failed, "expected Failed, got $result")
+
+        assertEquals(CreateOfferResult.NeedsConfirmation(OfferId("700")), result)
+        assertEquals(listOf("GET /", "POST /tradeoffer/new/send"), requests)
+        assertTrue(body.orEmpty().contains("sessionid=minted24"), "expected the minted sessionid: $body")
+    }
+
+    @Test
+    fun create_fails_without_posting_when_the_mint_sets_no_cookie() = runTest {
+        setupChrome(null)
+        val requests = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            respond(content = "{}")
+        }
+        val result = creator(engine).createOffer(fakeSteamCredential(), draft)
+        assertEquals(CreateOfferResult.Failed("no Steam session cookie"), result)
+        assertEquals(listOf("GET /"), requests)
+    }
+
+    @Test
+    fun create_fails_without_posting_when_the_mint_request_itself_fails() = runTest {
+        setupChrome(null)
+        val requests = mutableListOf<String>()
+        val engine = MockEngine { request ->
+            requests += "${request.method.value} ${request.url.encodedPath}"
+            respond(content = "down", status = HttpStatusCode.ServiceUnavailable)
+        }
+        val result = creator(engine).createOffer(fakeSteamCredential(), draft)
+        assertEquals(CreateOfferResult.Failed("no Steam session cookie"), result)
+        assertEquals(listOf("GET /"), requests)
     }
 
     @Test

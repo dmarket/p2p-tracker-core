@@ -1,7 +1,6 @@
 package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.adapter.webext.webExtApi
-import com.dmarket.p2p.tracker.adapter.webext.webExtCookieValue
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
@@ -29,7 +28,8 @@ import kotlin.js.Promise
  *
  * The POST goes through the injected credentialed Steam [HttpClient] ([com.dmarket.p2p.tracker.client.createSteamHttpClient]) whose
  * browser engine sets fetch `credentials:"include"`, so the logged-in Steam cookie session is
- * attached; the `sessionid` cookie is echoed in the form body (read via `chrome.cookies`).
+ * attached; the `sessionid` cookie is echoed in the form body (read via `chrome.cookies`, minted first when absent — see
+ * [steamSessionId]).
  *
  * **Hard-rule enforcement:** the only URL this class builds is the fixed `…/tradeoffer/new/send`
  * create endpoint, and the flow stops at `CreatedNeedsConfirmation` — there is no code path here
@@ -72,7 +72,7 @@ class FetchSteamOfferCreator(
 
     override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = createMutex.withLock {
         val url = "$communityBaseUrl/tradeoffer/new/send"
-        val sessionId = readSessionId() ?: return@withLock CreateOfferResult.Failed("no Steam session cookie")
+        val sessionId = httpClient.steamSessionId(communityBaseUrl) ?: return@withLock CreateOfferResult.Failed("no Steam session cookie")
         // Install the per-trade anti-CSRF header rewrite (Referer carries this trade's partner+token),
         // then always tear it down. Every create — FE-message- AND directive-driven — funnels through
         // here (serialized by createMutex), so this one install point covers all paths. See installAntiCsrfRule.
@@ -139,8 +139,6 @@ class FetchSteamOfferCreator(
             webExtApi().declarativeNetRequest.updateSessionRules(update).unsafeCast<Promise<dynamic>>().await()
         }
     }
-
-    private suspend fun readSessionId(): String? = webExtCookieValue(communityBaseUrl, "sessionid")
 
     private suspend fun postCreate(url: String, sessionId: String, draft: TradeDraft): CreateOfferResult {
         // Build the Steam json_tradeoffer / create-params objects in JS, then serialize them to the

@@ -1,6 +1,5 @@
 package com.dmarket.p2p.tracker.client.steam
 
-import com.dmarket.p2p.tracker.adapter.webext.webExtCookieValue
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
@@ -16,7 +15,7 @@ import io.ktor.http.parameters
  * The POST goes through the injected credentialed Steam [HttpClient] ([com.dmarket.p2p.tracker.client.createSteamHttpClient]) whose
  * browser engine sets fetch `credentials:"include"`, so the logged-in Steam cookie session is
  * attached. Steam's community endpoints require the `sessionid` cookie echoed in the form body; it is
- * read via `chrome.cookies`.
+ * read via `chrome.cookies`, minted first when absent (see [steamSessionId]).
  *
  * **Hard-rule enforcement:** the only URL this class ever builds is the fixed
  * `…/tradeoffer/{id}/cancel` template, and the port surface ([SteamOfferCanceller]) exposes only
@@ -41,7 +40,7 @@ class FetchSteamOfferCanceller(private val httpClient: HttpClient, private val c
         val url = "$communityBaseUrl/tradeoffer/${offerId.value}/cancel"
         // A missing cookie must THROW: returning silently would let the loop report the cancel as
         // SUCCESS while the offer is still live on Steam.
-        val sessionId = readSessionId() ?: error("no Steam session cookie")
+        val sessionId = httpClient.steamSessionId(communityBaseUrl) ?: error("no Steam session cookie")
         // The shared Steam client sanitizes failures, so a non-OK Steam status (403/500) throws
         // HttpStatusException, and a transport error throws too — either way the loop treats the cancel as
         // failed (the offer is still live) and retries, rather than assuming it succeeded.
@@ -79,7 +78,4 @@ class FetchSteamOfferCanceller(private val httpClient: HttpClient, private val c
         val eresult = success.toString()
         if (eresult != "1" && eresult != "true") error("Steam cancel refused with EResult $eresult")
     }
-
-    /** Reads the `sessionid` cookie for steamcommunity.com via the extension cookies API. */
-    private suspend fun readSessionId(): String? = webExtCookieValue(communityBaseUrl, "sessionid")
 }
