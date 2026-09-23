@@ -11,6 +11,8 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+## [1.0.3-beta] - 2026-09-23
+
 ### Fixed
 
 - `create_offer` and `cancel_offer` no longer fail with `no Steam session cookie` after a browser
@@ -274,7 +276,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...HEAD
+[1.0.3-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...v1.0.3-beta
 [1.0.2-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.1-beta...v1.0.2-beta
 [1.0.1-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.0-beta.1...v1.0.1-beta
 [1.0.0-beta.1]: https://github.com/dmarket/p2p-tracker-core/releases/tag/v1.0.0-beta.1
