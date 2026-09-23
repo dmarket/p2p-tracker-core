@@ -4755,6 +4755,154 @@ class TradeTrackerLoopTest {
         assertEquals(OfferId("offer-created"), mp.directiveOutcomes.last().steamOfferId)
     }
 
+    /**
+     * The prod incident: Steam closed the first offer (state 10), the watch reported it, and the
+     * backend leased a replacement create under a fresh id. The replacement must make a NEW offer — replaying
+     * the dead id is what froze the deal.
+     */
+    @Test
+    fun a_replacement_create_after_the_watch_saw_the_offer_die_writes_a_new_offer() = runTest {
+        val claims = PersistedDealWriteClaimStore()
+        val creator = FakeSteamOfferCreator(
+            resultsByPartner = mapOf(
+                SteamId(PARTNER) to listOf(
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-created")),
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-replacement")),
+                ),
+            ),
+        )
+        val reader = FakeSteamReadClient()
+        val observer = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
+        )
+        val l =
+            loop(marketplace = mp, creator = creator, reader = reader, claims = claims, directivesEnabled = true, eventObserver = observer)
+        l.runOnce()
+        assertEquals(1, claims.all().size, "precondition: the first create holds a completed claim")
+
+        // Steam closes the offer; the backend still tracks it, and the watch reads state 10.
+        reader.offers = mapOf(OfferId("offer-created") to 10)
+        mp.heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked("deal-1", "offer-created")), ttlSeconds = 300)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertTrue(claims.all().isEmpty(), "a create claim must not outlive its offer")
+        val released = observer.events.filterIsInstance<LifecycleEvent.DeadOfferClaimReleased>().single()
+        assertEquals(LifecycleEvent.DeadOfferClaimReleased("deal-1", "offer-created", 10, "watch"), released)
+
+        // The replacement arrives under a fresh id — still next to the dead id in tracking, as prod had it.
+        mp.heartbeatResponse = HeartbeatResponse(
+            activeTracking = listOf(tracked("deal-1", "offer-created")),
+            directives = listOf(createDirective(id = "dir-1-r2")),
+            ttlSeconds = 300,
+        )
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertEquals(2, creator.created.size, "the replacement must reach Steam")
+        val replacement = mp.directiveOutcomes.single { it.directiveId == DirectiveId("dir-1-r2") }
+        assertEquals(OfferId("offer-replacement"), replacement.steamOfferId)
+        assertTrue(observer.events.none { it is LifecycleEvent.DuplicateWriteSuppressed })
+    }
+
+    /**
+     * The hardening: this device never saw the offer die (the backend dropped it from tracking in the same
+     * heartbeat that leased the replacement), so the watch released nothing. The duplicate path checks the
+     * claimed offer on Steam before replaying it.
+     */
+    @Test
+    fun a_replacement_create_checks_the_claimed_offer_before_replaying_it() = runTest {
+        val claims = PersistedDealWriteClaimStore()
+        val creator = FakeSteamOfferCreator(
+            resultsByPartner = mapOf(
+                SteamId(PARTNER) to listOf(
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-created")),
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-replacement")),
+                ),
+            ),
+        )
+        val reader = FakeSteamReadClient()
+        val observer = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
+        )
+        val l =
+            loop(marketplace = mp, creator = creator, reader = reader, claims = claims, directivesEnabled = true, eventObserver = observer)
+        l.runOnce()
+
+        reader.offers = mapOf(OfferId("offer-created") to 6)
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1-r2")), ttlSeconds = 300)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertEquals(2, creator.created.size, "a dead claimed offer must not be replayed")
+        assertEquals(OfferId("offer-replacement"), mp.directiveOutcomes.last().steamOfferId)
+        assertEquals(
+            LifecycleEvent.DeadOfferClaimReleased("deal-1", "offer-created", 6, "duplicate"),
+            observer.events.filterIsInstance<LifecycleEvent.DeadOfferClaimReleased>().single(),
+        )
+    }
+
+    /**
+     * The case the guard exists for must survive the fix: the report was lost and the backend shows no offer,
+     * but Steam says the offer is alive — the re-lease is still answered with it, and nothing is POSTed.
+     */
+    @Test
+    fun a_re_lease_is_still_answered_with_the_claimed_offer_while_steam_says_it_is_alive() = runTest {
+        for (aliveState in listOf(2, 3, 4, 9, 11)) {
+            val creator = FakeSteamOfferCreator()
+            val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-created") to aliveState))
+            val mp = FakeMarketplaceClient(
+                heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
+            )
+            val l = loop(marketplace = mp, creator = creator, reader = reader, directivesEnabled = true)
+            l.runOnce()
+
+            mp.heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(TrackedDeal(dealId = DealId("deal-1"), steamOfferId = null)),
+                directives = listOf(createDirective(id = "dir-2")),
+                ttlSeconds = 300,
+            )
+            l.forceHeartbeatNow()
+            l.runOnce()
+
+            assertEquals(1, creator.created.size, "state $aliveState: a live offer must not get a second one")
+            assertEquals(OfferId("offer-created"), mp.directiveOutcomes.last().steamOfferId, "state $aliveState")
+        }
+    }
+
+    /** An unreadable claimed offer is replayed, never re-created: a second live offer is the worse failure. */
+    @Test
+    fun a_claimed_offer_steam_cannot_read_is_replayed() = runTest {
+        val creator = FakeSteamOfferCreator()
+        val reader = FakeSteamReadClient()
+        val observer = RecordingEventObserver()
+        val l = loop(creator = creator, reader = reader, eventObserver = observer)
+        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+
+        reader.offerStatusesThrows = true
+        val result = l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
+
+        assertEquals(1, creator.created.size)
+        assertEquals(OfferId("offer-created"), assertIs<CreateOfferResult.AlreadyCreated>(result).offerId)
+        assertTrue(observer.events.any { it is LifecycleEvent.SteamReadFailed })
+    }
+
+    /** The host fast path carries the same check: a dead offer is not what the FE should render. */
+    @Test
+    fun create_trade_for_a_deal_whose_offer_died_creates_a_new_offer() = runTest {
+        val creator = FakeSteamOfferCreator()
+        val reader = FakeSteamReadClient()
+        val l = loop(creator = creator, reader = reader)
+        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+
+        reader.offers = mapOf(OfferId("offer-created") to 10)
+        val result = l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
+
+        assertEquals(2, creator.created.size)
+        assertIs<CreateOfferResult.NeedsConfirmation>(result)
+    }
+
     /** Two different deals must never block each other — the key is (deal, action), not the action alone. */
     @Test
     fun creates_for_different_deals_are_independent() = runTest {

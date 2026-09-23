@@ -88,6 +88,17 @@ sealed interface LifecycleEvent {
     ) : LifecycleEvent
 
     /**
+     * A completed `create_offer` claim was **released because Steam closed its offer without a trade**
+     * (`ETradeOfferState` [offerState]: expired, cancelled, declined, invalid items or cancelled by second
+     * factor), so the next create for [dealId] makes a new offer instead of replaying [steamOfferId].
+     *
+     * [trigger] says who saw it: `watch` — the deal-watch read of the tracked offer; `duplicate` — the
+     * check a suppressed create makes on the claimed offer before replaying it.
+     */
+    data class DeadOfferClaimReleased(val dealId: String, val steamOfferId: String, val offerState: Int, val trigger: String) :
+        LifecycleEvent
+
+    /**
      * A leased `create_offer` was **not attempted this cycle** — the create surface's own back-pressure
      * firing, not a Steam failure. [reason] names which limit deferred it (the surface or the partner is
      * cooling down after a Steam refusal, a per-partner / per-cycle cap, or the concurrent-chain limit), and

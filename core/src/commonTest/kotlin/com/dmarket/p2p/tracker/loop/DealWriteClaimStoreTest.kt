@@ -145,6 +145,28 @@ class DealWriteClaimStoreTest {
         assertTrue(store.all().isEmpty())
     }
 
+    @Test
+    fun a_dead_offer_releases_its_completed_create_claim_and_the_release_persists() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        val store = PersistedDealWriteClaimStore(storage)
+        store.claim(claim(), t0, ttl)
+        store.complete(key, outcome())
+        assertEquals(listOf(key), store.releaseDeadOffers(setOf(OfferId("offer-1"))).map { it.key })
+        assertEquals(ClaimVerdict.Proceed, PersistedDealWriteClaimStore(storage).claim(claim(directiveId = "dir-2"), t0, ttl))
+    }
+
+    /** The race the atomic release exists for: a caller that already took a fresh claim is not released. */
+    @Test
+    fun a_dead_offer_never_releases_the_in_flight_claim_that_replaced_it() = runTest {
+        val store = PersistedDealWriteClaimStore()
+        store.claim(claim(), t0, ttl)
+        store.complete(key, outcome())
+        store.release(setOf(key))
+        store.claim(claim(directiveId = "dir-2"), t0, ttl)
+        assertTrue(store.releaseDeadOffers(setOf(OfferId("offer-1"))).isEmpty())
+        assertIs<ClaimVerdict.InFlight>(store.claim(claim(directiveId = "dir-3"), t0, ttl))
+    }
+
     // ---- persistence ---------------------------------------------------------------------------
 
     @Test

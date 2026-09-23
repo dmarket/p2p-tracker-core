@@ -53,6 +53,13 @@ interface DealWriteClaimStore {
     /** Drop the claims for [keys] — the write failed (nothing was written) or the deal no longer needs guarding. */
     suspend fun release(keys: Set<DealWriteKey>)
 
+    /**
+     * Atomically drop the completed create claims whose offer is among [deadOfferIds]
+     * ([DealWriteGuard.deadOfferClaims]) and return the released claims. Selection and removal share one lock, so a
+     * racing caller that has already replaced such a claim with its own in-flight one is never released.
+     */
+    suspend fun releaseDeadOffers(deadOfferIds: Set<OfferId>): List<DealWriteClaim>
+
     /** Every stored claim, for the heartbeat's [DealWriteGuard.staleClaims] reconciliation. */
     suspend fun all(): Collection<DealWriteClaim>
 }
@@ -157,6 +164,15 @@ class PersistedDealWriteClaimStore(
         if (keys.none { claims.containsKey(it) }) return@withLock
         keys.forEach(claims::remove)
         persist()
+    }
+
+    override suspend fun releaseDeadOffers(deadOfferIds: Set<OfferId>): List<DealWriteClaim> = mutex.withLock {
+        restore()
+        val dead = DealWriteGuard.deadOfferClaims(claims.values, deadOfferIds)
+        if (dead.isEmpty()) return@withLock emptyList()
+        val released = dead.mapNotNull(claims::remove)
+        persist()
+        released
     }
 
     override suspend fun all(): Collection<DealWriteClaim> = mutex.withLock {

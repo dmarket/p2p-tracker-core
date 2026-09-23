@@ -11,6 +11,17 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+### Fixed
+
+- A replacement `create_offer` for a deal whose offer Steam closed without a trade (expired, cancelled,
+  declined, invalid items, cancelled by second factor) now creates a new offer instead of re-reporting the
+  dead offer's id. The deal's create claim is released when the watch sees the offer closed, and a
+  suppressed duplicate checks the claimed offer on Steam before replaying it.
+
+### Added
+
+- `DeadOfferClaimReleased` lifecycle event.
+
 ## [1.0.1-beta] - 2026-09-08
 
 ### Added

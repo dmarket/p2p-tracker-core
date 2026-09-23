@@ -41,6 +41,7 @@ import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DealWriteKey
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.PushSignal
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -164,6 +165,12 @@ private const val REPORT_CLAIM_SPENT = "already reported unproven; awaiting a pr
  * waits one cycle rather than buying a second MPC session for the same fact.
  */
 private const val SUPERSEDED_BY_DEMAND = "a freshness demand on this axis is proving the same read this cycle"
+
+/** `DeadOfferClaimReleased.trigger`: the deal-watch read of a tracked offer saw it closed. */
+private const val DEAD_OFFER_TRIGGER_WATCH = "watch"
+
+/** `DeadOfferClaimReleased.trigger`: a suppressed create checked its claimed offer before replaying it. */
+private const val DEAD_OFFER_TRIGGER_DUPLICATE = "duplicate"
 
 /** The defer reason a standing cooldown produces, named by the scope it covers. */
 private fun CreateOfferResult.Throttled.deferReason(): String = "${scope.name.lowercase()} cooldown standing after a steam refusal"
@@ -402,6 +409,7 @@ class TradeTrackerLoop(
             action = DirectiveAction.CREATE_OFFER,
             directiveId = directiveId,
             onDuplicate = { verdict -> duplicateCreateResult(verdict, directiveId) },
+            credential = credential,
         ) {
             val result = runCatching { offerCreator.createOffer(credential, draft) }
                 .getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }
@@ -565,12 +573,17 @@ class TradeTrackerLoop(
      * nothing was written (a rejected create) — in which case the claim is released immediately so a
      * genuine retry is free to proceed. A throw releases it too: a leaked in-flight claim would block the
      * deal until the TTL backstop.
+     *
+     * [credential] is passed by the two create sites only. With it, a completed claim is not replayed until
+     * its offer has been checked on Steam ([releaseIfOfferDead]): a dead offer releases the claim and the
+     * write proceeds as a replacement.
      */
     private suspend fun <T> withDealClaim(
         dealId: DealId?,
         action: DirectiveAction,
         directiveId: DirectiveId,
         onDuplicate: suspend (ClaimVerdict.Duplicate) -> T,
+        credential: SteamCredential? = null,
         write: suspend () -> Pair<T, DirectiveOutcome?>,
     ): T {
         // A deal-less write cannot be claim-guarded. Only report_inventory is deal-less and it never routes
@@ -581,7 +594,12 @@ class TradeTrackerLoop(
         val ttl = config.tunables.writeClaims.claimTtl
         val now = clock.now()
         val pending = DealWriteClaim(dealId, action, ClaimPhase.IN_FLIGHT, now, directiveId)
-        val verdict = claims.claim(pending, now, ttl)
+        var verdict = claims.claim(pending, now, ttl)
+        if (verdict is ClaimVerdict.AlreadyCompleted && credential != null && releaseIfOfferDead(verdict.claim, credential)) {
+            // Re-taken rather than assumed: a concurrent caller may have claimed the deal in between, and then
+            // this one is its duplicate like any other.
+            verdict = claims.claim(pending, now, ttl)
+        }
         if (verdict is ClaimVerdict.Duplicate) {
             emit(
                 LifecycleEvent.DuplicateWriteSuppressed(
@@ -602,6 +620,42 @@ class TradeTrackerLoop(
         }
         if (outcome != null) claims.complete(key, outcome) else claims.release(setOf(key))
         return result
+    }
+
+    /**
+     * Checks a completed create [claim]'s offer on Steam before it is replayed, and releases the claim when
+     * the offer is dead. Returns whether it was released.
+     *
+     * The watch path releases such claims as soon as it reads the offer, but it only reads offers the backend
+     * still tracks, and a replacement can be leased in the same heartbeat that stops tracking the dead one
+     * (or while this device was not running). A duplicate create is rare, so the one targeted read it costs
+     * is cheap insurance. An unreadable or unknown offer counts as alive: replaying it is today's behaviour,
+     * and a second live offer is the worse failure.
+     */
+    private suspend fun releaseIfOfferDead(claim: DealWriteClaim, credential: SteamCredential): Boolean {
+        if (claim.action != DirectiveAction.CREATE_OFFER) return false
+        val offerId = claim.outcome?.steamOfferId ?: return false
+        val snapshots = runCatching { steamReader.offerSnapshots(credential, setOf(offerId)) }.getOrElse {
+            emit(LifecycleEvent.SteamReadFailed("offer", it.redactedSummary()))
+            return false
+        }
+        return releaseDeadOfferClaims(snapshots.filterKeys { it == offerId }, DEAD_OFFER_TRIGGER_DUPLICATE)
+    }
+
+    /**
+     * Releases every completed create claim whose offer [snapshots] show closed without a trade
+     * ([DealWriteGuard.isDeadOffer]), so the deal's next create makes a new offer. Returns whether any was.
+     */
+    private suspend fun releaseDeadOfferClaims(snapshots: Map<OfferId, SteamOfferSnapshot>, trigger: String): Boolean {
+        val dead = snapshots.filterValues { DealWriteGuard.isDeadOffer(it.state) }
+        if (dead.isEmpty()) return false
+        val released = claims.releaseDeadOffers(dead.keys)
+        released.forEach { claim ->
+            val offerId = claim.outcome?.steamOfferId ?: return@forEach
+            val state = dead[offerId]?.state ?: return@forEach
+            emit(LifecycleEvent.DeadOfferClaimReleased(claim.dealId.value, offerId.value, state, trigger))
+        }
+        return released.isNotEmpty()
     }
 
     /** Emit a lifecycle event to the (optional) observer; never lets a sink failure break the cycle. */
@@ -1805,6 +1859,7 @@ class TradeTrackerLoop(
                 // already tallied and must not join the batch.
                 WriteAttempt(countedOutOfBand = resendClaimedOutcome(verdict.claim, directive.directiveId) != null)
             },
+            credential = credential,
         ) {
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
@@ -2764,6 +2819,9 @@ class TradeTrackerLoop(
             emit(LifecycleEvent.SteamReadFailed("offer", it.redactedSummary()))
             emptyMap()
         }
+        // A create claim must not outlive its offer: once Steam has closed it, the next create for the deal is
+        // a replacement, and replaying the dead id to it is what froze the deal on the backend.
+        releaseDeadOfferClaims(offerSnapshots, DEAD_OFFER_TRIGGER_WATCH)
         val transfers = historyResult?.getOrElse {
             emit(LifecycleEvent.SteamReadFailed("history", it.redactedSummary()))
             emptyList()

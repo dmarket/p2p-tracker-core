@@ -248,6 +248,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.HandledDirectiveSkipped("report_inventory", "d3"),
             LifecycleEvent.DirectiveDropped("create_offer", "d4", "missing partner"),
             LifecycleEvent.DuplicateWriteSuppressed("create_offer", "deal1", "d5", "COMPLETED", "778899"),
+            LifecycleEvent.DeadOfferClaimReleased("deal1", "778899", 10, "watch"),
             LifecycleEvent.SteamWriteDeferred("create_offer", "d6", "partner cooling down", "deal1", 120),
             LifecycleEvent.CreateChainStopped("76561199497281579", "d7", "too many trade offers", 21),
             LifecycleEvent.SteamReadFailed("offer", "500"),

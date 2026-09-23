@@ -65,6 +65,13 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("phase", event.phase)
             put("steamOfferId", event.steamOfferId)
         }
+        is LifecycleEvent.DeadOfferClaimReleased -> {
+            put("event", "DeadOfferClaimReleased")
+            put("dealId", event.dealId)
+            put("steamOfferId", event.steamOfferId)
+            put("offerState", event.offerState)
+            put("trigger", event.trigger)
+        }
         is LifecycleEvent.SteamWriteDeferred -> {
             put("event", "SteamWriteDeferred")
             put("kind", event.kind)

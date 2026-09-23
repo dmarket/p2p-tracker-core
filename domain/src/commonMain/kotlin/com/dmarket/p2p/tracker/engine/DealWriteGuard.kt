@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.engine
 import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DealWriteKey
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import kotlin.time.Duration
@@ -77,7 +78,8 @@ object DealWriteGuard {
      * *right now* is proof the deal is still in play, and it is the case the guard matters most in — a
      * re-leased create under a fresh `directive_id` must be answered with the offer we already made, not
      * with a second one. Releasing on the same heartbeat that re-leases the write would defeat the guard
-     * entirely.
+     * entirely. The one case where that answer is wrong — the claimed offer is dead and the lease is a
+     * replacement — is released by [deadOfferClaims], on Steam's evidence rather than the heartbeat's.
      *
      * Call this only on the post-heartbeat path. An empty [activeTracking] is read as "the backend is
      * watching nothing", which is true after a successful heartbeat but not after a failed one.
@@ -102,4 +104,39 @@ object DealWriteGuard {
             }
         }.map { it.key }.toSet()
     }
+
+    /**
+     * Whether a raw `ETradeOfferState` means the offer is **closed without a trade**: `5 Expired`,
+     * `6 Canceled`, `7 Declined`, `8 InvalidItems`, `10 CanceledBySecondFactor`. Such an offer can never
+     * become live again, so a new create for its deal cannot duplicate it.
+     *
+     * `4 Countered` is left out on purpose: the buyer's counter is itself a live offer on the deal's items.
+     * Everything else (`2 Active`, `3 Accepted`, `9 CreatedNeedsConfirmation`, `11 InEscrow`, and any code
+     * this set does not know) keeps the offer alive for the guard, which errs towards replaying it.
+     */
+    fun isDeadOffer(offerState: Int): Boolean = offerState in DEAD_OFFER_STATES
+
+    /**
+     * The completed [DirectiveAction.CREATE_OFFER] claims whose offer is among [deadOfferIds] — the claims
+     * to release because the offer they would replay no longer exists.
+     *
+     * This is the release [staleClaims] cannot perform. A replacement create arrives under a fresh
+     * `directive_id` in the very heartbeat that leases it, and from the heartbeat alone it is
+     * indistinguishable from a re-lease after a lost report; [staleClaims] therefore keeps the claim, and
+     * the replacement would be answered with the dead offer's id instead of a new offer. What tells the two
+     * apart is Steam's own verdict on the claimed offer, which is what [deadOfferIds] carries.
+     *
+     * An [ClaimPhase.IN_FLIGHT] claim is never selected (it has no offer yet), nor is a cancel claim (a
+     * cancelled offer is exactly what a completed cancel produced).
+     */
+    fun deadOfferClaims(claims: Collection<DealWriteClaim>, deadOfferIds: Set<OfferId>): Set<DealWriteKey> {
+        if (deadOfferIds.isEmpty()) return emptySet()
+        return claims.filter { claim ->
+            claim.action == DirectiveAction.CREATE_OFFER &&
+                claim.phase == ClaimPhase.COMPLETED &&
+                claim.outcome?.steamOfferId?.let { it in deadOfferIds } == true
+        }.map { it.key }.toSet()
+    }
+
+    private val DEAD_OFFER_STATES = setOf(5, 6, 7, 8, 10)
 }

@@ -189,4 +189,41 @@ class DealWriteGuardTest {
             staleClaims(listOf(create, cancel), emptyList()),
         )
     }
+
+    // ---- isDeadOffer / deadOfferClaims ----------------------------------------------------------
+
+    @Test
+    fun only_offers_closed_without_a_trade_count_as_dead() {
+        val dead = (0..12).filter(DealWriteGuard::isDeadOffer).toSet()
+        assertEquals(setOf(5, 6, 7, 8, 10), dead)
+    }
+
+    @Test
+    fun a_completed_create_claim_whose_offer_died_is_released() {
+        val key = DealWriteKey(DealId("deal-1"), DirectiveAction.CREATE_OFFER)
+        assertEquals(setOf(key), DealWriteGuard.deadOfferClaims(listOf(claim()), setOf(OfferId("offer-1"))))
+    }
+
+    @Test
+    fun a_create_claim_for_a_different_offer_is_kept() {
+        assertTrue(DealWriteGuard.deadOfferClaims(listOf(claim()), setOf(OfferId("offer-2"))).isEmpty())
+    }
+
+    @Test
+    fun an_in_flight_create_claim_is_never_released_by_a_dead_offer() {
+        val inFlight = claim(phase = ClaimPhase.IN_FLIGHT)
+        assertTrue(DealWriteGuard.deadOfferClaims(listOf(inFlight), setOf(OfferId("offer-1"))).isEmpty())
+    }
+
+    @Test
+    fun a_cancel_claim_is_never_released_by_a_dead_offer() {
+        val cancel = claim(action = DirectiveAction.CANCEL_OFFER)
+        assertTrue(DealWriteGuard.deadOfferClaims(listOf(cancel), setOf(OfferId("offer-1"))).isEmpty())
+    }
+
+    @Test
+    fun a_completed_create_claim_without_an_offer_id_is_kept() {
+        val noOffer = claim(steamOfferId = null)
+        assertTrue(DealWriteGuard.deadOfferClaims(listOf(noOffer), setOf(OfferId("offer-1"))).isEmpty())
+    }
 }
