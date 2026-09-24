@@ -66,7 +66,7 @@ DMarket backend** — that audit boundary is why the clients are open-source.
 | **Targets** | JS (web extension — shipping) · iOS XCFramework · Android AAR *(both on request)* |
 | **Modules** | `:domain` (pure, zero-IO) · `:core` (IO + platform glue) · `:debug-harness` (dev-only, unpublished) |
 | **Backend contract** | `/exchange/v1/p2p/ext/` — heartbeat, trade-events, notary, trade-actions, inventory |
-| **Version** | `1.0.1-beta` (source of truth: `VERSION_NAME` in `gradle.properties`) |
+| **Version** | `VERSION_NAME` in `gradle.properties` (source of truth) |
 | **Coverage gate** | `:domain` ≥70% (`koverVerify`), currently ~90%+ |
 | **HTTP** | Ktor multiplatform (OkHttp / Darwin / JS-fetch per target) |
 | **License** | MIT |
@@ -548,13 +548,13 @@ for finer control, build the loop yourself (below) and poll `needsReLogin` / `ne
 | `startTracker(baseUrl, config?)` | **Start the self-driving tracker** (the primary entry). Returns an opaque handle. |
 | `stopTracker(handle)` | Stop a tracker started with `startTracker` (clears the alarm + detaches listeners). |
 | `deliverPush(handle, payloadJson)` | Hand a backend push payload (received by your own `push` handler) to the tracker — nudges one cycle, reschedules. Returns a `Promise`. |
-| `startTrackerWithEvents(baseUrl, config?, onEvent)` | Like `startTracker`, but `onEvent(json)` receives **every** loop lifecycle event as a secret-free JSON string (the full firehose). |
+| `startTrackerWithEvents(baseUrl, config?, onEvent, notaryProofDelegate?, clientVersion?)` | Like `startTracker`, but `onEvent(json)` receives **every** loop lifecycle event as a secret-free JSON string (the full firehose). `clientVersion` is the host's own build (the extension's version) and is what the heartbeat reports; omitted, the heartbeat reports this library's version. |
 | `subscribeActiveTrackingCount(handle, onCount)` | Subscribe to the **active-tracking count** — the live number of trades being watched (size of `active_tracking[]`). `onCount(n)` fires immediately with the current value, then on each change. Returns an unsubscribe `() => void`. |
 | `activeTrackingCount(handle)` | Read the current active-tracking count synchronously (`number`; `0` before the first cycle). |
-| `createBrowserLoop(baseUrl, config?)` | Lower-level: a fully-wired `TradeTrackerLoop` if you want to drive `runOnce()` yourself. |
+| `createBrowserLoop(baseUrl, config?, …, clientVersion?)` | Lower-level: a fully-wired `TradeTrackerLoop` if you want to drive `runOnce()` yourself. |
 | `createBrowserMarketplaceClient(baseUrl, config?)` | Standalone Ktor marketplace client (fetch engine; scrapes the DMarket JWT from the `dm-trade-token` cookie). |
 | `createBrowserSteamClient()` | Standalone Steam read client (fetch engine). |
-| `trackerCoreVersion()` / `enabledGameCount()` | Version string / count of enabled games (CS2 only at v1). |
+| `trackerCoreVersion()` / `enabledGameCount()` | This library's version (`VERSION_NAME`, generated at build time) / count of enabled games (CS2 only at v1). |
 
 **Required MV3 manifest permissions:** `"storage"`, `"cookies"`, `"alarms"` (self-drive wake-up),
 `"tabs"` (background `dmarket.com` load for marketplace session-refresh), `"notifications"` (push
@@ -668,7 +668,7 @@ reached via the exported `subscribeActiveTrackingCount(handle, onCount)` / `acti
 
 | Field | Meaning |
 |---|---|
-| `clientVersion` | Semver string reported by the client. |
+| `clientVersion` | Semver string of the **client build** (the extension or the app), not of this library — the library version is pinned by the build. The backend's metric accepts `x.y.z` with an optional `-suffix` of up to 12 alphanumerics; anything else is counted as `other`. |
 | `surface` | `WebChrome` / `WebFirefox` / `IosNative` / `AndroidNative` — drives cadence floors. |
 | `mode` | `Foreground` / `Background` — affects cadence floors. |
 | `tunables` | A [`TrackerConfig`](#configuration-trackerconfig); defaults to `TrackerConfig.defaults()`. |

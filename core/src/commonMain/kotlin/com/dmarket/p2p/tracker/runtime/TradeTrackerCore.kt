@@ -154,8 +154,13 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
     }
 
     companion object {
-        // Keep in sync with VERSION_NAME in gradle.properties (the version that is actually published);
-        // this is what trackerCoreVersion() reports to consumers and what the loop sends as clientVersion.
-        const val VERSION: String = "0.1.0-SNAPSHOT"
+        /**
+         * This library's own version: `VERSION_NAME` from gradle.properties, written into the build by
+         * `:core:generateCoreVersion` (see core/build.gradle.kts for why it is generated). This is what
+         * `trackerCoreVersion()` reports. It is NOT what the heartbeat carries when the host names its
+         * own build: `clientVersion` identifies the client the user installed, and a host that pins this
+         * library already determines this value. It is only the fallback for a host that passes none.
+         */
+        const val VERSION: String = CoreBuildInfo.VERSION
     }
 }

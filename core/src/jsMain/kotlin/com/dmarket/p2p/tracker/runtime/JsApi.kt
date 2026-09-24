@@ -60,6 +60,14 @@ fun trackerCoreVersion(): String = TradeTrackerCore.VERSION
 fun enabledGameCount(): Int = TradeTrackerCore().enabledGameCount()
 
 /**
+ * The heartbeat's `clientVersion`: the host's build when it names one, else this library's version. Blank
+ * counts as absent — an empty string reaches the backend as "a client predating the field", which is
+ * worse than reporting the library.
+ */
+internal fun resolveClientVersion(hostVersion: String?): String =
+    hostVersion?.trim()?.takeIf { it.isNotEmpty() } ?: TradeTrackerCore.VERSION
+
+/**
  * Creates a fully-wired [TradeTrackerLoop] for a Chrome/Firefox extension service worker that drives
  * the golden C1 trade-tracker contract: heartbeat presence, device-leased
  * directive execution (`create_offer` / `cancel_offer` / `report_inventory`), and raw-code
@@ -110,6 +118,11 @@ fun enabledGameCount(): Int = TradeTrackerCore().enabledGameCount()
  * as `web_accessible_resources`, and make that document cross-origin isolated (COEP `require-corp` +
  * COOP `same-origin`) — the module needs `SharedArrayBuffer` at **any** `threadCount`.
  *
+ * **Client version:** pass the host's own build as [clientVersion] (the extension's manifest version,
+ * e.g. `"1.0.5-beta"`). It is what the heartbeat's `clientVersion` carries, so the backend can tell which
+ * build a device runs; this library's version is pinned by that build and stays readable through
+ * `trackerCoreVersion()`. Omitted or blank, the heartbeat falls back to this library's version.
+ *
  * **Manifest requirements:** `"storage"`, `"cookies"`, `"alarms"`, `"tabs"`, and `host_permissions`
  * for `https://api.steampowered.com`, `https://steamcommunity.com`, `https://login.steampowered.com`,
  * `https://store.steampowered.com` and `https://dmarket.com/`.
@@ -122,6 +135,7 @@ fun createBrowserLoop(
     networkObserver: NetworkObserver = NoOpNetworkObserver,
     eventObserver: EventObserver = NoOpEventObserver,
     notaryProofDelegate: ((String, String, String) -> Promise<String>)? = null,
+    clientVersion: String? = null,
 ): TradeTrackerLoop {
     val clock = SystemClock()
     val vault = WebExtStorageCredentialVault()
@@ -182,7 +196,7 @@ fun createBrowserLoop(
         NoOpNotaryProver
     }
     val loopConfig = LoopConfig(
-        clientVersion = TradeTrackerCore.VERSION,
+        clientVersion = resolveClientVersion(clientVersion),
         surface = RuntimeSurface.WebChrome,
         mode = TrackerMode.Background,
         tunables = config,

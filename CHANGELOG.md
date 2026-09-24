@@ -11,6 +11,19 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ## [Unreleased]
 
+### Fixed
+
+- `trackerCoreVersion()` and the heartbeat's fallback `clientVersion` report the real library version.
+  Both returned a hand-written `0.1.0-SNAPSHOT` through every release up to 1.0.3-beta; the value is now
+  generated from `VERSION_NAME` at build time.
+
+### Added
+
+- `startTrackerWithEvents` and `createBrowserLoop` take an optional trailing `clientVersion`: the host's
+  own build, sent as the heartbeat's `clientVersion` so the backend can tell which build a device runs.
+  Omitted or blank, the heartbeat reports this library's version as before. Appended last, so existing
+  positional calls are unchanged.
+
 ## [1.0.3-beta] - 2026-09-23
 
 ### Fixed

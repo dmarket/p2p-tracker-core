@@ -312,7 +312,7 @@ actual fun startTracker(
     config: TrackerConfig,
     networkObserver: NetworkObserver,
     eventObserver: EventObserver,
-): TrackerHandle = startInternal(baseUrl, config, networkObserver, eventObserver, notaryProofDelegate = null)
+): TrackerHandle = startInternal(baseUrl, config, networkObserver, eventObserver, notaryProofDelegate = null, clientVersion = null)
 
 /**
  * Start the self-driving tracker with a JS lifecycle-event callback — the transport-owning host (the
@@ -320,6 +320,9 @@ actual fun startTracker(
  * `LinkedSteamIdMismatch` → push an `account_mismatch` to the FE). [onEvent] receives each event as a
  * secret-free JSON string (see [toWireJson]). Otherwise identical to [startTracker]; the returned
  * handle is used with [deliverPush] / [createTrade] / [linkedSteamIdMismatch] / [stopTracker].
+ *
+ * [clientVersion] is the host's own build, sent as the heartbeat's `clientVersion` — see
+ * [createBrowserLoop]. Appended last so every existing positional call keeps its meaning.
  *
  * The cross-platform `expect/actual startTracker` is left untouched (mobile hosts implement
  * [EventObserver] directly); this is a JS-only convenience so TS — which cannot implement a Kotlin
@@ -332,7 +335,8 @@ fun startTrackerWithEvents(
     config: TrackerConfig = TrackerConfig.defaults(),
     onEvent: (String) -> Unit,
     notaryProofDelegate: ((String, String, String) -> Promise<String>)? = null,
-): TrackerHandle = startInternal(baseUrl, config, NoOpNetworkObserver, CallbackEventObserver(onEvent), notaryProofDelegate)
+    clientVersion: String? = null,
+): TrackerHandle = startInternal(baseUrl, config, NoOpNetworkObserver, CallbackEventObserver(onEvent), notaryProofDelegate, clientVersion)
 
 /**
  * Subscribe to the **active-tracking count** of a running tracker: the live number of trades the
@@ -374,11 +378,12 @@ private fun startInternal(
     networkObserver: NetworkObserver,
     eventObserver: EventObserver,
     notaryProofDelegate: ((String, String, String) -> Promise<String>)?,
+    clientVersion: String?,
 ): TrackerHandle {
     // Decorate the host's observer with the active-count channel so subscribeActiveTrackingCount /
     // activeTrackingCount work on any handle; the host's observer still receives every lifecycle event.
     val activeCount = ActiveTrackingCountChannel(delegate = eventObserver)
-    val loop = createBrowserLoop(baseUrl, config, networkObserver, activeCount, notaryProofDelegate)
+    val loop = createBrowserLoop(baseUrl, config, networkObserver, activeCount, notaryProofDelegate, clientVersion)
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val scheduler = platformScheduler(scope, TrackerMode.Background)
 
