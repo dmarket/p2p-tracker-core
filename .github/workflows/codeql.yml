@@ -60,9 +60,13 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql/codeql-config.yml
 
+      # --rerun per task: CodeQL only sees Kotlin that kotlinc actually compiles in
+      # this step. A build-cache hit (restored by setup-gradle whenever the sources
+      # match an earlier run, e.g. a release commit or a scheduled run) skips the
+      # compiler and the analysis fails with "didn't build any of it".
       - name: Compile Kotlin JVM targets
         if: matrix.build-mode == 'manual'
-        run: ./gradlew :domain:compileKotlinJvm :core:compileKotlinJvm --no-daemon --stacktrace
+        run: ./gradlew :domain:compileKotlinJvm --rerun :core:compileKotlinJvm --rerun --no-daemon --stacktrace
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
