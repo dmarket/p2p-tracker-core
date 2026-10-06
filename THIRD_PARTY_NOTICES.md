@@ -29,9 +29,9 @@ the same branch.
 
 | Field | Value |
 |---|---|
-| Artifact | `client-wasm-steam-provenance-main-99e090a-728.tgz` |
-| `GIT_SHA` | `99e090a347a235ccaa5d1bc790d69a55283cca44` (`main`) |
-| `BUILD_NUM` / `BUILD_URL` | `728` / `https://circleci.com/gh/dmarket/steam-provenance/728` |
+| Artifact | `client-wasm-steam-provenance-main-7f9073b-854.tgz` |
+| `GIT_SHA` | `7f9073b8611dc36d8df3474880623b1b47e32e4b` (`main`) |
+| `BUILD_NUM` / `BUILD_URL` | `854` / `https://circleci.com/gh/dmarket/steam-provenance/854` |
 | `TLSN_SUBMODULE_SHA` | `unknown` — the CI packaging does not record it; read the pinned `dep/tlsn` revision from that build |
 | `CLIENT_WASM_VERSION` / `TRANSPORT_VERSION` | `0.1.0` / `0.2.0` |
 | Notary subprotocol | `tlsn.notary.v2` |
@@ -49,7 +49,7 @@ cd vendor/tlsn && shasum -a 256 -c SHA256SUMS
 The WASM binary itself:
 
 ```
-SHA-256 (pkg/client_wasm_bg.wasm) = 2b8f09b69d7b7f9638381aebf4105e20d189a52092430877005ad31b5e390a35
+SHA-256 (pkg/client_wasm_bg.wasm) = a2752694bfd72a7bf6636cea247e2d67e623d7066d69cf9d8325aaef764e12e2
 ```
 
 The same value is stated in [`vendor/tlsn/SHA256SUMS`](vendor/tlsn/SHA256SUMS) and as `WASM_SHA256` in
