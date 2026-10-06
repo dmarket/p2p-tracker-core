@@ -17,6 +17,12 @@ version: 2.1
 # only brake. Now the trigger is explicit and revocable — a release branch that is never approved
 # ships nothing, and a push to any other branch cannot reach the publish job at all.
 #
+# After the release: `delete_release_branch` deletes `release/v<x.y.z>` once its version is tagged
+# (scripts/ci/delete-release-branch.sh, the same script and job as the extension repository). The branch
+# is never merged back — it carries nothing `main` lacks, because the bump went through `main` first — and
+# the released commit stays reachable from its tag. A branch whose push released nothing is kept: every
+# `-SNAPSHOT` branch (never tagged), and a `[skip publish]` commit on top of a released tag.
+#
 # Opt-out: a commit message containing "[skip publish]" (case-insensitive) makes the publish job a
 # no-op — build, tests and the JS dist packaging still run. Less load-bearing than it was, now that
 # reaching the job needs a release branch and an approval, but it still lets a fix land on a release
@@ -45,6 +51,8 @@ executors:
       # npm 11.16.0, so no in-job npm upgrade is normally needed (a version guard in the publish
       # job self-heals if the image's bundled npm ever falls behind).
       - image: cimg/node:24.18
+    environment:
+      REPO_SLUG: dmarket/p2p-tracker-core
 
 commands:
   restore_gradle_cache:
@@ -221,6 +229,17 @@ jobs:
               fi
             fi
 
+  # The last job of a release: deletes the `release/vX.Y.Z` branch. Last rather than a step inside
+  # publish_npm, because publish_npm checks the branch out — and a failed publish is retried by
+  # re-running this workflow, which needs the branch to still exist.
+  delete_release_branch:
+    executor: node-publish
+    steps:
+      - checkout
+      - run:
+          name: Delete the release branch
+          command: bash scripts/ci/delete-release-branch.sh
+
   # TODO(Maven Central): when Android/iOS targets land, apply com.vanniktech.maven.publish and add a
   # publish_maven job here (see the POM_* properties in gradle.properties).
 
@@ -249,4 +268,8 @@ workflows:
       - publish_npm:
           requires:
             - hold_release
+          filters: *release_branches
+      - delete_release_branch:
+          requires:
+            - publish_npm
           filters: *release_branches
