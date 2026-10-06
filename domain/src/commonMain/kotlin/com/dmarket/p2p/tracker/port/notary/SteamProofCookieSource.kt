@@ -23,7 +23,7 @@ package com.dmarket.p2p.tracker.port.notary
  * failure *before* loading ~10 MB of WASM, so a logged-out user costs nothing.
  *
  * **Web requirements** for the context that implements this: the `"cookies"` permission and `host_permissions`
- * for `https://steamcommunity.com`. See `vendor/tlsn/INTEGRATION.md`.
+ * for `https://steamcommunity.com`. See `core/PROVER.md`.
  */
 interface SteamProofCookieSource {
 
@@ -48,7 +48,7 @@ interface SteamProofCookieSource {
  *   [com.dmarket.p2p.tracker.notary.ProvenReadSpec.redactRequestHeaderValues] withholds — keeping the value
  *   intact keeps the redaction total.
  * @property sessionId the anti-CSRF token, or `null` when the jar has none. ⚠️ Unlike [cookieHeader], this
- *   value is **disclosed** by the resulting proof: it occupies a request body, and the vendored prover has no
+ *   value is **disclosed** by the resulting proof: it occupies a request body, and the pinned prover has no
  *   request-body reveal control. Bounded — it is useless without the cookie, which is redacted — but real,
  *   which is why a write needs `ProvenRead.acknowledgeRequestBodyDisclosure`.
  */

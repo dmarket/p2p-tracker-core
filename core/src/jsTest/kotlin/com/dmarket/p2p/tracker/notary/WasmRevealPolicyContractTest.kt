@@ -13,7 +13,7 @@ import kotlin.test.Test
 import kotlin.test.assertTrue
 
 /**
- * Asserts the reveal policy this library builds is one the **real, vendored** wasm prover accepts.
+ * Asserts the reveal policy this library builds is one the **real, pinned** wasm prover accepts.
  *
  * This exists because the integration once shipped completely dead: upstream made
  * `revealRequestTarget` a required `RevealPolicy` field and nothing here noticed, because every test
@@ -43,8 +43,8 @@ class WasmRevealPolicyContractTest {
     )
 
     @Test
-    fun the_policy_we_build_is_accepted_by_the_vendored_wasm() = runTest {
-        val wasm = loadVendoredProver()
+    fun the_policy_we_build_is_accepted_by_the_pinned_wasm() = runTest {
+        val wasm = loadPinnedProver()
 
         val rejection = presentAndCaptureError(wasm, revealPolicy(spec()))
 
@@ -59,9 +59,9 @@ class WasmRevealPolicyContractTest {
         // `BodyReveal` is an untagged union (`"all" | "none" | { jsonPaths }`), and both axes ship the STRING
         // arm today — so the object arm has no live coverage at all. Untagged unions are exactly where a shape
         // drifts unnoticed, so ask the wasm about it, and about a LEAF path specifically: leaves are the open
-        // narrowing (the vendored `f7d40de` reveals key paths for them, so they finally bind by name), and a
+        // narrowing (the prover reveals key paths for them since `f7d40de`, so they finally bind by name), and a
         // drift would otherwise land as a proof rejected inside MPC on the day we flip.
-        val wasm = loadVendoredProver()
+        val wasm = loadPinnedProver()
         val narrowed = spec().copy(responseBodyReveal = ResponseBodyReveal.JsonPaths(listOf("response.offer.tradeofferid")))
 
         val rejection = presentAndCaptureError(wasm, revealPolicy(narrowed))
@@ -73,7 +73,7 @@ class WasmRevealPolicyContractTest {
     fun the_test_can_actually_detect_a_missing_required_field() = runTest {
         // Negative control. Without it the assertion above could pass for the wrong reason — e.g. if the
         // module silently stopped loading — and we would be back to a green suite over a dead prover.
-        val wasm = loadVendoredProver()
+        val wasm = loadPinnedProver()
         val incomplete = revealPolicy(spec())
         js("delete incomplete.revealRequestTarget")
 
@@ -98,19 +98,19 @@ private fun presentAndCaptureError(wasm: dynamic, policy: dynamic): String {
 }
 
 /**
- * Instantiate `vendor/tlsn/pkg` from the source tree.
+ * Instantiate the `pkg/` of the pinned `@dmarket/steam-provenance` — the same bytes `copyTlsnProver` ships.
  *
  * The `self` shim is the one concession to running browser-targeted output under Node: the web-spawn
  * snippet registers a `message` listener on `self` at module scope. The spawner is never started here
  * (that is `initialize`'s job), so an inert `EventTarget` is enough.
  */
-private suspend fun loadVendoredProver(): dynamic {
+private suspend fun loadPinnedProver(): dynamic {
     js("globalThis.self = globalThis.self || Object.assign(new EventTarget(), { postMessage() {} })")
     val fs: dynamic = js("require('fs')")
     val path: dynamic = js("require('path')")
     val url: dynamic = js("require('url')")
 
-    val pkgDir = findPkgDir(fs, path) ?: error("vendor/tlsn/pkg not found above ${js("process.cwd()")}")
+    val pkgDir = path.join(proverPackageRoot(path), "pkg")
     val glue = url.pathToFileURL(path.join(pkgDir, "client_wasm.js")).href.unsafeCast<String>()
 
     val wasm: dynamic = js("import(/* webpackIgnore: true */ glue)").unsafeCast<Promise<dynamic>>().await()
@@ -119,13 +119,12 @@ private suspend fun loadVendoredProver(): dynamic {
     return wasm
 }
 
-/** Walk up from the working directory until `vendor/tlsn/pkg` appears — the test's cwd varies by task. */
-private fun findPkgDir(fs: dynamic, path: dynamic): String? {
-    var dir = js("process.cwd()").unsafeCast<String>()
-    repeat(8) {
-        val candidate = path.join(dir, "vendor", "tlsn", "pkg").unsafeCast<String>()
-        if (fs.existsSync(path.join(candidate, "client_wasm.js")) as Boolean) return candidate
-        dir = path.dirname(dir).unsafeCast<String>()
-    }
-    return null
-}
+/**
+ * The installed package's root, found the way its consumer contract prescribes: resolve the exported
+ * `package.json` and take its directory. `pkg/` is deliberately not an `exports` subpath, so it cannot be
+ * resolved by specifier, and a hard-coded `node_modules/…` path breaks as soon as the Kotlin/JS layout
+ * moves. Throws `MODULE_NOT_FOUND` when the npm install has not run — the jsMain `npm(…)` dependency is
+ * what puts it there.
+ */
+private fun proverPackageRoot(path: dynamic): String =
+    path.dirname(js("require.resolve('@dmarket/steam-provenance/package.json')")).unsafeCast<String>()

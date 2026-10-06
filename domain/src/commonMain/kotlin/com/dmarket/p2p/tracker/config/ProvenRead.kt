@@ -120,7 +120,7 @@ data class ProvenRead(
     /**
      * Required to construct a write, and it names a disclosure rather than a preference.
      *
-     * The vendored prover's `RevealPolicy` has **no request-body field** — only
+     * The pinned prover's `RevealPolicy` has **no request-body field** — only
      * `redactRequestHeaderValues`, `revealRequestTarget`, `revealResponseHeaders` and `revealResponseBody` —
      * so a proven write's form body, `sessionid` included, is disclosed to the verifier and cannot be withheld
      * the way a header value can. The exposure is bounded (`sessionid` is useless without the
@@ -128,7 +128,7 @@ data class ProvenRead(
      * only thing that can force it to be made consciously — the same discipline as
      * `ProvenReadSpec.revealRequestTarget` having no default.
      *
-     * Lifting this means an upstream prover field; the ask is recorded in `vendor/tlsn/INTEGRATION.md`.
+     * Lifting this means an upstream prover field; the ask is recorded in `core/PROVER.md`.
      */
     val acknowledgeRequestBodyDisclosure: Boolean = false,
 ) {

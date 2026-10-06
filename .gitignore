@@ -11,7 +11,8 @@ build/
 local.properties
 *.local
 
-# Node (KMP/JS toolchain + dist)
+# Node (KMP/JS toolchain + dist). kotlin-js-store/ (the Kotlin/JS yarn.lock) stays untracked on purpose:
+# the one npm input that ships, the TLSN prover, is pinned by version + integrity in core/build.gradle.kts.
 node_modules/
 kotlin-js-store/
 
@@ -27,8 +28,8 @@ tools/debug-extension/vendor/
 tools/debug-extension/settings.local.js
 tools/debug-extension/manifest.local.json
 
-# Downloaded steam-provenance artifact tarballs. The prover itself IS vendored, unpacked, under
-# vendor/tlsn/ — see vendor/tlsn/INTEGRATION.md; only the archives stay out of the tree.
+# Downloaded steam-provenance CI artifact tarballs, the pre-npm way to fetch the prover. It now comes from
+# npm (see core/PROVER.md); these stay ignored so a stray download is never committed.
 client-wasm-*.tgz
 client-wasm-*.tgz.sha256
 client-wasm-steam-provenance-*/

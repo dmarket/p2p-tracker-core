@@ -385,7 +385,7 @@ data class NotaryConfig(
      * **Which is why more threads cannot help.** Rayon slack does nothing when the starving thread is the one
      * that must service the sockets. Other TLSN clients avoid the hang not through their worker pool but by
      * never entering the online-decrypt branch at all (`defer_decryption_from_start: true`),
-     * and that flag is not exposed on our vendored artifact's `IssuanceConfig`. See [maxRecvDataOnline].
+     * and that flag is not exposed on our pinned prover's `IssuanceConfig`. See [maxRecvDataOnline].
      *
      * The upload, not the CPU, still dominates wall-clock (38 MB against a 718 B request), so a healthy proof
      * is not expected to get much faster from this either.
@@ -418,7 +418,7 @@ data class NotaryConfig(
      * carries why). It names the offer **object** rather than its two bound fields because under the prover
      * this was written against a leaf path disclosed the value span without its key, so the verifier received
      * bare byte runs naming no field. Measured on a real body: `response.offer` → 403 B with keys present,
-     * against 10 B and 1 B for the leaves inside it. The vendored prover now reveals key paths for leaves too,
+     * against 10 B and 1 B for the leaves inside it. The pinned prover now reveals key paths for leaves too,
      * so the narrowing to leaves is available the day a path reveal can be used at all — and note the object
      * also discloses `accountid_other`, `items_to_give` (with `assetid`, `est_usd`) and the timestamps.
      */
@@ -604,14 +604,14 @@ data class NotaryConfig(
      *
      * **`null` is the deliberate default, and it is not the same kind of default as [maxRecvDataOnline]'s.**
      * That one mirrors a number the artifact documents (2 KiB), so writing it explicitly only makes the
-     * effective value visible. This one has **no documented number**: the vendored `IssuanceConfig` says
+     * effective value visible. This one has **no documented number**: the pinned prover's `IssuanceConfig` says
      * "omitted caps keep the `client_core` contract defaults" and names no figure for the record budgets. A
      * guessed value could therefore be *lower* than the default it replaces — and an online budget that
      * cannot hold the response head is the hard `record layer error: attempted to decrypt more data in the
      * online phase` that [maxRecvDataOnline]'s own table records at 32. So an unset value keeps this path
      * byte-for-byte what every deployment before the field existed had, and setting it is an explicit act.
      *
-     * **What it is for, and what is not yet known.** It arrived with the vendored prover at `GIT_SHA
+     * **What it is for, and what is not yet known.** It arrived with the prover at `GIT_SHA
      * 83d77b4`, whose branch is named for the client-side deadlock — the spin documented on [threadCount],
      * where the driver thread starves both WebSockets inside the online-decrypt branch. The byte budget and
      * the record count bound that same branch along different axes: a response split across more records

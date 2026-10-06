@@ -86,7 +86,7 @@ const val COOKIE_PLACEHOLDER: String = "{cookie}"
  * edge.
  *
  * ⚠️ Unlike [TOKEN_PLACEHOLDER] and [COOKIE_PLACEHOLDER], the value that lands here is **disclosed** by the
- * proof. It occupies a form body, and the vendored prover's `RevealPolicy` has no request-body control at all
+ * proof. It occupies a form body, and the pinned prover's `RevealPolicy` has no request-body control at all
  * (only `redactRequestHeaderValues` / `revealRequestTarget` / `revealResponseHeaders` /
  * `revealResponseBody`), so a request body cannot be withheld the way a header value can. The exposure is
  * bounded — `sessionid` is worthless without the `steamLoginSecure` cookie, which *is* redacted — but it is a
@@ -135,7 +135,7 @@ sealed interface ResponseBodyReveal {
      *    and an 11-digit `assetid`, so a prover could reveal unrelated values and produce a presentation
      *    that is structurally indistinguishable from an honest one.
      *
-     * All three are closed as of the vendored prover `f7d40de`, which reveals each selected field with the key
+     * All three are closed as of the prover at `f7d40de`, which reveals each selected field with the key
      * path that names it — so they are no longer why this setting stands. The framing above is.
      *
      * Revealing the whole response costs disclosure of the response *headers* too (the prover reveals one
@@ -161,7 +161,7 @@ sealed interface ResponseBodyReveal {
      * [ProvenReadSpec.revealResponseHeaders] to `true` in the same change, or the presentation loses the
      * header/body separator the verifier splits on.
      *
-     * As of the vendored prover `f7d40de`, each path is revealed **with the key path that names it**, plus the
+     * As of the prover at `f7d40de`, each path is revealed **with the key path that names it**, plus the
      * enclosing braces and commas — a value on its own proves those bytes were in the authenticated response,
      * but nothing ties them to the field they came from. Two consequences for whoever consumes the
      * presentation, and the first is the reason this is not live yet:

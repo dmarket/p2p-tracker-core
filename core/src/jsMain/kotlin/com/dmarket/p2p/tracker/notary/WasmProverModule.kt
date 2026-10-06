@@ -56,7 +56,7 @@ data class WasmProveRequest(
      * Steam's `sessionid` anti-CSRF token for a community write, or `null` for every read.
      *
      * ⚠️ Unlike every other credential on this path, this one is **disclosed** by the resulting proof: it
-     * occupies the request body, and the vendored `RevealPolicy` has no request-body control. See
+     * occupies the request body, and the pinned prover's `RevealPolicy` has no request-body control. See
      * `SESSION_ID_PLACEHOLDER`.
      */
     val steamSessionId: String? = null,
@@ -120,7 +120,7 @@ interface WasmProverModule {
  *
  * The client's remaining duty is to ship `pkg/` and `transport/` at that root as web-accessible
  * resources — unavoidable, since an extension can only fetch what it packages. Those obligations
- * (keep `pkg/` loose, cross-origin isolation) are in `vendor/tlsn/INTEGRATION.md`.
+ * (keep `pkg/` loose, cross-origin isolation) are in `core/PROVER.md`.
  *
  * @param onProgress optional trace sink for this realm: one [issuanceLine] per proof (the parameters the
  *   prover was actually handed) followed by the wasm's own stage boundaries ([progressLine]). Absent by
@@ -484,8 +484,8 @@ internal fun issuanceLine(request: WasmProveRequest): String = buildString {
  * `dynamic` crossing a host boundary is a shape nobody can typecheck. `source` is dropped: it is always
  * `"wasm"` on this path.
  *
- * Every field is read defensively. This object is produced by the vendored prover, so a version bump can
- * rename or drop a field (`vendor/tlsn/VERSION` pins the artifact, not the event shape) — and the failure
+ * Every field is read defensively. This object is produced by the pinned prover, so a version bump can
+ * rename or drop a field (`core/build.gradle.kts` pins a package release, not the event shape) — and the failure
  * mode of a naive read is a `TypeError` thrown from inside a wasm-invoked callback, i.e. exactly the trap
  * this call site exists to help diagnose.
  */
@@ -505,7 +505,7 @@ private fun dynString(value: dynamic): String? = if (jsTypeOf(value) == "string"
 
 private fun dynNumber(value: dynamic): Double? = if (jsTypeOf(value) == "number") value.unsafeCast<Double>() else null
 
-/** Absolute URL of a vendored prover asset, resolved against the extension root. */
+/** Absolute URL of a prover asset, resolved against the extension root. */
 private fun proverAssetUrl(path: String): String = webExtApi().runtime.getURL(path) as String
 
 /**

@@ -83,24 +83,12 @@ jobs:
     executor: jdk-node
     steps:
       - checkout
-      - run:
-          # The vendored TLSN prover is a ~10 MB binary that review cannot inspect, and it is
-          # redistributed inside the npm package. A tampered prover would run MPC code with access to
-          # the device Steam access token and a live DMarket token.
-          #
-          # BE PRECISE ABOUT WHAT THIS PROVES: SHA256SUMS is committed beside the bytes it describes,
-          # so this compares the vendored tree against its own manifest. It catches corruption in the
-          # tree or in transit; it does NOT catch substitution by anyone who can commit both. Proving
-          # these bytes are what the pinned upstream revision compiles to needs a reproducible rebuild,
-          # which does not exist yet (THIRD_PARTY_NOTICES.md is honest about the same gap).
-          #
-          # Also pins provenance: GIT_SHA must match the notary the prover talks to, because a
-          # prover/notary version mismatch surfaces as an opaque MPC failure, not a clean error.
-          name: Verify the vendored TLSN prover against its published checksums
-          command: |
-            cd vendor/tlsn
-            sha256sum -c SHA256SUMS
-            grep -E '^(GIT_SHA|WASM_SHA256|TRANSPORT_VERSION)=' VERSION
+      # No separate prover step: the TLSN prover is a pinned npm dependency, and :core:verifyTlsnProver
+      # checks it — integrity against the pin committed in core/build.gradle.kts, version,
+      # gitHead == GIT_SHA, SHA256SUMS, WASM_SHA256 — and fails the build on any miss. Both the JS tests
+      # (which run the real wasm) and the copy into the distribution depend on it, so nothing executes or
+      # ships the package unchecked. Its log line names GIT_SHA, which must match the notary the prover
+      # talks to (a mismatch surfaces as an opaque MPC failure, not a clean error). See core/PROVER.md.
       - restore_gradle_cache
       - run:
           name: Check (spotless + JVM/JS tests + kover gate) + JS library distribution

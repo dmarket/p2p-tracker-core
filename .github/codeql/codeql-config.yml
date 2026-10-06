@@ -1,10 +1,7 @@
-# CodeQL configuration, honoured by GitHub's default code-scanning setup.
+# CodeQL configuration, applied by .github/workflows/codeql.yml.
 #
-# `vendor/` holds third-party build artifacts vendored verbatim (compiled JS/WASM
-# from an upstream CI pipeline; provenance in vendor/tlsn/VERSION). It is never
-# edited in this repo, so findings there cannot be fixed here — they belong
-# upstream. Excluding it keeps the alert list focused on code this repo owns.
+# Nothing is excluded. Third-party build artifacts used to be committed under `vendor/` and were ignored
+# here, since findings in them belong upstream; the one such artifact, the TLSN prover, now arrives as
+# the npm package @dmarket/steam-provenance (pinned in core/build.gradle.kts) into build output that is
+# never part of the analysed checkout. Re-add a `paths-ignore` entry if a vendored tree ever returns.
 name: "p2p-tracker-core"
-
-paths-ignore:
-  - vendor

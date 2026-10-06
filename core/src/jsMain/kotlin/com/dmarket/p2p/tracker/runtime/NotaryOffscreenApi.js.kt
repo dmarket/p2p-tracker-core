@@ -34,7 +34,7 @@ import kotlin.js.Promise
  * The hosting document must be cross-origin isolated — manifest `cross_origin_embedder_policy:
  * {"value":"require-corp"}` + `cross_origin_opener_policy: {"value":"same-origin"}` — and `pkg/` plus
  * `transport/` must be shipped at the extension root as web-accessible resources. See
- * `vendor/tlsn/INTEGRATION.md`.
+ * `core/PROVER.md`.
  *
  * @param requestJson the payload produced by the loop's delegating prover; **carries no credential**,
  *   only the deal/offer/asset ids, the axis, and the public `subjectSteamId`.

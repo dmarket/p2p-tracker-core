@@ -122,7 +122,7 @@ class SteamProofReadMapper(private val config: NotaryConfig) {
      * of reveal PATHS fixes it, because the missing bytes are not in the body at all.
      *
      * TODO(disclosure): narrow the token-authed reads back to `JsonPaths(read.revealJsonPaths)` — leaf paths
-     *  now that the vendored `f7d40de` reveals key paths for leaves — which the community branch below already
+     *  now that the prover reveals key paths for leaves (since `f7d40de`) — which the community branch below already
      *  does with `revealResponseHeaders = true`, the flag that restores the separator. Blocked on one backend
      *  answer: under a path reveal the withheld siblings come back as `'#'` sentinel runs, so the revealed body
      *  is NOT `JSON.parse`-able and the verifier has to match the bound fields textually. Until that is

@@ -76,12 +76,12 @@ val assembleDebugExtension by tasks.registering(Exec::class) {
         "--format=esm",
         "--platform=browser",
         "--external:ws", // node-only websocket transport; not reachable from the debug surface
-        // :core lazily import()s the vendored prover by relative path. Those files are copied into the
-        // :core PRODUCTION distribution, not this harness one, and the harness hardcodes the no-op prover
-        // so the imports never execute — leave them unresolved rather than failing the bundle. A real
-        // client keeps `./pkg/` external for the same reason it must (import.meta.url) but DOES ship it.
-        // These two prefixes mirror the specifiers in :core's WasmProverModule.kt; changing them there
-        // without changing them here silently breaks this bundle.
+        // :core lazily import()s the prover's pkg/ and transport/. Those files are copied into the :core
+        // PRODUCTION distribution, not this harness one, and the harness hardcodes the no-op prover so the
+        // imports never execute — leave them unresolved rather than failing the bundle. Today :core builds
+        // those URLs at runtime (runtime.getURL), which esbuild cannot see, so these two flags match
+        // nothing; they are kept so a literal `./pkg/` or `./transport/` specifier, if one ever returns to
+        // WasmProverModule.kt, stays external here instead of failing the bundle.
         "--external:./pkg/*",
         "--external:./transport/*",
         "--log-level=warning",

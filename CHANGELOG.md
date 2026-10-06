@@ -24,6 +24,16 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   Omitted or blank, the heartbeat reports this library's version as before. Appended last, so existing
   positional calls are unchanged.
 
+### Changed
+
+- The TLSN prover moves to steam-provenance commit `ac583a4` (1.0.3-beta shipped `99e090a`), and is now
+  taken at build time from the npm package `@dmarket/steam-provenance`, pinned to exactly
+  `0.1.0-SNAPSHOT.30` and to that release's registry integrity, instead of from a copy committed to this
+  repository. The layout hosts rely on is unchanged: `pkg/`, `transport/` and `VERSION` at the package
+  root, and the prover package is not added to `dependencies`. The build verifies the pin, the package's
+  `SHA256SUMS` and `WASM_SHA256` before it copies anything. Deploy against a notary built from `ac583a4`'s
+  `dep/tlsn` pin.
+
 ## [1.0.3-beta] - 2026-09-23
 
 ### Fixed

@@ -4,8 +4,8 @@
 # .github/codeql/codeql-config.yml unless an organisation-level repository
 # property points at it, and its Java/Kotlin autobuild fails on this Kotlin
 # Multiplatform build (it runs `gradlew testClasses`, which does not exist here).
-# This workflow applies the config (excludes vendored artifacts) and compiles the
-# Kotlin JVM targets explicitly so the Kotlin sources are actually analysed.
+# This workflow applies the config and compiles the Kotlin JVM targets explicitly
+# so the Kotlin sources are actually analysed.
 #
 # CI for build/test/publish stays on CircleCI; this workflow only runs CodeQL.
 name: CodeQL

@@ -358,9 +358,11 @@ convention.** The real prover is selected on one condition: a host proof delegat
 [`NoOpNotaryProver`](core/src/commonMain/kotlin/com/dmarket/p2p/tracker/adapter/notary/NoOpNotaryProver.kt)
 — no WASM prover runs, no notary socket opens, and the `wss://` proxy default is inert. That is the state
 of every caller that passes no prover (mobile today) and of Firefox, which cannot host one.
-The prover ships inside the package (`vendor/tlsn/`, copied next to the library's ESM entry)
-but is `import()`ed **lazily on the first proof**, so a build that never enables it never loads the
-~10 MB module. Bundling notes: [vendor/tlsn/INTEGRATION.md](vendor/tlsn/INTEGRATION.md).
+The prover ships inside the package (`pkg/` + `transport/`, next to the library's ESM entry, taken at
+build time from an exact-pinned release of
+[`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance)) but is
+`import()`ed **lazily on the first proof**, so a build that never enables it never loads the ~10 MB
+module. Hosting and bundling notes, and how the pin is verified and bumped: [core/PROVER.md](core/PROVER.md).
 
 Proof routing is driven by `proof_required` + the **fixed decisive set**
 ([`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt)),
@@ -799,10 +801,12 @@ The whole point of the pure core is that the decision surface is testable with n
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — module layout, conventions and the checks a change must pass.
 - [tools/debug-extension/README.md](tools/debug-extension/README.md) — the dev-only Chrome debug harness.
+- [core/PROVER.md](core/PROVER.md) — the TLSN prover: where it comes from, what the build verifies, how a
+  host must ship it, and how to bump it.
 
 ## License
 
 [MIT](LICENSE).
 
-Vendored third-party components (the TLSN prover WASM under `vendor/tlsn/`, also redistributed inside
-the npm package) are licensed separately — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Third-party components redistributed inside the npm package (the TLSN prover WASM, taken from
+`@dmarket/steam-provenance`) are licensed separately — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -23,7 +23,7 @@ import com.dmarket.p2p.tracker.port.notary.SteamProofSession
  * with the session-transfer surface.
  *
  * **Manifest requirements:** the `"cookies"` permission and `host_permissions` for
- * `https://steamcommunity.com`, on the context hosting the prover. See `vendor/tlsn/INTEGRATION.md`.
+ * `https://steamcommunity.com`, on the context hosting the prover. See `core/PROVER.md`.
  */
 class WebExtSteamProofCookieSource(private val communityBaseUrl: String = "https://steamcommunity.com") : SteamProofCookieSource {
 

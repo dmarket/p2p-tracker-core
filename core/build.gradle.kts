@@ -1,8 +1,28 @@
 import org.jetbrains.kotlin.gradle.dsl.JsModuleKind
+import org.jetbrains.kotlin.gradle.targets.js.npm.npmProject
+import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
+import java.security.MessageDigest
 
 plugins {
     id("dmarket.kmp.library")
 }
+
+// The TLSN prover this library ships: one exact npm release of @dmarket/steam-provenance. The version and the
+// integrity below move together, and only towards a release whose `gitHead` is the commit the deployed notary
+// was built from — the prover and the notary must share a dep/tlsn pin, and a mismatch fails as an opaque MPC
+// error, never as a version error. Bump procedure: core/PROVER.md.
+//
+// EXACT, never a range or a dist-tag: `^0.1.0-SNAPSHOT.30` would also match every later snapshot.
+val tlsnProverPackage = "@dmarket/steam-provenance"
+val tlsnProverVersion = "0.1.0-SNAPSHOT.30"
+
+// The registry's `dist.integrity` for that version (`npm view <package>@<version> dist.integrity`): the
+// committed anchor for every byte the prover puts into our tarball, checked by copyTlsnProver against the
+// lockfile the install actually used. It lives here rather than in a committed yarn.lock because
+// kotlin-js-store/ is not tracked, and tracking it would freeze every transitive npm dependency of the
+// Kotlin/JS toolchain too — this pins the one npm input that ships, and nothing else.
+val tlsnProverIntegrity =
+    "sha512-VO4RB9/UpK4dVKs8Ubm+9s7aYvFD0jGWwxir6CXcJhf+G5t+yT19Vumf7HPc5EDzsDjEH/GIUSBuHX8Xnlq27Q=="
 
 kotlin {
     js {
@@ -37,8 +57,12 @@ kotlin {
         }
         jsMain.dependencies {
             implementation(libs.ktor.client.js)
-            // No build-time dependency on the TLSN prover: it is a vendored runtime artifact, loaded by
-            // relative import() at proof time. See the copyTlsnProver task below.
+            // The TLSN prover — installed, never imported. No Kotlin code names this package (the prover is
+            // import()ed at proof time from a runtime URL), so no bundler, ours or the extension's, ever sees
+            // it. It is declared only so the Kotlin/JS npm install fetches it for copyTlsnProver below and for
+            // the jsTest contract test. prepare-package.sh blanks `dependencies` in the published
+            // package.json, so a consumer of @dmarket/p2p-tracker-core does not install a second copy.
+            implementation(npm(tlsnProverPackage, tlsnProverVersion))
         }
     }
 }
@@ -117,32 +141,165 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.js.ir.KotlinJsIrLink>()
         }
     }
 
-// The vendored TLSN prover travels WITH the library: notary/WasmProverModule.kt import()s
-// `./pkg/client_wasm.js` and `./transport/dist/index.js` relative to the emitted .mjs, so those two
-// directories must sit beside it in the distribution — and therefore in the published npm tarball,
-// which ships the whole productionLibrary dir. Without this task the notary path resolves to nothing.
+// The TLSN prover travels WITH the library. notary/WasmProverModule.kt import()s `pkg/client_wasm.js` and
+// `transport/dist/index.js` from the extension root (runtime.getURL), and the extension puts them there by
+// copying both directories out of this package — so they must sit at the root of the distribution, and
+// therefore of the published tarball, which ships the whole productionLibrary dir. Without copyTlsnProver the
+// notary path resolves to nothing.
 //
-// VERSION rides along so a shipped build can be traced back to the upstream prover it carries.
-// SHA256SUMS deliberately does NOT: it also covers the artifact's own README.md, which is not copied
-// (it would collide with the package readme), so a `-c` run here would report a spurious miss. The
-// audit anchor is `vendor/tlsn/` in the source tree — see vendor/tlsn/INTEGRATION.md.
+// The source is the pinned npm package above, as installed by the Kotlin/JS npm install. Exactly three paths
+// are taken — pkg/, transport/, VERSION — the same three the tarball carried when the prover was committed to
+// this repo, so the layout the extension depends on does not move. VERSION rides along so a shipped build can
+// be traced to the upstream commit (GIT_SHA) and the notary it must match. Everything else in the package
+// stays behind: its package.json, README.md, CHANGELOG.md, LICENSE and THIRD_PARTY_NOTICES.md would collide
+// with ours or describe the wrong package, and SHA256SUMS also covers that README, so a `-c` run over the
+// copy would report a spurious miss.
+//
+// verifyTlsnProver checks the installed package; any miss fails the build. CI runs no separate step, and
+// nothing reads the package before this task has passed — not copyTlsnProver, and not the JS tests either,
+// which load and run the real pkg/ (WasmRevealPolicyContractTest). The tests are the part that is easy to
+// miss: CI runs `check` before the distribution task, so without the edge below a substituted package would
+// execute in the CI job before the check that rejects it.
+//   1. the lockfile entry the install used carries tlsnProverIntegrity — ties the whole npm tarball to a
+//      value committed here, so the bytes installed today are the bytes that were pinned;
+//   2. the installed package.json is tlsnProverVersion, and its gitHead equals VERSION's GIT_SHA;
+//   3. the files we ship are exactly the pkg/, transport/ and VERSION entries of the package's SHA256SUMS,
+//      and each matches it — an unlisted file fails, and so does a listed one that is missing;
+//   4. VERSION's WASM_SHA256 is the digest of the .wasm actually installed.
+// 2-4 check the package against itself and catch a damaged or half-replaced install; only 1 checks it
+// against this repository.
+val verifyTlsnProver by tasks.registering(VerifyTlsnProver::class) {
+    group = "verification"
+    description = "Verifies the installed TLSN prover npm package against the pin in this build script."
+    val npm = kotlin.js().compilations.getByName("main").npmProject
+    dependsOn(npm.nodeJsRoot.npmInstallTaskProvider)
+    // Copied into locals: the lambdas below must not capture this script, or the task cannot be stored in
+    // the configuration cache.
+    val name = tlsnProverPackage
+    packageName.set(name)
+    packageVersion.set(tlsnProverVersion)
+    packageIntegrity.set(tlsnProverIntegrity)
+    packageDir.set(npm.nodeModulesDir.map { it.dir(name) })
+    installLock.set(npm.nodeJsRoot.rootPackageDirectory.map { it.file("yarn.lock") })
+    stamp.set(layout.buildDirectory.file("tlsn-prover/verified.txt"))
+}
+
+tasks.withType<KotlinJsTest>().configureEach { dependsOn(verifyTlsnProver) }
+
 val copyTlsnProver by tasks.registering(Copy::class) {
     group = "build"
-    description = "Copies the vendored TLSN prover (pkg/ + transport/) into the JS library distribution."
-    val proverDir = rootProject.layout.projectDirectory.dir("vendor/tlsn")
-    // Gradle treats a missing `from` directory as an empty tree, so without this the task would succeed,
-    // copy nothing, and publish a tarball whose notary path 404s on the first proof — in production, on
-    // the one code path this exists to enable. Fail at build time instead.
-    doFirst {
-        require(proverDir.file("pkg/client_wasm_bg.wasm").asFile.isFile) {
-            "vendor/tlsn/pkg/client_wasm_bg.wasm is missing — the TLSN prover is not vendored. " +
-                "See vendor/tlsn/INTEGRATION.md."
-        }
-    }
-    from(proverDir) {
+    description = "Copies the verified TLSN prover's pkg/ + transport/ + VERSION into the JS library distribution."
+    dependsOn(verifyTlsnProver)
+    from(verifyTlsnProver.flatMap { it.packageDir }) {
         include("pkg/**", "transport/**", "VERSION")
     }
     into(layout.buildDirectory.dir("dist/js/productionLibrary"))
 }
 
 tasks.named("jsBrowserProductionLibraryDistribution") { finalizedBy(copyTlsnProver) }
+
+/**
+ * The checks listed above verifyTlsnProver's registration. A task type rather than a doFirst so its state is
+ * plain properties: nothing at execution time reaches back into the build script or the Project.
+ *
+ * Up-to-date only when the pin, the lockfile and every byte under the installed package are what they were
+ * at the last pass, which is the same thing as passing again. Not cacheable: a cache hit would restore a stamp
+ * for a package this machine never looked at.
+ */
+abstract class VerifyTlsnProver : DefaultTask() {
+    @get:Input abstract val packageName: Property<String>
+
+    @get:Input abstract val packageVersion: Property<String>
+
+    @get:Input abstract val packageIntegrity: Property<String>
+
+    // @InputFiles, not @InputDirectory / @InputFile: those reject a missing path with Gradle's own validation
+    // error before the action runs. A missing package is the failure that matters most — a Copy from an absent
+    // directory succeeds and copies nothing, which would publish a tarball whose notary path 404s on the first
+    // proof — so it has to reach verify() and fail with a message that says where to look.
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val packageDir: DirectoryProperty
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val installLock: RegularFileProperty
+
+    @get:OutputFile abstract val stamp: RegularFileProperty
+
+    @TaskAction
+    fun verify() {
+        val pkg = packageName.get()
+        val version = packageVersion.get()
+        val integrity = packageIntegrity.get()
+        val dir = packageDir.get().asFile
+        val lock = installLock.get().asFile
+
+        fun fail(why: String): Nothing = throw GradleException("TLSN prover $pkg@$version: $why. See core/PROVER.md.")
+
+        fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") {
+            "%02x".format(it)
+        }
+
+        if (!dir.resolve("pkg/client_wasm_bg.wasm").isFile) fail("not installed at $dir")
+
+        // 1. Integrity of the npm tarball, as recorded by the install that produced `dir`. yarn verifies the
+        //    download against the registry's integrity and writes that value into the lockfile, so comparing
+        //    the lockfile entry with the pin is comparing the installed tarball with the pin.
+        if (!lock.isFile) fail("no lockfile at $lock to read the installed integrity from")
+        val entries = lock.readText().split(Regex("\n\\s*\n")).filter {
+            it.trimStart().removePrefix("\"").startsWith("$pkg@")
+        }
+        if (entries.size != 1) fail("expected exactly one $pkg entry in $lock, found ${entries.size}")
+        val fields = entries.single().lines().map { it.trim() }
+        val lockedVersion = fields.firstOrNull { it.startsWith("version ") }?.removePrefix("version ")?.trim('"')
+        val lockedIntegrity = fields.firstOrNull { it.startsWith("integrity ") }?.removePrefix("integrity ")
+        if (lockedVersion != version) fail("$lock resolved version $lockedVersion")
+        if (lockedIntegrity?.split(' ')?.contains(integrity) != true) {
+            fail("installed integrity $lockedIntegrity is not the pinned $integrity")
+        }
+
+        // 2. The installed manifest, and the commit it names.
+        val manifest = groovy.json.JsonSlurper().parse(dir.resolve("package.json")) as Map<*, *>
+        if (manifest["version"] != version) fail("installed package.json is version ${manifest["version"]}")
+        val provenance = dir.resolve("VERSION").readLines()
+            .mapNotNull { Regex("""^([A-Z0-9_]+)="(.*)"$""").find(it.trim())?.destructured }
+            .associate { (key, value) -> key to value }
+        val gitSha = provenance["GIT_SHA"] ?: fail("VERSION has no GIT_SHA")
+        if (manifest["gitHead"] != gitSha) fail("package.json gitHead ${manifest["gitHead"]} != VERSION GIT_SHA $gitSha")
+
+        // 3. SHA256SUMS over everything we are about to ship, in both directions. A shipped file the manifest
+        //    does not list would reach every consumer without having been checked by anything. A listed file
+        //    that is missing would ship a prover that loads and then dies — the spawn.js snippet under pkg/ is
+        //    only fetched once initialize() starts its workers — with nothing failing at build time.
+        val sums = dir.resolve("SHA256SUMS").readLines().filter { it.isNotBlank() }.associate { line ->
+            val match = Regex("""^([0-9a-f]{64}) [ *](.+)$""").find(line) ?: fail("malformed SHA256SUMS line: $line")
+            match.groupValues[2] to match.groupValues[1]
+        }
+
+        // The same set copyTlsnProver includes (pkg/**, transport/**, VERSION).
+        fun shipped(path: String) = path.startsWith("pkg/") || path.startsWith("transport/") || path == "VERSION"
+        val installed = dir.walkTopDown().filter(File::isFile)
+            .map { it.relativeTo(dir).invariantSeparatorsPath }
+            .filter(::shipped)
+            .toSortedSet()
+        val listed = sums.keys.filter(::shipped).toSortedSet()
+        (installed - listed).firstOrNull()?.let { fail("$it is not covered by SHA256SUMS") }
+        (listed - installed).firstOrNull()?.let { fail("$it is listed in SHA256SUMS but not installed") }
+        installed.forEach { path ->
+            if (sha256(dir.resolve(path)) != sums.getValue(path)) fail("$path does not match SHA256SUMS")
+        }
+
+        // 4. The provenance manifest describes the binary that is actually there (verified against SHA256SUMS
+        //    just above, so its listed digest is the one to compare).
+        val wasmSha = sums.getValue("pkg/client_wasm_bg.wasm")
+        if (provenance["WASM_SHA256"] != wasmSha) {
+            fail("VERSION WASM_SHA256 ${provenance["WASM_SHA256"]} != actual $wasmSha")
+        }
+
+        val verdict = "TLSN prover $pkg@$version verified (${installed.size} files): " +
+            "GIT_SHA=$gitSha WASM_SHA256=$wasmSha TRANSPORT_VERSION=${provenance["TRANSPORT_VERSION"]}"
+        stamp.get().asFile.writeText(verdict + "\n")
+        logger.lifecycle(verdict)
+    }
+}
