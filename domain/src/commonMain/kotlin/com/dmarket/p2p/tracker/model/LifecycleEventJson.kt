@@ -32,6 +32,8 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("kind", event.kind)
             put("status", event.status)
             put("steamOfferId", event.steamOfferId)
+            put("dealId", event.dealId)
+            put("error", event.error)
         }
         is LifecycleEvent.DirectiveReportFailed -> {
             put("event", "DirectiveReportFailed")

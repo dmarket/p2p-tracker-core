@@ -360,7 +360,9 @@ class TradeTrackerLoop(
     ): CreateOfferResult {
         val credential = credentials.current()
             ?: return CreateOfferResult.Failed("no Steam credential")
-                .also { emit(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED")) }
+                .also {
+                    emit(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = dealId?.value, error = "no Steam credential"))
+                }
         // The FE handed us the backend's create_offer directive_id out-of-band (no heartbeat wait), so the
         // extension itself registers the outcome (steam_offer_id + status) with the backend on /trade-actions.
         val directive = Directive(
@@ -386,7 +388,14 @@ class TradeTrackerLoop(
         val allowed = accountAllowsWrite(expected, credential.subjectSteamId, DirectiveAction.CREATE_OFFER.wireName)
         if (!allowed || linkedSteamIdMismatch) {
             reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR))
-            emit(LifecycleEvent.DirectiveExecuted("create_offer", DirectiveStatus.FAILED.name))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "create_offer",
+                    DirectiveStatus.FAILED.name,
+                    dealId = dealId?.value,
+                    error = ACCOUNT_MISMATCH_ERROR,
+                ),
+            )
             return CreateOfferResult.AccountMismatch(expected ?: credential.subjectSteamId, credential.subjectSteamId)
         }
         // Role guard. This path needs it most: the host synthesises the directive itself, so the backend's
@@ -448,7 +457,15 @@ class TradeTrackerLoop(
             }
             val accepted = reportOutcome(outcome)
             if (wroteToSteam && accepted) pruneOutcome(directiveId)
-            emit(LifecycleEvent.DirectiveExecuted("create_offer", outcome.status.name, outcome.steamOfferId?.value))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "create_offer",
+                    outcome.status.name,
+                    outcome.steamOfferId?.value,
+                    outcome.dealId?.value,
+                    outcome.error,
+                ),
+            )
             // Only a real Steam write completes the claim; a FAILED create wrote nothing, so releasing it
             // leaves a genuine retry (a re-lease, or the user pressing the button again) free to proceed.
             result to outcome.takeIf { wroteToSteam }
@@ -719,7 +736,14 @@ class TradeTrackerLoop(
         if (DealRoleBinding.allowsWrite(activeTracking, directive.dealId)) return true
         reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = BUYER_ROLE_WRITE_ERROR))
         emit(LifecycleEvent.DirectiveDropped(directive.action.wireName, directive.directiveId.value, BUYER_ROLE_WRITE_ERROR))
-        emit(LifecycleEvent.DirectiveExecuted(directive.action.wireName, DirectiveStatus.FAILED.name))
+        emit(
+            LifecycleEvent.DirectiveExecuted(
+                directive.action.wireName,
+                DirectiveStatus.FAILED.name,
+                dealId = directive.dealId?.value,
+                error = BUYER_ROLE_WRITE_ERROR,
+            ),
+        )
         return false
     }
 
@@ -1842,7 +1866,14 @@ class TradeTrackerLoop(
         // markHandled — nothing was written, so a re-lease is simply re-blocked (safely idempotent).
         // It also ends the chain: the session is wrong for every deal, not just this one.
         if (!accountAllowsWrite(linkedSteamId, credential.subjectSteamId, directive.action.wireName)) {
-            emit(LifecycleEvent.DirectiveExecuted("create_offer", DirectiveStatus.FAILED.name))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "create_offer",
+                    DirectiveStatus.FAILED.name,
+                    dealId = directive.dealId?.value,
+                    error = ACCOUNT_MISMATCH_ERROR,
+                ),
+            )
             return WriteAttempt(
                 outcome = directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR),
                 stopChain = true,
@@ -1911,7 +1942,15 @@ class TradeTrackerLoop(
             // Expedite the deal-watch while the new offer awaits the seller's mobile confirmation (state
             // 9). This runs inside the cycle, so runCycle()'s trailing reschedule picks up the window.
             if (result is CreateOfferResult.NeedsConfirmation) armExpedited()
-            emit(LifecycleEvent.DirectiveExecuted("create_offer", outcome.status.name, outcome.steamOfferId?.value))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "create_offer",
+                    outcome.status.name,
+                    outcome.steamOfferId?.value,
+                    outcome.dealId?.value,
+                    outcome.error,
+                ),
+            )
             val attempt = WriteAttempt(
                 outcome = outcome,
                 wroteToSteam = wroteToSteam,
@@ -1945,7 +1984,14 @@ class TradeTrackerLoop(
         // Report FAILED to release the lease; nothing was written, so no markHandled — a re-lease is simply
         // re-blocked.
         if (!accountAllowsWrite(linkedSteamId, credential.subjectSteamId, directive.action.wireName)) {
-            emit(LifecycleEvent.DirectiveExecuted("cancel_offer", DirectiveStatus.FAILED.name))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "cancel_offer",
+                    DirectiveStatus.FAILED.name,
+                    dealId = directive.dealId?.value,
+                    error = ACCOUNT_MISMATCH_ERROR,
+                ),
+            )
             return WriteAttempt(outcome = directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR))
         }
         // Role guard: a buyer-role deal earns no write on either surface. Cancel matters as much as create —
@@ -1988,7 +2034,15 @@ class TradeTrackerLoop(
             // a re-create is now the expected next step. Release it causally rather than making the deal wait
             // out the TTL: this, not the tracking heuristic, is what unblocks a legitimate cancel-then-recreate.
             if (cancelled) directive.dealId?.let { claims.release(setOf(DealWriteKey(it, DirectiveAction.CREATE_OFFER))) }
-            emit(LifecycleEvent.DirectiveExecuted("cancel_offer", outcome.status.name, outcome.steamOfferId?.value))
+            emit(
+                LifecycleEvent.DirectiveExecuted(
+                    "cancel_offer",
+                    outcome.status.name,
+                    outcome.steamOfferId?.value,
+                    outcome.dealId?.value,
+                    outcome.error,
+                ),
+            )
             WriteAttempt(outcome = outcome, wroteToSteam = cancelled) to outcome.takeIf { cancelled }
         }
     }

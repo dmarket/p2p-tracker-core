@@ -39,6 +39,21 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun a_failed_directive_names_its_deal_and_its_error() {
+        val json =
+            parse(
+                LifecycleEvent.DirectiveExecuted(
+                    "cancel_offer",
+                    "FAILED",
+                    dealId = "deal-7",
+                    error = "Steam cancel refused with EResult 15",
+                ),
+            )
+        assertEquals("deal-7", json["dealId"]?.jsonPrimitive?.content)
+        assertEquals("Steam cancel refused with EResult 15", json["error"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun proof_submitted_carries_the_backend_verdict() {
         // `verified` is the whole point of the event: a delivered-but-rejected proof is terminal and moves
         // no counter, so the frame has to say so rather than leaving it to be inferred from an absence.

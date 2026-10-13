@@ -31,8 +31,18 @@ sealed interface LifecycleEvent {
     /** A `/heartbeat` round-trip completed; carries the backend's TTL and what it returned. */
     data class HeartbeatSent(val ttlSeconds: Int, val trackingCount: Int, val directiveCount: Int) : LifecycleEvent
 
-    /** A leased directive finished executing. [kind] = `create_offer`/`cancel_offer`/`report_inventory`. */
-    data class DirectiveExecuted(val kind: String, val status: String, val steamOfferId: String? = null) : LifecycleEvent
+    /**
+     * A leased directive finished executing. [kind] = `create_offer`/`cancel_offer`/`report_inventory`.
+     * [dealId] is the deal it acted for, when it names one, and [error] the outcome's own error text — the
+     * same redacted string the directive report carries to DMarket, so no more than DMarket already sees.
+     */
+    data class DirectiveExecuted(
+        val kind: String,
+        val status: String,
+        val steamOfferId: String? = null,
+        val dealId: String? = null,
+        val error: String? = null,
+    ) : LifecycleEvent
 
     /**
      * A directive-outcome report (`/trade-actions` or `/inventory`) was rejected by the backend or
