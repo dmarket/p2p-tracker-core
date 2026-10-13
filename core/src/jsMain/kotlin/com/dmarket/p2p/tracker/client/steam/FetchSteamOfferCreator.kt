@@ -5,17 +5,14 @@ import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameAdapter
-import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
-import com.dmarket.p2p.tracker.model.steam.toAccountId
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
 import io.ktor.client.statement.bodyAsText
-import io.ktor.http.parameters
 import kotlinx.coroutines.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -100,15 +97,7 @@ class FetchSteamOfferCreator(
      * `declarativeNetRequest`) is swallowed so the create still proceeds.
      */
     private suspend fun installAntiCsrfRule(draft: TradeDraft) {
-        val referer = buildString {
-            append("$communityBaseUrl/tradeoffer/new/")
-            // The shared conversion, not a local copy of the magic base: Steam wants the 32-bit accountid here
-            // and the steamid64 in the body, and having two spellings of that arithmetic is how they get swapped.
-            draft.partner.toAccountId()?.let { accountId ->
-                append("?partner=").append(accountId)
-                draft.tradeToken?.let { append("&token=").append(it) }
-            }
-        }
+        val referer = SteamOfferWire.createReferer(communityBaseUrl, draft)
         val header = { name: String, value: String ->
             val h: dynamic = js("({operation:'set'})")
             h.header = name
@@ -141,38 +130,8 @@ class FetchSteamOfferCreator(
     }
 
     private suspend fun postCreate(url: String, sessionId: String, draft: TradeDraft): CreateOfferResult {
-        // Build the Steam json_tradeoffer / create-params objects in JS, then serialize them to the
-        // form's string fields (Ktor sends the same application/x-www-form-urlencoded body).
-        val me: dynamic = js("({assets:[],currency:[],ready:false})")
-        val assets = js("([])")
-        draft.assetsToGive.forEach { asset ->
-            val a: dynamic = js("({amount:1})")
-            a.appid = adapter.game.appId
-            a.contextid = adapter.inventoryContextId.toString()
-            a.assetid = asset.value
-            assets.push(a)
-        }
-        me.assets = assets
-        val them: dynamic = js("({assets:[],currency:[],ready:false})")
-        val jsonTradeOffer: dynamic = js("({newversion:true,version:2})")
-        jsonTradeOffer.me = me
-        jsonTradeOffer.them = them
-
-        val createParams: dynamic = js("({})")
-        draft.tradeToken?.let { createParams.trade_offer_access_token = it }
-
         val response = try {
-            httpClient.submitForm(
-                url = url,
-                formParameters = parameters {
-                    append("sessionid", sessionId)
-                    append("serverid", "1")
-                    append("partner", draft.partner.value)
-                    append("tradeoffermessage", "")
-                    append("json_tradeoffer", JSON.stringify(jsonTradeOffer))
-                    append("trade_offer_create_params", JSON.stringify(createParams))
-                },
-            ) {
+            httpClient.submitForm(url = url, formParameters = SteamOfferWire.createForm(sessionId, draft, adapter)) {
                 // Steam's own {"strError":…}/EResult text IS the diagnosis for a failed create, so this is
                 // the one request in the core that opts in to carrying its error body. Bounded and scrubbed
                 // by the transport (see captureErrorBody) because this string does not stay local: it
@@ -184,16 +143,7 @@ class FetchSteamOfferCreator(
                 "Steam create returned HTTP ${e.statusCode}${e.errorBody?.let { ": $it" }.orEmpty()}",
             )
         }
-
-        val parsed: dynamic = JSON.parse(response.bodyAsText())
-        val offerId = parsed?.tradeofferid as? String
-            ?: return CreateOfferResult.Failed("Steam create response missing tradeofferid")
-        val needsMobile = parsed.needs_mobile_confirmation == true || parsed.needs_email_confirmation == true
-        return if (needsMobile) {
-            CreateOfferResult.NeedsConfirmation(OfferId(offerId))
-        } else {
-            CreateOfferResult.Created(OfferId(offerId))
-        }
+        return SteamOfferWire.parseCreate(response.bodyAsText())
     }
 
     private companion object {
