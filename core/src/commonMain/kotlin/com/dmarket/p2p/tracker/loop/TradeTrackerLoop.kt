@@ -137,7 +137,12 @@ private const val THROTTLED_WRITE_ERROR = "deferred: this device is backing off 
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
-private const val TOKEN_EXPIRING_REASON = "the Steam token expires before a create could be confirmed"
+
+/**
+ * The `SteamWriteDeferred` reason of a create held back by `LoopConfig.minWriteTokenLifetime`: the token, not
+ * Steam, is the cause, so a host can tell it from back-pressure.
+ */
+const val TOKEN_EXPIRING_DEFER_REASON = "the Steam token expires before a create could be confirmed"
 
 /**
  * Lifecycle reason for a directive whose action this build does not know. Deliberately says nothing
@@ -1794,7 +1799,7 @@ class TradeTrackerLoop(
         // session: defer every create, unreported, so the lease lapses and returns once a fresh token is in.
         config.minWriteTokenLifetime?.let { minimum ->
             if (credential.expiresAt - clock.now() < minimum) {
-                creates.forEach { emitDeferredCreate(it, TOKEN_EXPIRING_REASON, retryAfterSeconds = null) }
+                creates.forEach { emitDeferredCreate(it, TOKEN_EXPIRING_DEFER_REASON, retryAfterSeconds = null) }
                 return emptyList()
             }
         }
