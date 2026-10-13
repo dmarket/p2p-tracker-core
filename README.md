@@ -64,7 +64,7 @@ DMarket backend** — that audit boundary is why the clients are open-source.
 |---|---|
 | **Language** | Kotlin 2.4.10, Kotlin Multiplatform |
 | **Targets** | JS (web extension — shipping) · iOS XCFramework · Android AAR *(both on request)* |
-| **Modules** | `:domain` (pure, zero-IO) · `:core` (IO + platform glue) · `:debug-harness` (dev-only, unpublished) |
+| **Modules** | `:domain` (pure, zero-IO) · `:core` (IO + platform glue) · `:sdk-node` (headless Node client, not published yet) · `:debug-harness` (dev-only, unpublished) |
 | **Backend contract** | `/exchange/v1/p2p/ext/` — heartbeat, trade-events, notary, trade-actions, inventory |
 | **Version** | `VERSION_NAME` in `gradle.properties` (source of truth) |
 | **Coverage gate** | `:domain` ≥70% (`koverVerify`), currently ~90%+ |
@@ -122,6 +122,9 @@ function; all side effects are ports.** Everything below follows from that.
         │  model · engine · policy · game · port (interfaces) · wire   │
         └─────────────────────────────────────────────────────────────┘
 
+        :sdk-node      — the headless client: the same loop on Node.js
+                         depends on :core; nothing depends on it
+
         :debug-harness — dev-only: conformance probes + Chrome console
                          depends on :core; nothing depends on it; never published
 ```
@@ -130,6 +133,7 @@ function; all side effects are ports.** Everything below follows from that.
 |---|---|---|
 | **`:domain`** | `model/` (immutable types, enums, value-class ids, `Deal`/`P2PDealState`/`Directive`/`TrackedDeal`/`TradeStatusReport`), `engine/` (the pure `DirectivePlanner` + `TrackerTick` + `DecisiveTransitions` + `ProofFreshness` + `TerminalClassification`), `policy/` (`CadencePolicy`, `ExponentialBackoff`), `game/` (`GameAdapter`, `Cs2GameAdapter`, `GameRegistry`), `port/` (interfaces only), `wire/` (`@Serializable` DTOs + mappers + `TrackerJson`), `net/` (`NetworkRedaction`), `config/` (`TrackerConfig` tunables). | **Pure, zero-IO.** No Ktor, no platform APIs. Compiler-enforced. The audited surface. |
 | **`:core`** | Ktor `MarketplaceClient` + `SteamReadClient`; the `TradeTrackerLoop` driver; `SteamCredentialProvider` / `MarketplaceCredentialProvider` + session refreshers; `expect`/`actual` adapters (`Scheduler`, `CredentialVault`, `Clock`, HTTP engine); the `@JsExport` JS facade. | **IO + platform glue.** Depends on `:domain` only. |
+| **`:sdk-node`** | The tracker for a trader's bot host: the same `TradeTrackerLoop`, composed for Node.js with no browser and no UI, one process per Steam account. The bot pushes the DMarket Trading API key and a `web`-audience Steam access token over a local, bearer-protected management API (`PUT /v1/dmarket/key`, `PUT /v1/steam/session`, `GET /v1/health`); both stay in memory, every DMarket call is signed with the key, and the Steam writes carry the session in explicit headers. Health reports a closed problem vocabulary. Proofs are not wired yet. | `commonMain` is platform-free and unit-tested on the JVM and Node; `jsMain` holds the Node actuals (file storage for non-secret state, Ed25519 over `node:crypto`, the HTTP listener, the entry point). Not published yet. |
 | **`:debug-harness`** | Two things, split by whether they need a browser: `C1ReportProbes` + `SecretRedaction` (`commonMain`, platform-free, unit-tested) — the **client half of a contract conformance check**, one callable probe per report/write endpoint, so a backend can be verified against the real client and deserializer; and a dev-only Chrome MV3 debug console (`createDebugSession` / `DebugSession`, `jsMain`) that exposes those plus the live browser paths (scrape / refresh / vault / Steam + DMarket reads and writes). | Dev-only. **Never published** (no publish config; the npm artifact is built from `:core` alone) and nothing depends on it, so none of this reaches a consumer. Must not expand `:core`'s audited `@JsExport` surface. Diagnostics **redact secrets by default** — see below. |
 
 ### Ports & adapters (hexagonal)

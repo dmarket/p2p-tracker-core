@@ -29,4 +29,4 @@ rootProject.name = "dmarket-p2p-tracker-core"
 // them and the live browser paths (scrape / refresh / vault / Steam + DMarket reads and writes). It is
 // NEVER published (absent from the publish config — the npm artifact is built from :core alone) and
 // nothing depends on it; it must not expand :core's audited @JsExport surface.
-include(":domain", ":core", ":debug-harness")
+include(":domain", ":core", ":debug-harness", ":sdk-node")

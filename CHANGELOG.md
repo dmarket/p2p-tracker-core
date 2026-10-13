@@ -28,9 +28,24 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 - A tracked deal's `proofSites`: the places the backend enforces a proof at on that deal. A decisive code
   whose site is not listed is reported at once, without a proof. An empty list, or a site name this build
   does not know, proves the full decisive set as before.
+- A host that runs without a browser can compose the loop itself:
+  - `MarketplaceAuthenticator.headersFor` lets an authenticator sign each DMarket request (method, path
+    with query, exact body) instead of attaching a token. The default is unchanged.
+  - `HeaderSessionSteamOfferCreator` and `HeaderSessionSteamOfferCanceller` send the Steam session, the
+    `sessionid` and the anti-CSRF `Referer`/`Origin` as explicit headers. They build only the fixed create
+    and cancel URLs, like the browser writers.
+  - `PersistedTrackerProgressStore`, `PersistedLoopStateStore` and `PersistedDeviceIdStore` keep the loop's
+    state over any `DeviceKeyValueStore`.
+  - `LoopConfig.requireLinkedSteamId` takes no Steam action while the heartbeat names no linked Steam
+    account (`LinkedSteamIdUnknown`), and `LoopConfig.minWriteTokenLifetime` defers creates on a token about
+    to expire. Both are off by default.
+  - `TradeTrackerLoop.linkedSteamId`, and `RuntimeSurface.Headless`, which reports platform `sdk`.
+- `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed
 
+- The browser facade persists loop progress, loop state and the device id through the common persisted
+  stores over `chrome.storage.local`. Storage keys and value formats are unchanged.
 - The TLSN prover moves to steam-provenance commit `ac583a4` (1.0.3-beta shipped `99e090a`), and is now
   taken at build time from the npm package `@dmarket/steam-provenance`, pinned to exactly
   `0.1.0-SNAPSHOT.30` and to that release's registry integrity, instead of from a copy committed to this
