@@ -21,6 +21,7 @@ import com.dmarket.p2p.tracker.model.marketplace.InventoryReport
 import com.dmarket.p2p.tracker.model.marketplace.Money
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofResult
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
@@ -54,6 +55,7 @@ fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     lastOfferCode = lastOfferCode,
     steamTradeId = steamTradeId?.takeIf { it.isNotBlank() }?.let(::TradeId),
     proveAfter = proveAfter.toFreshnessMark(),
+    proofSites = proofSites.orEmpty().map(ProofSite::fromWire).toSet(),
 )
 
 /**

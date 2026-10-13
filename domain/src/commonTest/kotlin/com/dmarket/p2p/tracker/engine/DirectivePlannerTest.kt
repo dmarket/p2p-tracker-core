@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
@@ -275,12 +276,61 @@ class TrackerTickTest {
         proofRequired: Boolean = false,
         steamOfferId: String? = null,
         watch: Set<WatchTarget> = setOf(WatchTarget.GET_TRADE_OFFER),
+        proofSites: Set<ProofSite> = emptySet(),
     ) = TrackedDeal(
         dealId = DealId(dealId),
         steamOfferId = steamOfferId?.let(::OfferId),
         watch = watch,
         proofRequired = proofRequired,
+        proofSites = proofSites,
     )
+
+    /** Every site but [ProofSite.OFFER_CANCELLED], plus the reversal site the backend always adds. */
+    private val cancellationOff = ProofSite.entries.toSet() - ProofSite.OFFER_CANCELLED - ProofSite.UNKNOWN
+
+    private fun intentsFor(deal: TrackedDeal, observed: ObservedTrade) =
+        TrackerTick.reduce(T0, listOf(deal), mapOf(deal.dealId to observed), emptyMap())
+
+    @Test
+    fun a_code_on_a_site_the_deal_does_not_enforce_is_reported_at_once_without_a_proof() {
+        // The saving this field exists for: with `offer_cancelled` switched off, the cancellation codes no
+        // longer buy an MPC session each, and their reports no longer wait behind one.
+        for (code in listOf(6, 8, 10)) {
+            val plan = intentsFor(tracked(proofRequired = true, proofSites = cancellationOff), ObservedTrade(offerState = code))
+            assertTrue(plan.proofIntents.isEmpty(), "offer $code must not be proven")
+            assertEquals(listOf(code), plan.reports.map { it.steamStatusCode }, "offer $code is still reported")
+        }
+        val accepted = intentsFor(tracked(proofRequired = true, proofSites = cancellationOff), ObservedTrade(offerState = 3))
+        assertEquals(1, accepted.proofIntents.size, "an enforced site is still proven")
+    }
+
+    @Test
+    fun an_empty_site_list_proves_the_full_decisive_set() {
+        // An older backend, or a publisher that missed the field: today's behaviour, not "prove nothing".
+        val plan = intentsFor(tracked(proofRequired = true), ObservedTrade(offerState = 6))
+        assertEquals(1, plan.proofIntents.size)
+    }
+
+    @Test
+    fun an_unknown_site_name_proves_the_full_decisive_set() {
+        // A newer backend may gate a code this build proves under a site this build cannot name; guessing
+        // that it does not would report a code the backend refuses unproven.
+        val deal = tracked(proofRequired = true, proofSites = setOf(ProofSite.OFFER_ACCEPTED, ProofSite.UNKNOWN))
+        assertEquals(1, intentsFor(deal, ObservedTrade(offerState = 6)).proofIntents.size)
+    }
+
+    @Test
+    fun the_reversal_site_alone_proves_only_the_refunding_codes() {
+        val deal = tracked(proofRequired = true, watch = historyWatch, proofSites = setOf(ProofSite.TRADE_REVERSED))
+        assertEquals(1, intentsFor(deal, ObservedTrade(historyStatus = 12)).proofIntents.size, "history 12")
+        assertTrue(intentsFor(deal, ObservedTrade(historyStatus = 3)).proofIntents.isEmpty(), "history 3")
+    }
+
+    @Test
+    fun enforced_sites_never_prove_a_deal_without_proof_required() {
+        val deal = tracked(proofRequired = false, proofSites = setOf(ProofSite.OFFER_CANCELLED))
+        assertTrue(intentsFor(deal, ObservedTrade(offerState = 6)).proofIntents.isEmpty())
+    }
 
     @Test
     fun empty_tracking_yields_empty_plan() {
@@ -698,7 +748,7 @@ class DecisiveTransitionsTest {
         // One assertion per place the backend enforces, named by the place rather than by the number, so a
         // set that drifts from the contract fails with the place it dropped.
         val places = mapOf(
-            "offer_created / offer_confirmed" to (TradeStatusSource.OFFER to 2),
+            "offer_confirmed" to (TradeStatusSource.OFFER to 2),
             "offer_accepted" to (TradeStatusSource.OFFER to 3),
             "offer_declined (countered)" to (TradeStatusSource.OFFER to 4),
             "offer_cancelled" to (TradeStatusSource.OFFER to 6),

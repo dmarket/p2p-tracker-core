@@ -32,6 +32,7 @@ import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
@@ -3062,6 +3063,28 @@ class TradeTrackerLoopTest {
         // second one that spends the claim.
         assertEquals(listOf(6, 6), mp.tradeStatusReports.map { it.steamStatusCode }, "the closure is re-sent, not lost")
         assertEquals(1, claims.load().size)
+    }
+
+    @Test
+    fun a_site_the_deal_does_not_enforce_costs_no_proof_session_and_its_report_goes_out_at_once() = runTest {
+        // `offer_cancelled` switched off: the cancellation codes are reported unsigned on the cycle that sees
+        // them, with no MPC session spent and nothing held behind one.
+        val sites = ProofSite.entries.toSet() - ProofSite.OFFER_CANCELLED - ProofSite.UNKNOWN
+        for (code in listOf(6, 8, 10)) {
+            val notary = FakeNotaryProver()
+            val mp = FakeMarketplaceClient(
+                heartbeatResponse = HeartbeatResponse(
+                    activeTracking = listOf(tracked("d1", "offer-1", proofRequired = true).copy(proofSites = sites)),
+                    ttlSeconds = 60,
+                ),
+            )
+            val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to code))
+            loop(marketplace = mp, reader = reader, notary = notary).runOnce()
+
+            assertTrue(notary.provenKinds.isEmpty(), "offer $code must not open a proof session")
+            assertTrue(mp.proofsSubmitted.isEmpty(), "offer $code")
+            assertEquals(listOf(code), mp.tradeStatusReports.map { it.steamStatusCode }, "offer $code is reported at once")
+        }
     }
 
     @Test

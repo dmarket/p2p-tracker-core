@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.engine
 
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 
 /**
@@ -14,7 +15,8 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
  *
  * | place | axis + code |
  * |---|---|
- * | `offer_created` / `offer_confirmed` | offer `2 Active` (reached from `9 CreatedNeedsConfirmation`) |
+ * | `offer_created` | none — it gates only how far an unsigned report may move the deal |
+ * | `offer_confirmed` | offer `2 Active` (reached from `9 CreatedNeedsConfirmation`) |
  * | `offer_accepted` | offer `3 Accepted` |
  * | `offer_declined` | offer `7 Declined`, and `4 Countered` — the buyer's two ways of refusing |
  * | `offer_cancelled` | offer `6 Canceled`, `8 InvalidItems`, `10 CanceledBySecondFactor` |
@@ -51,6 +53,10 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
  * the intended behaviour for an enforced place (the backend would refuse the unsigned report anyway), but it
  * does mean a broken prover silences more of the report stream than before. It applies only to deals the
  * backend has flagged `proof_required`; every other deal reports exactly as it did.
+ *
+ * **This is the set a deal falls back to, not always the set it proves.** A deal that names its enforced sites
+ * (`TrackedDeal.proofSites`) proves only the codes of those sites; [ProofSite] carries the per-site rows, and
+ * `DecisiveTransitionsTest` pins their union to this set with each code on exactly one site.
  */
 object DecisiveTransitions {
     private val DECISIVE_OFFER_CODES = setOf(2, 3, 4, 6, 7, 8, 10)

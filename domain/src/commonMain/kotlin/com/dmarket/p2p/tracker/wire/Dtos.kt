@@ -76,6 +76,15 @@ data class TrackedDealDto(
      * and the TTL. The parse lives in the mapper, guarded.
      */
     @SerialName("proveAfter") val proveAfter: String? = null,
+    /**
+     * The sites whose codes the backend refuses unproven on this deal — see
+     * [com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.proofSites].
+     *
+     * Nullable although an absent list and an empty one mean the same thing: protojson omits an empty
+     * repeated field, but a hand-written projection of a nil slice renders `null`, and a non-null type would
+     * throw on that — inside `toDomain()`, taking the whole heartbeat down rather than one deal.
+     */
+    @SerialName("proofSites") val proofSites: List<String>? = null,
 )
 
 @Serializable

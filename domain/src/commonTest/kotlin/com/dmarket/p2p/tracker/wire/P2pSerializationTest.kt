@@ -11,6 +11,7 @@ import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.support.deal
@@ -142,6 +143,37 @@ class P2pSerializationTest {
             steamTradeId = "744935517744884653",
             proveAfter = "2026-09-02T10:15:30Z",
         )
+        assertEquals(dto, roundTrip(dto))
+    }
+
+    // ---- proof sites ----------------------------------------------------------------------------
+
+    @Test
+    fun heartbeat_response_carries_the_enforced_proof_sites() {
+        val json = """
+            {
+              "activeTracking": [
+                {"dealId":"d1","proofRequired":true,"proofSites":["offer_accepted","trade_reversed"]},
+                {"dealId":"d2","proofRequired":true},
+                {"dealId":"d3","proofRequired":true,"proofSites":null},
+                {"dealId":"d4","proofRequired":true,"proofSites":["offer_accepted","offer_relisted"]}
+              ],
+              "ttlSeconds": 92
+            }
+        """.trimIndent()
+        val tracking = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain().activeTracking
+
+        assertEquals(setOf(ProofSite.OFFER_ACCEPTED, ProofSite.TRADE_REVERSED), tracking[0].proofSites)
+        assertEquals(emptySet(), tracking[1].proofSites, "absent means the backend predates the field")
+        // A nil slice from a hand-written projection: a non-null DTO field would throw here and take the whole
+        // heartbeat with it.
+        assertEquals(emptySet(), tracking[2].proofSites, "an explicit null decodes like an absent list")
+        assertEquals(setOf(ProofSite.OFFER_ACCEPTED, ProofSite.UNKNOWN), tracking[3].proofSites, "kept, not dropped")
+    }
+
+    @Test
+    fun tracked_deal_round_trips_with_its_proof_sites() {
+        val dto = TrackedDealDto(dealId = "d1", proofRequired = true, proofSites = listOf("offer_confirmed", "trade_reversed"))
         assertEquals(dto, roundTrip(dto))
     }
 

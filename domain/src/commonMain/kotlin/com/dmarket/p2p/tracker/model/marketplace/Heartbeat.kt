@@ -133,7 +133,31 @@ data class TrackedDeal(
      * never hold. What the client does with it is `ProofFreshness`'s to explain.
      */
     val proveAfter: Instant? = null,
+    /**
+     * The sites whose codes the backend refuses unproven on this deal: the deal's enforced sites, plus
+     * [ProofSite.TRADE_REVERSED] whenever any is enforced, because a refund is never moved on an unproven
+     * report. Empty from a backend that does not send the field. [provesTransition] reads it.
+     */
+    val proofSites: Set<ProofSite> = emptySet(),
 )
+
+/**
+ * Whether a raw Steam [code] on [source] needs a proof on this deal: [TrackedDeal.proofSites] enforces the site
+ * the code reaches. Says nothing about [TrackedDeal.proofRequired] or the axis gate ([mayProveOn]); the
+ * caller adds both.
+ *
+ * **Falls back to the full decisive set** — every code any site proves — in two cases, both the safe
+ * direction, because a code proven needlessly costs one MPC session while a code reported unproven on an
+ * enforced site is refused and the deal stalls:
+ *  - [TrackedDeal.proofSites] is empty: a backend that predates the field, or a publisher that missed it.
+ *    Proto3 has no presence, so empty is the test, not absent.
+ *  - it names a site this build does not know ([ProofSite.UNKNOWN]).
+ */
+fun TrackedDeal.provesTransition(source: TradeStatusSource, code: Int): Boolean {
+    val site = ProofSite.forTransition(source, code) ?: return false
+    if (proofSites.isEmpty() || ProofSite.UNKNOWN in proofSites) return true
+    return site in proofSites
+}
 
 /**
  * Whether the backend named [source]'s axis in this deal's [TrackedDeal.watch] list.

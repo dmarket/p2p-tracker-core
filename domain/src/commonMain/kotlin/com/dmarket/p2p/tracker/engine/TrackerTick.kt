@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.mayProveOn
+import com.dmarket.p2p.tracker.model.marketplace.provesTransition
 import kotlin.time.Instant
 
 /**
@@ -90,8 +91,10 @@ data class ReportPlan(
  * The pure change-detector for the watch loop (the v2 `pingTradeStatus`/`pingUpdates` reduced to one
  * function). For each watched deal it compares the freshly-[observed] raw Steam codes against the
  * [reported] baseline and emits a [TradeStatusReport] per **changed** axis (raw code, no verdict — the
- * backend maps it). When the deal is `proof_required` and the changed code is decisive
- * ([DecisiveTransitions]), it also emits a [ProofIntent]. No IO, no clock — [now] is supplied.
+ * backend maps it). When the deal is `proof_required` and the changed code reaches a site the deal enforces
+ * ([provesTransition]; the full [DecisiveTransitions] set when it names none), it also emits a
+ * [ProofIntent]. A code on a site the deal does not enforce is reported at once, like any non-decisive code.
+ * No IO, no clock — [now] is supplied.
  *
  * One report is emitted for an **unchanged** history code: when the observation carries a reversal actor
  * the baseline does not yet have (see [ObservedTrade.reversalInitiator]). Everything else that matched the
@@ -124,7 +127,7 @@ object TrackerTick {
                     // report above is deliberately outside the gate; only the proof is axis-bound.
                     if (deal.proofRequired &&
                         deal.mayProveOn(TradeStatusSource.OFFER) &&
-                        DecisiveTransitions.isDecisive(TradeStatusSource.OFFER, code)
+                        deal.provesTransition(TradeStatusSource.OFFER, code)
                     ) {
                         proofIntents += ProofIntent(deal.dealId, TradeStatusSource.OFFER, code)
                     }
@@ -145,7 +148,7 @@ object TrackerTick {
                     // change to how transfers are correlated cannot reintroduce the offer axis's bug here.
                     if (deal.proofRequired &&
                         deal.mayProveOn(TradeStatusSource.HISTORY) &&
-                        DecisiveTransitions.isDecisive(TradeStatusSource.HISTORY, code)
+                        deal.provesTransition(TradeStatusSource.HISTORY, code)
                     ) {
                         proofIntents += ProofIntent(deal.dealId, TradeStatusSource.HISTORY, code)
                     }

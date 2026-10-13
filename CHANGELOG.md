@@ -25,6 +25,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   own build, sent as the heartbeat's `clientVersion` so the backend can tell which build a device runs.
   Omitted or blank, the heartbeat reports this library's version as before. Appended last, so existing
   positional calls are unchanged.
+- A tracked deal's `proofSites`: the places the backend enforces a proof at on that deal. A decisive code
+  whose site is not listed is reported at once, without a proof. An empty list, or a site name this build
+  does not know, proves the full decisive set as before.
 
 ### Changed
 
