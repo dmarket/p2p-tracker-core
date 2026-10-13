@@ -267,6 +267,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.ReLoginNeeded("marketplace"),
             LifecycleEvent.MarketplaceServerError("heartbeat", 404),
             LifecycleEvent.LinkedSteamIdMismatch("1", "2"),
+            LifecycleEvent.LinkedSteamIdUnknown("76561198000000001"),
             LifecycleEvent.SteamSessionAccountMismatch("create_offer", "76561198000000001"),
             LifecycleEvent.CycleFailed("storage unavailable"),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),

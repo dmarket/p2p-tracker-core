@@ -1348,6 +1348,13 @@ class TradeTrackerLoop(
             linkedSteamId?.let { emit(LifecycleEvent.LinkedSteamIdMismatch(it.value, credential.subjectSteamId.value)) }
             return@withLock TickOutcome.EMPTY
         }
+        // Fail-closed binding for a host that requires it: no linked id means no Steam action at all. Unlike a
+        // mismatch the schedule did advance above, because nothing on this side can make the id appear sooner,
+        // and the device has to stay present meanwhile.
+        if (config.requireLinkedSteamId && linkedSteamId == null) {
+            emit(LifecycleEvent.LinkedSteamIdUnknown(credential.subjectSteamId.value))
+            return@withLock TickOutcome.EMPTY
+        }
 
         val directivesExecuted = if (directivesEnabled) executeDirectives(heartbeat, credential) else announceDirectiveGate(heartbeat)
         val (reportsSent, proofsSubmitted) = watchAndReport(heartbeat.activeTracking, credential)

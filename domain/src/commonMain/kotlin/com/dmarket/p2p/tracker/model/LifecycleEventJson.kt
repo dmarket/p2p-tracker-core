@@ -199,6 +199,10 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("linkedSteamId", event.linkedSteamId)
             put("tokenSteamId", event.tokenSteamId)
         }
+        is LifecycleEvent.LinkedSteamIdUnknown -> {
+            put("event", "LinkedSteamIdUnknown")
+            put("tokenSteamId", event.tokenSteamId)
+        }
         is LifecycleEvent.SteamSessionAccountMismatch -> {
             put("event", "SteamSessionAccountMismatch")
             put("kind", event.kind)

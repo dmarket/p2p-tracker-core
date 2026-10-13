@@ -169,6 +169,7 @@ class TradeTrackerLoopTest {
             limits = tunables.notary.breaker,
             random = Random(7),
         ),
+        requireLinkedSteamId: Boolean = false,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -178,7 +179,7 @@ class TradeTrackerLoopTest {
             sessionRefresher = sessionRefresher,
         )
         return TradeTrackerLoop(
-            config = LoopConfig("1.0.0", RuntimeSurface.WebChrome, TrackerMode.Background, tunables),
+            config = LoopConfig("1.0.0", RuntimeSurface.WebChrome, TrackerMode.Background, tunables, requireLinkedSteamId),
             marketplace = marketplace,
             steamReader = reader,
             credentials = provider,
@@ -306,6 +307,53 @@ class TradeTrackerLoopTest {
         l.runOnce()
         assertEquals(TrackerBlock.DM_SESSION_MISSING, l.blockingState, "missing connection outranks the mismatch")
         assertTrue(l.linkedSteamIdMismatch, "the raw mismatch flag is untouched — only precedence changes")
+    }
+
+    @Test
+    fun a_loop_that_requires_the_linked_id_takes_no_steam_action_while_it_is_unknown() = runTest {
+        val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3))
+        val creator = FakeSteamOfferCreator()
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked("d1", "offer-1")),
+                directives = listOf(createDirective()),
+                ttlSeconds = 60,
+            ),
+        )
+        val l = loop(
+            marketplace = mp,
+            reader = reader,
+            creator = creator,
+            directivesEnabled = true,
+            eventObserver = events,
+            requireLinkedSteamId = true,
+        )
+
+        assertEquals(TickOutcome.EMPTY, l.runOnce())
+        assertEquals(1, mp.heartbeatsSent.size, "the heartbeat keeps the device present")
+        assertEquals(0, reader.offerStatusesCalls, "no deal-watch read")
+        assertTrue(creator.created.isEmpty(), "no directive executed")
+        assertTrue(mp.tradeStatusReports.isEmpty())
+        val unknown = events.events.filterIsInstance<LifecycleEvent.LinkedSteamIdUnknown>().single()
+        assertEquals(fakeSteamCredential().subjectSteamId.value, unknown.tokenSteamId)
+
+        // Once the backend names the account, and it is ours, the loop acts as usual.
+        mp.heartbeatResponse = mp.heartbeatResponse.copy(linkedSteamId = fakeSteamCredential().subjectSteamId)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(1, creator.created.size)
+        assertTrue(reader.offerStatusesCalls > 0)
+    }
+
+    @Test
+    fun an_unknown_linked_id_blocks_nothing_by_default() = runTest {
+        val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3))
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked("d1", "offer-1")), ttlSeconds = 60),
+        )
+        loop(marketplace = mp, reader = reader).runOnce()
+        assertEquals(listOf(3), mp.tradeStatusReports.map { it.steamStatusCode }, "the browser path keeps reporting")
     }
 
     // ---- DMarket server error (non-401) ----------------------------------------------------

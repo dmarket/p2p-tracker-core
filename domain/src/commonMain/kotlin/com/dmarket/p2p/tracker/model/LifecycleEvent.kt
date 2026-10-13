@@ -379,6 +379,13 @@ sealed interface LifecycleEvent {
     data class LinkedSteamIdMismatch(val linkedSteamId: String, val tokenSteamId: String) : LifecycleEvent
 
     /**
+     * The heartbeat named no linked Steam id, and this loop requires one before it acts on Steam
+     * (`LoopConfig.requireLinkedSteamId`): nothing is read from or written to Steam this cycle, while the
+     * heartbeat keeps the device present. [tokenSteamId] is the public Steam id of the token held.
+     */
+    data class LinkedSteamIdUnknown(val tokenSteamId: String) : LifecycleEvent
+
+    /**
      * A Steam **write** ([kind]: `create_offer` / `cancel_offer`) was refused before any request, because
      * the browser's Steam web session belongs to a different account than the token the client holds
      * ([tokenSteamId]).
