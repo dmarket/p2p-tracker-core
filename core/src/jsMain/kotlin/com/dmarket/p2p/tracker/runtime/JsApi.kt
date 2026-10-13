@@ -4,14 +4,13 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
+import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.adapter.notary.MarketplaceNotaryTokenProvider
 import com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver
 import com.dmarket.p2p.tracker.adapter.webext.WebExtAlarmsScheduler
+import com.dmarket.p2p.tracker.adapter.webext.WebExtKeyValueStore
 import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageCredentialVault
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageDeviceIdStore
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageLoopStateStore
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageTrackerProgressStore
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
@@ -30,6 +29,8 @@ import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
+import com.dmarket.p2p.tracker.loop.PersistedLoopStateStore
+import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -207,7 +208,7 @@ fun createBrowserLoop(
         steamReader = steamReader,
         scraper = scraper,
         scheduler = WebExtAlarmsScheduler(),
-        deviceId = WebExtStorageDeviceIdStore(),
+        deviceId = PersistedDeviceIdStore(WebExtKeyValueStore()),
         vault = vault,
         clock = clock,
         notary = notary,
@@ -234,8 +235,8 @@ fun createBrowserLoop(
         sessionRefresher = sessionRefresher,
         marketplaceCredentials = marketplaceCredentials,
         // Durable across worker respawns so the loop doesn't re-execute directives / re-report codes each wake.
-        progress = WebExtStorageTrackerProgressStore(),
-        loopState = WebExtStorageLoopStateStore(),
+        progress = PersistedTrackerProgressStore(WebExtKeyValueStore()),
+        loopState = PersistedLoopStateStore(WebExtKeyValueStore()),
         eventObserver = eventObserver,
         // On, and deliberately NOT a host knob: which device may execute a directive is the backend's
         // decision (it leases each one to a single `device_id`), so this stays library scope and becomes

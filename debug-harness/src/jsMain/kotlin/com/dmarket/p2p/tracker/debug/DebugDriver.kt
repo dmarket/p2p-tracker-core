@@ -1,12 +1,11 @@
 package com.dmarket.p2p.tracker.debug
 
+import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.adapter.platformScheduler
 import com.dmarket.p2p.tracker.adapter.webext.WebExtAlarmsScheduler
+import com.dmarket.p2p.tracker.adapter.webext.WebExtKeyValueStore
 import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageCredentialVault
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageDeviceIdStore
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageLoopStateStore
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageTrackerProgressStore
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
@@ -24,6 +23,8 @@ import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
+import com.dmarket.p2p.tracker.loop.PersistedLoopStateStore
+import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -129,7 +130,7 @@ internal fun startDebugTracker(
         steamReader = steamReader,
         scraper = scraper,
         scheduler = scheduler,
-        deviceId = WebExtStorageDeviceIdStore(),
+        deviceId = PersistedDeviceIdStore(WebExtKeyValueStore()),
         vault = vault,
         clock = clock,
         // Steam WRITES + inventory: live community (audit-locked path suffixes stay hardcoded). All observed.
@@ -152,8 +153,8 @@ internal fun startDebugTracker(
         ),
         sessionRefresher = sessionRefresher,
         marketplaceCredentials = marketplaceCredentials,
-        progress = WebExtStorageTrackerProgressStore(),
-        loopState = WebExtStorageLoopStateStore(),
+        progress = PersistedTrackerProgressStore(WebExtKeyValueStore()),
+        loopState = PersistedLoopStateStore(WebExtKeyValueStore()),
         eventObserver = eventObserver,
         // Real C1 behaviour: the real backend may lease create_offer/cancel_offer directives.
         directivesEnabled = true,

@@ -1,10 +1,10 @@
-package com.dmarket.p2p.tracker.adapter.webext
+package com.dmarket.p2p.tracker.loop
 
+import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
 import com.dmarket.p2p.tracker.engine.ProofIntent
 import com.dmarket.p2p.tracker.engine.ReportedStatus
-import com.dmarket.p2p.tracker.loop.TrackerProgressStore
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
+import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.wire.TrackerJson
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -115,10 +116,11 @@ private fun StoredDirectiveOutcome.toDomain(id: DirectiveId): DirectiveOutcome? 
 }
 
 /**
- * [TrackerProgressStore] backed by `chrome.storage.local`, so the watch loop's per-deal reported codes
- * (dedup) and handled-directive set (single-flight) survive an MV3 service-worker respawn.
+ * [TrackerProgressStore] over a [DeviceKeyValueStore], so the watch loop's per-deal reported codes (dedup)
+ * and handled-directive set (single-flight) survive the process: an MV3 service-worker respawn over
+ * `chrome.storage.local`, a restart over a file. Every value is a JSON string under its own key.
  */
-class WebExtStorageTrackerProgressStore : TrackerProgressStore {
+class PersistedTrackerProgressStore(private val storage: DeviceKeyValueStore = InMemoryDeviceKeyValueStore()) : TrackerProgressStore {
     private val reportedSerializer = MapSerializer(String.serializer(), StoredReportedStatus.serializer())
     private val handledSerializer = SetSerializer(String.serializer())
     private val outcomesSerializer = MapSerializer(String.serializer(), StoredDirectiveOutcome.serializer())
@@ -141,7 +143,7 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
 
     /**
      * Serialises the read-modify-write recorders below. Each of them loads the stored value, merges its own
-     * update into it and writes the whole thing back, with a `storage.local` await in the middle — so two
+     * update into it and writes the whole thing back, with a storage await in the middle — so two
      * overlapping calls would both read the pre-merge value and the second `set` would silently drop the
      * first one's update. That was unreachable while every writer ran sequentially inside one cycle; the
      * loop now runs its per-partner `create_offer` chains concurrently, and a lost
@@ -163,7 +165,7 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
     private val freshProofMutex = Mutex()
 
     override suspend fun loadReported(): Map<DealId, ReportedStatus> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_REPORTED) ?: return emptyMap()
+        val json = storage.get(DeviceVaultKeys.TRACKER_REPORTED) ?: return emptyMap()
         val stored = runCatching { TrackerJson.decodeFromString(reportedSerializer, json) }.getOrNull() ?: return emptyMap()
         return stored.entries.associate { (id, s) ->
             DealId(id) to ReportedStatus(s.lastOfferCode, s.lastHistoryCode, s.historyInitiatorReported, s.historySettlementReported)
@@ -174,18 +176,18 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
         val merged = (loadReported() + updates).entries.associate { (id, s) ->
             id.value to StoredReportedStatus(s.lastOfferCode, s.lastHistoryCode, s.historyInitiatorReported, s.historySettlementReported)
         }
-        webExtStorageSet(DeviceVaultKeys.TRACKER_REPORTED, TrackerJson.encodeToString(reportedSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_REPORTED, TrackerJson.encodeToString(reportedSerializer, merged))
     }
 
     override suspend fun loadHandledDirectives(): Set<DirectiveId> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_HANDLED_DIRECTIVES) ?: return emptySet()
+        val json = storage.get(DeviceVaultKeys.TRACKER_HANDLED_DIRECTIVES) ?: return emptySet()
         val stored = runCatching { TrackerJson.decodeFromString(handledSerializer, json) }.getOrNull() ?: return emptySet()
         return stored.map(::DirectiveId).toSet()
     }
 
     override suspend fun recordHandledDirectives(ids: Set<DirectiveId>) = handledMutex.withLock {
         val merged = (loadHandledDirectives().map { it.value } + ids.map { it.value }).toSet()
-        webExtStorageSet(DeviceVaultKeys.TRACKER_HANDLED_DIRECTIVES, TrackerJson.encodeToString(handledSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_HANDLED_DIRECTIVES, TrackerJson.encodeToString(handledSerializer, merged))
     }
 
     override suspend fun loadDirectiveOutcomes(): Map<DirectiveId, DirectiveOutcome> =
@@ -195,13 +197,13 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
 
     override suspend fun recordDirectiveOutcome(outcome: DirectiveOutcome) = outcomesMutex.withLock {
         val merged = loadStoredOutcomes() + (outcome.directiveId.value to outcome.toStored())
-        webExtStorageSet(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES, TrackerJson.encodeToString(outcomesSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES, TrackerJson.encodeToString(outcomesSerializer, merged))
     }
 
     override suspend fun clearDirectiveOutcomes(ids: Set<DirectiveId>) = outcomesMutex.withLock {
         val keys = ids.map { it.value }.toSet()
         val remaining = loadStoredOutcomes().filterKeys { it !in keys }
-        webExtStorageSet(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES, TrackerJson.encodeToString(outcomesSerializer, remaining))
+        storage.set(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES, TrackerJson.encodeToString(outcomesSerializer, remaining))
     }
 
     override suspend fun loadAcceptedProofs(): Map<ProofIntent, Instant> = loadStoredAcceptedProofs().mapNotNull { stored ->
@@ -221,25 +223,25 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
         // Replace any earlier verdict for the same transition rather than appending beside it: this is a map
         // keyed by the intent, stored as a list, so the identity has to be enforced on write.
         val merged = loadStoredAcceptedProofs().filterNot { it.identifies(intent) } + entry
-        webExtStorageSet(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, merged))
     }
 
     override suspend fun clearAcceptedProofs(intents: Set<ProofIntent>) = acceptedProofsMutex.withLock {
         val remaining = loadStoredAcceptedProofs().filterNot { stored -> intents.any { stored.identifies(it) } }
-        webExtStorageSet(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, remaining))
+        storage.set(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, remaining))
     }
 
     override suspend fun loadOnlineBudgets(): Map<DealId, Int> = loadStoredOnlineBudgets().mapKeys { (dealId, _) -> DealId(dealId) }
 
     override suspend fun recordOnlineBudget(dealId: DealId, bytes: Int) = onlineBudgetsMutex.withLock {
         val merged = loadStoredOnlineBudgets() + (dealId.value to bytes)
-        webExtStorageSet(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS, TrackerJson.encodeToString(onlineBudgetsSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS, TrackerJson.encodeToString(onlineBudgetsSerializer, merged))
     }
 
     override suspend fun clearOnlineBudgets(dealIds: Set<DealId>) = onlineBudgetsMutex.withLock {
         val keys = dealIds.mapTo(HashSet()) { it.value }
         val remaining = loadStoredOnlineBudgets().filterKeys { it !in keys }
-        webExtStorageSet(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS, TrackerJson.encodeToString(onlineBudgetsSerializer, remaining))
+        storage.set(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS, TrackerJson.encodeToString(onlineBudgetsSerializer, remaining))
     }
 
     override suspend fun loadFreshProofProgress(): Map<DealId, FreshProofProgress> =
@@ -247,32 +249,32 @@ class WebExtStorageTrackerProgressStore : TrackerProgressStore {
 
     override suspend fun recordFreshProofProgress(dealId: DealId, progress: FreshProofProgress) = freshProofMutex.withLock {
         val merged = loadStoredFreshProof() + (dealId.value to progress.toStored())
-        webExtStorageSet(DeviceVaultKeys.TRACKER_PROVE_AFTER, TrackerJson.encodeToString(freshProofSerializer, merged))
+        storage.set(DeviceVaultKeys.TRACKER_PROVE_AFTER, TrackerJson.encodeToString(freshProofSerializer, merged))
     }
 
     override suspend fun clearFreshProofProgress(dealIds: Set<DealId>) = freshProofMutex.withLock {
         val keys = dealIds.mapTo(HashSet()) { it.value }
         val remaining = loadStoredFreshProof().filterKeys { it !in keys }
-        webExtStorageSet(DeviceVaultKeys.TRACKER_PROVE_AFTER, TrackerJson.encodeToString(freshProofSerializer, remaining))
+        storage.set(DeviceVaultKeys.TRACKER_PROVE_AFTER, TrackerJson.encodeToString(freshProofSerializer, remaining))
     }
 
     private suspend fun loadStoredFreshProof(): Map<String, StoredFreshProofProgress> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_PROVE_AFTER) ?: return emptyMap()
+        val json = storage.get(DeviceVaultKeys.TRACKER_PROVE_AFTER) ?: return emptyMap()
         return runCatching { TrackerJson.decodeFromString(freshProofSerializer, json) }.getOrNull() ?: emptyMap()
     }
 
     private suspend fun loadStoredOnlineBudgets(): Map<String, Int> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS) ?: return emptyMap()
+        val json = storage.get(DeviceVaultKeys.TRACKER_ONLINE_BUDGETS) ?: return emptyMap()
         return runCatching { TrackerJson.decodeFromString(onlineBudgetsSerializer, json) }.getOrNull() ?: emptyMap()
     }
 
     private suspend fun loadStoredOutcomes(): Map<String, StoredDirectiveOutcome> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES) ?: return emptyMap()
+        val json = storage.get(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES) ?: return emptyMap()
         return runCatching { TrackerJson.decodeFromString(outcomesSerializer, json) }.getOrNull() ?: emptyMap()
     }
 
     private suspend fun loadStoredAcceptedProofs(): List<StoredAcceptedProof> {
-        val json = webExtStorageGet(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS) ?: return emptyList()
+        val json = storage.get(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS) ?: return emptyList()
         return runCatching { TrackerJson.decodeFromString(acceptedProofsSerializer, json) }.getOrNull() ?: emptyList()
     }
 }

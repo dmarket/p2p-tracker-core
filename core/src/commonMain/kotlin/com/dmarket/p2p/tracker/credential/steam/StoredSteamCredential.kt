@@ -56,20 +56,20 @@ object DeviceVaultKeys {
     /**
      * Stores the JSON-encoded per-deal last-reported Steam codes (offer/history) so the watch loop only
      * re-POSTs `/trade-events` on a *change*, across MV3 service-worker respawns. See
-     * `WebExtStorageTrackerProgressStore`.
+     * `PersistedTrackerProgressStore`.
      */
     const val TRACKER_REPORTED = "tracker_reported"
 
     /**
      * Stores the JSON-encoded set of handled `directive_id`s so a leased directive is executed at most
-     * once (single-flight), across respawns. See `WebExtStorageTrackerProgressStore`.
+     * once (single-flight), across respawns. See `PersistedTrackerProgressStore`.
      */
     const val TRACKER_HANDLED_DIRECTIVES = "tracker_handled_directives"
 
     /**
      * Stores the JSON-encoded map of handled-but-unacknowledged directive outcomes (keyed by
      * `directive_id`) so a failed `/trade-actions` report can be re-sent when the backend re-leases
-     * the directive; pruned once accepted. See `WebExtStorageTrackerProgressStore`.
+     * the directive; pruned once accepted. See `PersistedTrackerProgressStore`.
      */
     const val TRACKER_DIRECTIVE_OUTCOMES = "tracker_directive_outcomes"
 
@@ -79,7 +79,7 @@ object DeviceVaultKeys {
      * being refused (`P2P_PROOF_REQUIRED`). A re-proof is a full MPC session, so this bounds *cost*, not
      * duplicate work, and it must survive respawns or the bound does not bind: a worker restarts between
      * most cycles. Pruned when the report is accepted, when a fresh proof is refused, and when the deal
-     * leaves the tracked set. See `WebExtStorageTrackerProgressStore` and `NotaryConfig.acceptedProofTtlMs`.
+     * leaves the tracked set. See `PersistedTrackerProgressStore` and `NotaryConfig.acceptedProofTtlMs`.
      */
     const val TRACKER_ACCEPTED_PROOFS = "tracker_accepted_proofs"
 
@@ -87,7 +87,7 @@ object DeviceVaultKeys {
      * Stores the JSON-encoded per-deal online-decryption budgets learned from a refused proof, so the MPC
      * session that bought each lesson is spent once rather than on every wake — a worker respawns between
      * most cycles, so an in-memory-only value would be re-learned almost every time. Pruned when the deal
-     * leaves the tracked set. See `WebExtStorageTrackerProgressStore` and `OnlineBudgetLesson`.
+     * leaves the tracked set. See `PersistedTrackerProgressStore` and `OnlineBudgetLesson`.
      */
     const val TRACKER_ONLINE_BUDGETS = "tracker_online_budgets"
 
@@ -100,7 +100,7 @@ object DeviceVaultKeys {
      * re-armed on nearly every respawn at one full MPC session each. Written only on the backend's
      * `verified = true`, and not cleared by a forced heartbeat. Pruned when the deal leaves the tracked set.
      * Delete a row to make the client re-answer the mark on its next cycle. See
-     * `WebExtStorageTrackerProgressStore` and `ProofFreshness`.
+     * `PersistedTrackerProgressStore` and `ProofFreshness`.
      */
     const val TRACKER_PROVE_AFTER = "tracker_prove_after"
 
@@ -142,19 +142,19 @@ object DeviceVaultKeys {
 
     /**
      * Stores the install-scoped persistent `device_id` (the directive-lease key) so it survives token
-     * refresh / re-login / restart. See `WebExtStorageDeviceIdStore`.
+     * refresh / re-login / restart. See `PersistedDeviceIdStore`.
      */
     const val DEVICE_ID = "device_id"
 
     /**
      * Stores the epoch-millis at which the next presence heartbeat is due, so its own (`ttl_seconds`)
-     * cadence survives a service-worker respawn. See `WebExtStorageLoopStateStore`.
+     * cadence survives a service-worker respawn. See `PersistedLoopStateStore`.
      */
     const val LOOP_HEARTBEAT_AT = "loop_next_heartbeat_at_ms"
 
     /**
      * Stores the epoch-millis until which the expedited-poll window is open, so a just-created offer's
-     * fast cadence survives a service-worker respawn. See `WebExtStorageLoopStateStore`.
+     * fast cadence survives a service-worker respawn. See `PersistedLoopStateStore`.
      */
     const val LOOP_EXPEDITED_UNTIL = "loop_expedited_until_ms"
 
@@ -164,21 +164,21 @@ object DeviceVaultKeys {
     /**
      * Stores the count of consecutive heartbeat server-error failures, so a persistent outage still
      * crosses the debounce threshold when the service worker dies between retries. See
-     * `WebExtStorageLoopStateStore`.
+     * `PersistedLoopStateStore`.
      */
     const val LOOP_SERVER_ERROR_COUNT = "loop_server_error_count"
 
     /**
      * Stores whether the last cycle found no Steam web session, so the host's blocking prompt survives
      * a service-worker respawn — an in-memory flag would read as "nothing is blocking" on the first
-     * wake of every respawn. See `WebExtStorageLoopStateStore`.
+     * wake of every respawn. See `PersistedLoopStateStore`.
      */
     const val LOOP_STEAM_SESSION_MISSING = "loop_steam_session_missing"
 
     /**
      * Stores whether Steam has already been asked to mint a new session during the current
      * missing-session episode, so one attempt stays one attempt across service-worker respawns.
-     * See `WebExtStorageLoopStateStore`.
+     * See `PersistedLoopStateStore`.
      */
     const val LOOP_STEAM_MINT_ATTEMPTED = "loop_steam_mint_attempted"
 
@@ -190,14 +190,14 @@ object DeviceVaultKeys {
      * renders, and an in-memory-only flag reads as "nothing is blocking" on the first wake of every
      * respawn. Stored as the *id* rather than a boolean because that is what makes the verdict
      * falsifiable: a credential whose subject differs from it is evidence the account changed, which is
-     * the only thing that can clear the block without a heartbeat. See `WebExtStorageLoopStateStore`.
+     * the only thing that can clear the block without a heartbeat. See `PersistedLoopStateStore`.
      */
     const val LOOP_STEAM_MISMATCH_TOKEN_ID = "loop_steam_mismatch_token_id"
 
     /**
      * Stores whether the credential named by [LOOP_STEAM_MISMATCH_TOKEN_ID] has already been re-acquired
      * from Steam during the current wrong-account episode, so one re-acquisition stays one across
-     * service-worker respawns. See `WebExtStorageLoopStateStore`.
+     * service-worker respawns. See `PersistedLoopStateStore`.
      */
     const val LOOP_STEAM_MISMATCH_RECHECKED = "loop_steam_mismatch_rechecked"
 

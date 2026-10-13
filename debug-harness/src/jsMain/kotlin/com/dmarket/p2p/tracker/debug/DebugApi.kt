@@ -3,11 +3,12 @@
 package com.dmarket.p2p.tracker.debug
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
+import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver
 import com.dmarket.p2p.tracker.adapter.platformScheduler
+import com.dmarket.p2p.tracker.adapter.webext.WebExtKeyValueStore
 import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageCredentialVault
-import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageDeviceIdStore
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
@@ -169,7 +170,7 @@ class DebugSession internal constructor(private val baseUrl: String, private val
             steamReader = steamReader,
             scraper = scraper,
             scheduler = platformScheduler(GlobalScope, TrackerMode.Background),
-            deviceId = WebExtStorageDeviceIdStore(),
+            deviceId = PersistedDeviceIdStore(WebExtKeyValueStore()),
             vault = vault,
             clock = clock,
             notary = notary,
@@ -438,7 +439,7 @@ class DebugSession internal constructor(private val baseUrl: String, private val
     /** Send a single heartbeat and return the `active_tracking[]` + `directives[]` counts. */
     fun heartbeat(foreground: Boolean = true): Promise<String> = result {
         val cred = provider.current() ?: error("not logged in (no Steam credential)")
-        val deviceId = WebExtStorageDeviceIdStore()
+        val deviceId = PersistedDeviceIdStore(WebExtKeyValueStore())
         val request = HeartbeatRequest(
             clientVersion = TradeTrackerCore.VERSION,
             platform = RuntimeSurface.WebChrome.platformWireName,

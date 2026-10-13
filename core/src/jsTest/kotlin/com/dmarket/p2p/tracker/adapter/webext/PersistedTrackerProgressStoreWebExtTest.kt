@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.adapter.webext
 
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
+import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
@@ -19,10 +20,10 @@ import kotlin.test.assertTrue
 import kotlin.time.Instant
 
 /**
- * Tests for [WebExtStorageTrackerProgressStore]'s persisted directive outcomes, against the same
+ * Tests for [PersistedTrackerProgressStore] over [WebExtKeyValueStore]'s persisted directive outcomes, against the same
  * in-memory `chrome.storage.local` shim as [WebExtStorageCredentialVaultTest].
  */
-class WebExtStorageTrackerProgressStoreTest {
+class PersistedTrackerProgressStoreWebExtTest {
 
     @BeforeTest
     fun installChromeMock() {
@@ -72,7 +73,7 @@ class WebExtStorageTrackerProgressStoreTest {
 
     @Test
     fun directive_outcomes_survive_write_read_round_trip() = runTest {
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         val create = outcome()
         val cancel = outcome(id = "dir-2", action = DirectiveAction.CANCEL_OFFER, status = DirectiveStatus.SUCCESS, steamOfferId = null)
 
@@ -86,7 +87,7 @@ class WebExtStorageTrackerProgressStoreTest {
 
     @Test
     fun clear_removes_only_the_given_ids() = runTest {
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         store.recordDirectiveOutcome(outcome(id = "dir-1"))
         store.recordDirectiveOutcome(outcome(id = "dir-2"))
 
@@ -100,7 +101,7 @@ class WebExtStorageTrackerProgressStoreTest {
     @Test
     fun undecodable_json_falls_back_to_empty_map() = runTest {
         webExtStorageSet(DeviceVaultKeys.TRACKER_DIRECTIVE_OUTCOMES, "not json at all")
-        assertTrue(WebExtStorageTrackerProgressStore().loadDirectiveOutcomes().isEmpty())
+        assertTrue(PersistedTrackerProgressStore(WebExtKeyValueStore()).loadDirectiveOutcomes().isEmpty())
     }
 
     @Test
@@ -115,7 +116,7 @@ class WebExtStorageTrackerProgressStoreTest {
             }
             """.trimIndent(),
         )
-        val loaded = WebExtStorageTrackerProgressStore().loadDirectiveOutcomes()
+        val loaded = PersistedTrackerProgressStore(WebExtKeyValueStore()).loadDirectiveOutcomes()
         assertEquals(setOf(DirectiveId("dir-ok")), loaded.keys)
     }
 
@@ -131,7 +132,7 @@ class WebExtStorageTrackerProgressStoreTest {
         // two overlapping calls both read the pre-merge value and the second `set` drops the first's id. That
         // used to be unreachable (writers ran sequentially); the loop now runs its per-partner create chains
         // concurrently, and a lost handled id means the directive is re-executed on the next re-lease.
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         coroutineScope {
             launch { store.recordHandledDirectives(setOf(DirectiveId("dir-a"))) }
             launch { store.recordHandledDirectives(setOf(DirectiveId("dir-b"))) }
@@ -141,7 +142,7 @@ class WebExtStorageTrackerProgressStoreTest {
 
     @Test
     fun concurrent_outcome_writes_do_not_lose_each_other() = runTest {
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         coroutineScope {
             launch { store.recordDirectiveOutcome(outcome(id = "dir-a")) }
             launch { store.recordDirectiveOutcome(outcome(id = "dir-b")) }
@@ -157,7 +158,7 @@ class WebExtStorageTrackerProgressStoreTest {
     fun fresh_proof_progress_survives_a_write_read_round_trip() = runTest {
         // The whole reason this row exists: an in-memory satisfaction would be re-armed on nearly every MV3
         // respawn, at one full MPC session each.
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         val record = FreshProofProgress(
             satisfied = Instant.fromEpochMilliseconds(1_788_343_213_435),
             attempting = Instant.fromEpochMilliseconds(1_788_343_299_000),
@@ -166,7 +167,7 @@ class WebExtStorageTrackerProgressStoreTest {
         )
         store.recordFreshProofProgress(DealId("deal-1"), record)
 
-        assertEquals(record, WebExtStorageTrackerProgressStore().loadFreshProofProgress()[DealId("deal-1")])
+        assertEquals(record, PersistedTrackerProgressStore(WebExtKeyValueStore()).loadFreshProofProgress()[DealId("deal-1")])
     }
 
     @Test
@@ -174,7 +175,7 @@ class WebExtStorageTrackerProgressStoreTest {
         // The stored value IS the latch key, compared with a strict `>` against the same mark re-parsed from
         // the next heartbeat. A codec that rounded, truncated to seconds or went through a double would make
         // `incoming > satisfied` true forever — one MPC session per wake for the life of the deal.
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         val mark = Instant.fromEpochMilliseconds(1_788_343_213_435)
         store.recordFreshProofProgress(DealId("deal-1"), FreshProofProgress(satisfied = mark))
 
@@ -185,7 +186,7 @@ class WebExtStorageTrackerProgressStoreTest {
 
     @Test
     fun clearing_removes_only_the_named_deals_standing() = runTest {
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         store.recordFreshProofProgress(DealId("deal-1"), standing(1_000))
         store.recordFreshProofProgress(DealId("deal-2"), standing(2_000))
 
@@ -199,7 +200,7 @@ class WebExtStorageTrackerProgressStoreTest {
         // Same policy as every other row here: dropping one costs a re-proof, while failing the read would
         // abort the pass that was about to answer a mark.
         webExtStorageSet(DeviceVaultKeys.TRACKER_PROVE_AFTER, "not json at all")
-        assertTrue(WebExtStorageTrackerProgressStore().loadFreshProofProgress().isEmpty())
+        assertTrue(PersistedTrackerProgressStore(WebExtKeyValueStore()).loadFreshProofProgress().isEmpty())
     }
 
     @Test
@@ -208,7 +209,7 @@ class WebExtStorageTrackerProgressStoreTest {
         // no ladder" — one re-proof, rather than a parked deal.
         webExtStorageSet(DeviceVaultKeys.TRACKER_PROVE_AFTER, """{"deal-1":{}}""")
 
-        assertEquals(FreshProofProgress(), WebExtStorageTrackerProgressStore().loadFreshProofProgress()[DealId("deal-1")])
+        assertEquals(FreshProofProgress(), PersistedTrackerProgressStore(WebExtKeyValueStore()).loadFreshProofProgress()[DealId("deal-1")])
     }
 
     @Test
@@ -221,7 +222,7 @@ class WebExtStorageTrackerProgressStoreTest {
     fun concurrent_freshness_writes_do_not_lose_each_other() = runTest {
         // Read-modify-write with a storage await in the middle, like every recorder here. Two demands can be
         // answered in one pass, so this is reachable rather than theoretical.
-        val store = WebExtStorageTrackerProgressStore()
+        val store = PersistedTrackerProgressStore(WebExtKeyValueStore())
         coroutineScope {
             launch { store.recordFreshProofProgress(DealId("deal-a"), standing(1_000)) }
             launch { store.recordFreshProofProgress(DealId("deal-b"), standing(2_000)) }
