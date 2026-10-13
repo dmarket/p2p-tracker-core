@@ -137,6 +137,7 @@ private const val THROTTLED_WRITE_ERROR = "deferred: this device is backing off 
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
+private const val TOKEN_EXPIRING_REASON = "the Steam token expires before a create could be confirmed"
 
 /**
  * Lifecycle reason for a directive whose action this build does not know. Deliberately says nothing
@@ -1126,6 +1127,13 @@ class TradeTrackerLoop(
     private var lastLinkedSteamId: SteamId? = null
 
     /**
+     * The Steam id the last successful heartbeat named as linked to this DMarket account, or `null` before
+     * one or when the backend named none. A headless host reads it to refuse a pushed token for another
+     * account before it reaches the loop.
+     */
+    val linkedSteamId: SteamId? get() = lastLinkedSteamId
+
+    /**
      * `true` while the Steam id the backend linked to this DMarket account disagrees with the Steam id of
      * the token the client holds — a wrong-account session. The host shows a "log into the correct Steam
      * account" prompt; **all Steam requests (reads and writes) are blocked** until the accounts agree.
@@ -1782,6 +1790,14 @@ class TradeTrackerLoop(
         tracking: List<TrackedDeal>,
     ): List<WriteAttempt> {
         if (creates.isEmpty()) return emptyList()
+        // A token too close to its expiry would leave an offer the seller cannot confirm in time on this
+        // session: defer every create, unreported, so the lease lapses and returns once a fresh token is in.
+        config.minWriteTokenLifetime?.let { minimum ->
+            if (credential.expiresAt - clock.now() < minimum) {
+                creates.forEach { emitDeferredCreate(it, TOKEN_EXPIRING_REASON, retryAfterSeconds = null) }
+                return emptyList()
+            }
+        }
         val chainPlan = CreateChainPlanner.plan(
             creates = creates,
             throttle = throttle.snapshot(),

@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.loop
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
+import kotlin.time.Duration
 
 /**
  * Static configuration for a [TradeTrackerLoop] instance.
@@ -18,6 +19,9 @@ import com.dmarket.p2p.tracker.model.TrackerMode
  *   itself keeps running. For a host that cannot check the account any other way (a headless client acting
  *   on a token someone else pushed). `false` keeps the browser behaviour: an absent id is "unknown", never a
  *   block.
+ * @param minWriteTokenLifetime When set, a leased `create_offer` is not attempted while the Steam credential has
+ *   less than this left: it is deferred unreported, so its lease lapses and the backend re-leases it. For a
+ *   host whose token is pushed from outside and cannot be refreshed here. `null` (the default) never defers.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -25,4 +29,5 @@ data class LoopConfig(
     val mode: TrackerMode,
     val tunables: TrackerConfig = TrackerConfig.defaults(),
     val requireLinkedSteamId: Boolean = false,
+    val minWriteTokenLifetime: Duration? = null,
 )

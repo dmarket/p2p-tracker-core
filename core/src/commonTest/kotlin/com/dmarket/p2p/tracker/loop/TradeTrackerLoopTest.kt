@@ -83,6 +83,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -170,6 +171,7 @@ class TradeTrackerLoopTest {
             random = Random(7),
         ),
         requireLinkedSteamId: Boolean = false,
+        minWriteTokenLifetime: Duration? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -179,7 +181,14 @@ class TradeTrackerLoopTest {
             sessionRefresher = sessionRefresher,
         )
         return TradeTrackerLoop(
-            config = LoopConfig("1.0.0", RuntimeSurface.WebChrome, TrackerMode.Background, tunables, requireLinkedSteamId),
+            config = LoopConfig(
+                "1.0.0",
+                RuntimeSurface.WebChrome,
+                TrackerMode.Background,
+                tunables,
+                requireLinkedSteamId,
+                minWriteTokenLifetime,
+            ),
             marketplace = marketplace,
             steamReader = reader,
             credentials = provider,
@@ -344,6 +353,40 @@ class TradeTrackerLoopTest {
         l.runOnce()
         assertEquals(1, creator.created.size)
         assertTrue(reader.offerStatusesCalls > 0)
+    }
+
+    @Test
+    fun a_create_is_deferred_unreported_while_the_token_is_about_to_expire() = runTest {
+        // fakeSteamCredential() expires 24h after the FakeClock epoch; 23h50m on, 10 minutes are left.
+        val clock = FakeClock().apply { advance(23.hours + 50.minutes) }
+        val creator = FakeSteamOfferCreator()
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 60),
+        )
+        loop(
+            marketplace = mp,
+            creator = creator,
+            directivesEnabled = true,
+            clock = clock,
+            eventObserver = events,
+            minWriteTokenLifetime = 30.minutes,
+        ).runOnce()
+
+        assertTrue(creator.created.isEmpty(), "no create on a token with 10 minutes left")
+        assertTrue(mp.directiveOutcomes.isEmpty(), "deferred, not reported: the lease lapses and comes back")
+        val deferred = events.events.filterIsInstance<LifecycleEvent.SteamWriteDeferred>().single()
+        assertEquals("dir-1", deferred.directiveId)
+    }
+
+    @Test
+    fun a_create_runs_while_the_token_has_enough_life_left() = runTest {
+        val creator = FakeSteamOfferCreator()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 60),
+        )
+        loop(marketplace = mp, creator = creator, directivesEnabled = true, minWriteTokenLifetime = 30.minutes).runOnce()
+        assertEquals(1, creator.created.size)
     }
 
     @Test
