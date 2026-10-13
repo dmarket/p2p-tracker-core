@@ -3065,6 +3065,42 @@ class TradeTrackerLoopTest {
     }
 
     @Test
+    fun a_proven_history_code_follows_its_proof_and_without_a_prover_is_claimed_once() = runTest {
+        // The history half of the proof-before-report rule, for every code the backend proves on that axis.
+        // 12 is left to the attribution tests above: an unattributed rollback is re-reported until its actor
+        // resolves, a separate rule that would muddy the "once" asserted here.
+        val proofTracked = historyTracked.copy(proofRequired = true)
+        fun heartbeat() = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(proofTracked), ttlSeconds = 60),
+            dealForGet = fakeDeal(dealId = "deal-1", assetId = "asset-77"),
+        )
+        fun FakeMarketplaceClient.historyCodes() =
+            tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode }
+
+        for (code in listOf(3, 9, 4, 5, 6, 7, 11)) {
+            // A refused proof: proven through the single-trade read, and its raw report waits for a verdict.
+            val notary = FakeNotaryProver()
+            val refused = heartbeat().apply { proofVerified = false }
+            loop(marketplace = refused, reader = rollbackFixture(code), notary = notary).runOnce()
+            assertEquals(listOf(DealId("deal-1") to ProvenReadKind.TRADE_STATUS), notary.provenKinds, "history $code")
+            assertTrue(refused.historyCodes().isEmpty(), "history $code must be withheld behind its refused proof")
+
+            // A verified proof lets the report through.
+            val verified = heartbeat()
+            loop(marketplace = verified, reader = rollbackFixture(code), notary = FakeNotaryProver()).runOnce()
+            assertEquals(1, verified.proofsSubmitted.size, "history $code")
+            assertEquals(listOf(code), verified.historyCodes(), "history $code must follow its verified proof")
+
+            // No prover: no verdict can ever come, so the raw report goes out once and stays sent.
+            val unprovable = heartbeat().apply { tradeStatusAccepted = false }
+            val l = loop(marketplace = unprovable, reader = rollbackFixture(code), notary = NoOpNotaryProver)
+            l.runOnce()
+            l.runOnce()
+            assertEquals(listOf(code), unprovable.historyCodes(), "history $code must be claimed unproven exactly once")
+        }
+    }
+
+    @Test
     fun a_host_with_no_prover_submits_nothing_at_all() = runTest {
         // The other half of the distinction the event above exists for, and it is now made BEFORE the POST:
         // a stub prover answers with an empty payload that the backend can only refuse, and that refusal used

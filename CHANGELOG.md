@@ -16,6 +16,8 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 - `trackerCoreVersion()` and the heartbeat's fallback `clientVersion` report the real library version.
   Both returned a hand-written `0.1.0-SNAPSHOT` through every release up to 1.0.3-beta; the value is now
   generated from `VERSION_NAME` at build time.
+- History states 4, 5, 6, 7, 9 and 11 are decisive transitions, alongside 3 and 12. A reversal Steam
+  reported as 4, 5, 6, 7 or 11 went out unproven, and a refund is never moved on an unproven report.
 
 ### Added
 

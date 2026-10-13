@@ -18,14 +18,22 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
  * | `offer_accepted` | offer `3 Accepted` |
  * | `offer_declined` | offer `7 Declined`, and `4 Countered` — the buyer's two ways of refusing |
  * | `offer_cancelled` | offer `6 Canceled`, `8 InvalidItems`, `10 CanceledBySecondFactor` |
- * | `trade_completed` | history `3 Complete` |
- * | `trade_reversed` | history `12 TradeProtectionRollback` |
+ * | `trade_completed` | history `3 Complete`, `9 RollbackAbandoned` |
+ * | `trade_reversed` | history `4 Failed`, `5`/`6`/`7` support rollbacks, `11 EscrowRollback`, `12 TradeProtectionRollback` |
  *
  * **History `3` is the one that cost money to omit.** It is the payout place: the backend holds the deal at
  * `AwaitingTerminal` until a positive history `Complete(3)` clears the protection window, and with proofs
  * enforced it will not take that transition unsigned. This set carried offer `{2,3,6}` + history `{12}`,
  * raised no proof intent for history `3`, and every proof-enforced deal therefore froze at payout —
  * permanently, with the funds locked, because nothing in the loop ever revisits it.
+ *
+ * **The history axis carries all eight of the backend's codes, not just `3` and `12`.** The backend moves money
+ * on a refunding code (4, 5, 6, 7, 11, 12) only against a verified proof — in every phase, whatever the deal's
+ * enforced places say — so a reversal Steam reports as 4, 5, 6, 7 or 11 reached it raw and was refused for
+ * good: the buyer was never refunded through it. A raw `9` on a deal enforcing `trade_completed` was refused
+ * the same way. Proving them is safe only because every phase that sees the history axis admits all eight; a
+ * code the phase does not admit comes back `transition_mismatch`, and the report it holds is then withheld
+ * for good, so this set may never run ahead of the backend's own mirror of it.
  *
  * **Offer `8 InvalidItems` and `10 CanceledBySecondFactor` are IN, reversing an earlier ruling that kept them
  * out.** That ruling was recorded when the cost was unknown; it has since been measured, and it was paid by
@@ -46,7 +54,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
  */
 object DecisiveTransitions {
     private val DECISIVE_OFFER_CODES = setOf(2, 3, 4, 6, 7, 8, 10)
-    private val DECISIVE_HISTORY_CODES = setOf(3, 12)
+    private val DECISIVE_HISTORY_CODES = setOf(3, 9, 4, 5, 6, 7, 11, 12)
 
     /** Whether a raw Steam status on [source] is one of the decisive transitions that carries a proof. */
     fun isDecisive(source: TradeStatusSource, steamStatusCode: Int): Boolean = when (source) {

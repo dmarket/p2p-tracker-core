@@ -405,6 +405,38 @@ class TrackerTickTest {
     }
 
     @Test
+    fun every_history_code_the_backend_proves_emits_a_proof_intent_beside_its_report() {
+        for (code in listOf(3, 9, 4, 5, 6, 7, 11, 12)) {
+            val plan = TrackerTick.reduce(
+                T0,
+                activeTracking = listOf(tracked(proofRequired = true, watch = historyWatch)),
+                observed = mapOf(DealId("deal-1") to ObservedTrade(historyStatus = code)),
+                reported = emptyMap(),
+            )
+            assertEquals(
+                listOf(ProofIntent(DealId("deal-1"), TradeStatusSource.HISTORY, code)),
+                plan.proofIntents,
+                "history $code must raise an intent",
+            )
+            assertEquals(listOf(code), plan.reports.map { it.steamStatusCode }, "history $code is still reported raw")
+        }
+    }
+
+    @Test
+    fun a_history_code_on_no_backend_row_is_reported_without_a_proof() {
+        for (code in listOf(8, 10)) {
+            val plan = TrackerTick.reduce(
+                T0,
+                activeTracking = listOf(tracked(proofRequired = true, watch = historyWatch)),
+                observed = mapOf(DealId("deal-1") to ObservedTrade(historyStatus = code)),
+                reported = emptyMap(),
+            )
+            assertTrue(plan.proofIntents.isEmpty(), "history $code")
+            assertEquals(listOf(code), plan.reports.map { it.steamStatusCode }, "history $code")
+        }
+    }
+
+    @Test
     fun a_history_watched_deal_raises_no_offer_proof_but_still_reports_the_offer_code() {
         // THE REGRESSION. The account-wide list read observes an offer code for every tracked deal, so a
         // deal the backend watches on the transfer axis sees decisive offer codes too. Raising a proof for
@@ -674,6 +706,12 @@ class DecisiveTransitionsTest {
             "offer_cancelled (second factor)" to (TradeStatusSource.OFFER to 10),
             "offer_declined" to (TradeStatusSource.OFFER to 7),
             "trade_completed" to (TradeStatusSource.HISTORY to 3),
+            "trade_completed (rollback abandoned)" to (TradeStatusSource.HISTORY to 9),
+            "trade_reversed (failed)" to (TradeStatusSource.HISTORY to 4),
+            "trade_reversed (partial support rollback)" to (TradeStatusSource.HISTORY to 5),
+            "trade_reversed (full support rollback)" to (TradeStatusSource.HISTORY to 6),
+            "trade_reversed (selective support rollback)" to (TradeStatusSource.HISTORY to 7),
+            "trade_reversed (escrow rollback)" to (TradeStatusSource.HISTORY to 11),
             "trade_reversed" to (TradeStatusSource.HISTORY to 12),
         )
         for ((place, axis) in places) {
@@ -707,8 +745,26 @@ class DecisiveTransitionsTest {
     }
 
     @Test
+    fun the_refunding_history_codes_are_decisive_because_a_refund_never_moves_unproven() {
+        // Regression for refunds that never happened: the backend moves money on a refunding history code
+        // only against a verified proof, whatever the deal's enforced places say. With history {3, 12} a
+        // reversal Steam reported as 4, 5, 6, 7 or 11 reached it raw and was refused for good.
+        for (code in listOf(4, 5, 6, 7, 11, 12)) {
+            assertTrue(DecisiveTransitions.isDecisive(TradeStatusSource.HISTORY, code), "history code $code")
+        }
+    }
+
+    @Test
+    fun history_9_is_decisive_because_the_completion_place_enforces_it() {
+        // RollbackAbandoned: the rollback did not happen, so the trade stands — the same `trade_completed`
+        // place as Complete(3), refused unsigned on a deal that enforces it.
+        assertTrue(DecisiveTransitions.isDecisive(TradeStatusSource.HISTORY, 9))
+    }
+
+    @Test
     fun other_history_codes_are_not_decisive() {
-        for (code in listOf(0, 1, 2, 11, 13)) {
+        // 8 RollbackFailed and 10 InEscrow are on no backend row; 0–2 are the trade still committing.
+        for (code in listOf(0, 1, 2, 8, 10, 13)) {
             assertFalse(DecisiveTransitions.isDecisive(TradeStatusSource.HISTORY, code), "history code $code")
         }
     }
