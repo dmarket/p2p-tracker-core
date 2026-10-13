@@ -419,4 +419,79 @@ class KtorMarketplaceClientTest {
         val ex = assertFailsWith<RateLimitedException> { client.heartbeat(aHeartbeat()) }
         assertEquals(30L, ex.retryAfterSeconds)
     }
+
+    // ---- request-signing authenticators --------------------------------------------------------
+
+    /** Signs nothing: records what it was asked to sign and stamps a per-attempt counter. */
+    private class RecordingSigner(private val refresh: Boolean = false) : MarketplaceAuthenticator {
+        val seen = mutableListOf<MarketplaceRequest>()
+
+        override suspend fun tokenOrNull(): String? = null
+
+        override suspend fun headersFor(request: MarketplaceRequest): Map<String, String> {
+            seen += request
+            return mapOf("X-Api-Key" to "pub", "X-Request-Sign" to "sig-${seen.size}")
+        }
+
+        override suspend fun refreshOnUnauthorized(): Boolean = refresh
+    }
+
+    @Test
+    fun a_signing_authenticator_signs_the_exact_post_it_sends() = runTest {
+        val signer = RecordingSigner()
+        var sentBody: String? = null
+        val engine = MockEngine { request ->
+            assertEquals("pub", request.headers["X-Api-Key"])
+            assertEquals("sig-1", request.headers["X-Request-Sign"])
+            assertNull(request.headers["Authorization"], "a signed request carries no bearer token")
+            sentBody = (request.body as TextContent).text
+            respond("""{"activeTracking":[],"directives":[],"ttlSeconds":120}""", headers = jsonHeaders())
+        }
+        KtorMarketplaceClient(createHttpClient(engine), baseUrl, signer).heartbeat(aHeartbeat())
+
+        val signed = signer.seen.single()
+        assertEquals("POST", signed.method)
+        assertEquals("/exchange/v1/p2p/ext/heartbeat", signed.pathAndQuery)
+        assertEquals(sentBody, signed.body, "the signature must cover the bytes on the wire")
+    }
+
+    @Test
+    fun a_signing_authenticator_signs_a_get_with_an_empty_body() = runTest {
+        val signer = RecordingSigner()
+        val engine = MockEngine {
+            respond(
+                content = """{"dealId":"d-1","state":"P2P_DEAL_STATE_AWAITING_TRADE",
+                    "buyerAccountId":"b","sellerAccountId":"s","offerId":"of","assetId":"a",
+                    "price":{"currency":"USD","amount":"1000"},
+                    "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T13:00:00Z"}""",
+                headers = jsonHeaders(),
+            )
+        }
+        KtorMarketplaceClient(createHttpClient(engine), baseUrl, signer).getDeal(DealId("d-1"))
+
+        assertEquals(MarketplaceRequest("GET", "/exchange/v1/p2p/deals/d-1", ""), signer.seen.single())
+    }
+
+    @Test
+    fun a_retry_after_401_is_signed_afresh() = runTest {
+        val signer = RecordingSigner(refresh = true)
+        val signatures = mutableListOf<String?>()
+        val engine = MockEngine { request ->
+            signatures += request.headers["X-Request-Sign"]
+            if (signatures.size == 1) {
+                respondError(HttpStatusCode.Unauthorized)
+            } else {
+                respond("""{"activeTracking":[],"directives":[],"ttlSeconds":120}""", headers = jsonHeaders())
+            }
+        }
+        val client = KtorMarketplaceClient(
+            createHttpClient(engine),
+            baseUrl,
+            signer,
+            MarketplaceRetryConfig(retryBaseDelayMs = 1, retryMaxDelayMs = 1),
+        )
+        client.heartbeat(aHeartbeat())
+
+        assertEquals<List<String?>>(listOf("sig-1", "sig-2"), signatures, "a signature is never reused across attempts")
+    }
 }

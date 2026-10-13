@@ -40,7 +40,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPath
@@ -209,20 +209,30 @@ class KtorMarketplaceClient(
 
     private suspend fun sendGet(url: String, block: HttpRequestBuilder.() -> Unit): String {
         val response: HttpResponse = httpClient.get(url) {
-            authenticator.tokenOrNull()?.let { header(HttpHeaders.Authorization, it) }
             block()
+            authorize(HttpMethod.Get, body = "")
         }
         return response.bodyAsText()
     }
 
     private suspend fun HttpRequestBuilder.authorizeAndSet(body: String) {
-        // Null token → send unauthenticated: the transport authenticates itself (mobile) or the user is
-        // logged out (web), in which case the 401 path / re-login signal takes over.
-        // The token is sent RAW (no `Bearer ` scheme): the live exchange-gateway parses the header value
-        // as the JWT itself and 401s on a `Bearer `-prefixed value (verified against dev2 2026-07-07;
-        // the DMarket FE sends it the same way). Diverges from the golden contract text on purpose.
-        authenticator.tokenOrNull()?.let { header(HttpHeaders.Authorization, it) }
+        authorize(HttpMethod.Post, body)
         contentType(ContentType.Application.Json)
         setBody(body)
+    }
+
+    /**
+     * Attaches [authenticator]'s headers for this exact request. Runs after the URL is final, so a signing
+     * authenticator signs the path and query that go on the wire.
+     *
+     * The default authenticator sends the token RAW (no `Bearer ` scheme): the live exchange-gateway parses
+     * the header value as the JWT itself and 401s on a `Bearer `-prefixed value (verified against dev2
+     * 2026-07-07; the DMarket FE sends it the same way). Diverges from the golden contract text on purpose.
+     * No header at all → sent unauthenticated: the transport authenticates itself (mobile) or the user is
+     * logged out (web), in which case the 401 path / re-login signal takes over.
+     */
+    private suspend fun HttpRequestBuilder.authorize(method: HttpMethod, body: String) {
+        val request = MarketplaceRequest(method.value, url.build().encodedPathAndQuery, body)
+        authenticator.headersFor(request).forEach { (name, value) -> header(name, value) }
     }
 }

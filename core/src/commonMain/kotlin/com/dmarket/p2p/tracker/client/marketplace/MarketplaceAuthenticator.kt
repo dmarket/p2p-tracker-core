@@ -26,12 +26,32 @@ interface MarketplaceAuthenticator {
     suspend fun tokenOrNull(): String?
 
     /**
+     * The auth headers for one request. Called once per attempt, a retry included, so a signature is never
+     * reused.
+     *
+     * The default sends [tokenOrNull] raw in `Authorization` (no `Bearer ` scheme), and nothing when it is
+     * `null`. A request-signing strategy (a Trading API key) overrides this: it sees the method, the path
+     * with its query and the exact body it has to sign.
+     */
+    suspend fun headersFor(request: MarketplaceRequest): Map<String, String> =
+        tokenOrNull()?.let { mapOf(AUTHORIZATION_HEADER to it) }.orEmpty()
+
+    /**
      * Invoked once after an HTTP 401. Return `true` to retry the request a single time (the implementation
      * has just refreshed the credential), or `false` to let the 401 propagate — the latter when the
      * transport already refreshed+retried inside the engine, or when the user is logged out.
      */
     suspend fun refreshOnUnauthorized(): Boolean
 }
+
+/**
+ * One DMarket request as an authenticator sees it: [method] in upper case, [pathAndQuery] exactly as it goes
+ * on the wire (the encoded path plus `?query` when there is one, no scheme or host) and the [body] string sent,
+ * empty for a GET.
+ */
+data class MarketplaceRequest(val method: String, val pathAndQuery: String, val body: String)
+
+private const val AUTHORIZATION_HEADER = "Authorization"
 
 /**
  * Authenticator backed by a [MarketplaceCredentialProvider]: the token comes from whichever provider the
