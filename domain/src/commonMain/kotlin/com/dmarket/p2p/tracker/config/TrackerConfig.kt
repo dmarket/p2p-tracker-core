@@ -116,7 +116,7 @@ data class CadenceConfig(
     /** Lowest poll interval the platform can sustain in this mode. */
     @JsExport.Ignore
     fun pollFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
-        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox -> webPollFloorMs
+        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox, RuntimeSurface.Headless -> webPollFloorMs
         RuntimeSurface.IosNative -> if (mode == TrackerMode.Foreground) iosForegroundPollFloorMs else iosBackgroundPollFloorMs
         RuntimeSurface.AndroidNative ->
             if (mode == TrackerMode.Foreground) androidForegroundPollFloorMs else androidBackgroundPollFloorMs
@@ -125,7 +125,7 @@ data class CadenceConfig(
     /** Lowest heartbeat interval the platform can sustain in this mode. */
     @JsExport.Ignore
     fun heartbeatFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
-        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox -> webHeartbeatFloorMs
+        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox, RuntimeSurface.Headless -> webHeartbeatFloorMs
         RuntimeSurface.IosNative ->
             if (mode == TrackerMode.Foreground) iosForegroundHeartbeatFloorMs else iosBackgroundHeartbeatFloorMs
         RuntimeSurface.AndroidNative ->

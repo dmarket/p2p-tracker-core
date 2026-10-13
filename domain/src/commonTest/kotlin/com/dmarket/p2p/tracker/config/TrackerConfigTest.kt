@@ -196,4 +196,14 @@ class TrackerConfigTest {
         assertEquals(30_000, defaults.http.requestTimeoutMs) // original untouched
         assertTrue(tuned != defaults)
     }
+
+    @Test
+    fun a_headless_host_keeps_the_browser_floors_and_reports_platform_sdk() {
+        val c = defaults.cadence
+        for (mode in TrackerMode.entries) {
+            assertEquals(c.pollFloor(RuntimeSurface.WebChrome, mode), c.pollFloor(RuntimeSurface.Headless, mode))
+            assertEquals(c.heartbeatFloor(RuntimeSurface.WebChrome, mode), c.heartbeatFloor(RuntimeSurface.Headless, mode))
+        }
+        assertEquals("sdk", RuntimeSurface.Headless.platformWireName)
+    }
 }
