@@ -106,11 +106,12 @@ interface WasmProverModule {
  * reveal policy.
  *
  * Flow: `createProver(wasm)` → `initialize()` → `connectNotary` + `connectProxy` → `prove()` →
- * `present(policy)`. The MPC target is reached through the `p2p-wss-proxy` worker because a browser
- * extension can't open a raw TCP socket.
+ * `present(policy)`. By default the MPC target is reached through the `p2p-wss-proxy` worker because a
+ * browser extension can't open a raw TCP socket; a host that can supplies its own connector ([host]).
  *
  * **Module resolution — deliberately not a literal specifier.** The assets are located at runtime,
- * against the extension root, and `import()`ed lazily on the first proof.
+ * against the extension root (or wherever [WasmProverHost.assetUrl] says), and `import()`ed lazily on the
+ * first proof.
  *
  * A literal relative specifier does not survive bundling: the bundler owns chunk layout and rewrites
  * relative paths against the emitted chunk. Vite turns `./pkg/client_wasm.js` into a
@@ -133,16 +134,21 @@ interface WasmProverModule {
  *   with no callback there was no way to tell whether it died in the disclosure step, the phase-2
  *   attestation exchange, or waiting on a rayon thread that never came back. The very next attempt, on a
  *   fresh context, finished the same work in 15.8 s.
+ * @param host where the assets, the compiled `.wasm`, the notary socket and the target leg come from. The
+ *   default is the extension's own answer to all four; a host outside the browser replaces the ones it cannot
+ *   use. See [WasmProverHost].
  */
-class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null) : WasmProverModule {
+class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null, private val host: WasmProverHost = WasmProverHost()) :
+    WasmProverModule {
     private var transport: dynamic = null
     private var prover: dynamic = null
 
     override suspend fun initialize(threadCount: Int) {
         if (prover == null) {
-            val wasm = importModule(proverAssetUrl("pkg/client_wasm.js")).await()
-            transport = importModule(proverAssetUrl("transport/dist/index.js")).await()
-            prover = transport.createProver(wasm)
+            val wasm = importModule(assetUrl("pkg/client_wasm.js")).await()
+            transport = importModule(assetUrl("transport/dist/index.js")).await()
+            val compiled = host.wasmModule?.invoke()
+            prover = transport.createProver(if (compiled == null) wasm else withCompiledModule(wasm, compiled))
         }
         // The façade memoizes instantiation + init and releases the memo on failure, so repeat calls are
         // free and a genuine retry (e.g. after fixing COOP/COEP) still re-runs.
@@ -160,7 +166,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
         // the byte pipe had dialled, which is the other half of the same verdict (a fixture root REPLACES the
         // Mozilla set, so a fixture PEM aimed at the real `api.steampowered.com` fails identically to no PEM
         // aimed at a fixture). The host-side log can say what it SENT; only this line says what arrived.
-        onProgress?.let { runCatching { it(issuanceLine(request)) } }
+        onProgress?.let { runCatching { it(issuanceLine(request, hostTarget = host.connectTarget != null)) } }
 
         // A browser cannot read why the upgrade failed. The notary answers 400 / 401 / 503 with real
         // meaning behind the split, but JS is handed none of it: all three, and a bare TCP close, arrive
@@ -169,8 +175,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
         // credential is the same DMarket token every marketplace call carries, so a genuinely dead token
         // is caught by the existing HTTP-401 refresh and surfaces through `needsMarketplaceReLogin`.
         val notaryIo = try {
-            transport.connectNotary(request.notaryUrl, request.notaryToken)
-                .unsafeCast<Promise<dynamic>>().await()
+            connectNotary(request).await()
         } catch (cause: Throwable) {
             // The cause carries the transport's own message and the URL, never the credential.
             throw IllegalStateException(
@@ -189,12 +194,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             // 0 B either way) by the time the prover sent its `ClientHello`, and writing to it did not fail
             // cleanly: the wasm trapped `memory access out of bounds`. Dialling on first use makes the socket's
             // age independent of how long the notary takes, which is the only half of that race we own.
-            val serverIo = lazyTargetChannel(
-                onTrace = onProgress,
-                connect = {
-                    transport.connectProxy(request.proxyBaseUrl, spec.serverName, 443).unsafeCast<Promise<dynamic>>()
-                },
-            )
+            val serverIo = lazyTargetChannel(onTrace = onProgress, connect = { connectTarget(request) })
             try {
                 prover.prove(notaryIo, serverIo, issuanceConfig(request), httpRequest(request), progressCallback())
                     .unsafeCast<Promise<dynamic>>().await()
@@ -208,6 +208,30 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
         }
 
         return asByteArray(prover.present(out.attestation, out.secrets, revealPolicy(spec)))
+    }
+
+    private fun assetUrl(path: String): String = host.assetUrl?.invoke(path) ?: extensionAssetUrl(path)
+
+    /**
+     * Two arguments without a host socket, on purpose: that is the call the extension has always made, so its
+     * path stays the transport's own default (the global `WebSocket`) rather than an explicit equivalent.
+     */
+    private suspend fun connectNotary(request: WasmProveRequest): Promise<dynamic> {
+        val webSocket = host.notaryWebSocket?.invoke()
+            ?: return transport.connectNotary(request.notaryUrl, request.notaryToken).unsafeCast<Promise<dynamic>>()
+        val options: dynamic = js("({})")
+        options.WebSocketImpl = webSocket
+        return transport.connectNotary(request.notaryUrl, request.notaryToken, options).unsafeCast<Promise<dynamic>>()
+    }
+
+    private fun connectTarget(request: WasmProveRequest): Promise<dynamic> {
+        val serverName = request.spec.serverName
+        val hosted = host.connectTarget
+        return if (hosted != null) {
+            hosted(serverName, TARGET_PORT).unsafeCast<Promise<dynamic>>()
+        } else {
+            transport.connectProxy(request.proxyBaseUrl, serverName, TARGET_PORT).unsafeCast<Promise<dynamic>>()
+        }
     }
 
     /** Best-effort: a close failure must not mask the prove error we may be unwinding from. */
@@ -445,10 +469,13 @@ internal fun lazyTargetChannel(connect: () -> Promise<dynamic>, onTrace: ((Strin
  *
  * `rootStore` is spelled as the wasm sees it (`mozilla` when absent), because that IS the disclosure-relevant
  * fact: a PEM REPLACES the Mozilla set rather than extending it.
+ *
+ * [hostTarget] says the target leg is the host's own connector ([WasmProverHost.connectTarget]), so the line
+ * reports `target=host` instead of a proxy URL that nothing dials.
  */
-internal fun issuanceLine(request: WasmProveRequest): String = buildString {
+internal fun issuanceLine(request: WasmProveRequest, hostTarget: Boolean = false): String = buildString {
     append("issuance serverName=").append(request.spec.serverName)
-    append(" proxy=").append(request.proxyBaseUrl)
+    if (hostTarget) append(" target=host") else append(" proxy=").append(request.proxyBaseUrl)
     append(" rootStore=").append(request.rootStorePem?.let { "pem(${it.length} chars)" } ?: "mozilla")
     append(" maxSent=").append(request.maxSentData)
     append(" maxRecv=").append(request.maxRecvData)
@@ -506,7 +533,30 @@ private fun dynString(value: dynamic): String? = if (jsTypeOf(value) == "string"
 private fun dynNumber(value: dynamic): Double? = if (jsTypeOf(value) == "number") value.unsafeCast<Double>() else null
 
 /** Absolute URL of a prover asset, resolved against the extension root. */
-private fun proverAssetUrl(path: String): String = webExtApi().runtime.getURL(path) as String
+private fun extensionAssetUrl(path: String): String = webExtApi().runtime.getURL(path) as String
+
+/** The proven reads are HTTPS; the target leg always dials 443. */
+private const val TARGET_PORT = 443
+
+/**
+ * The `pkg/` namespace with its default-export init bound to an already compiled module.
+ *
+ * The transport façade instantiates the module by calling `wasm.default()` with no argument, which makes the
+ * wasm-pack init fetch `client_wasm_bg.wasm` relative to `import.meta.url`. A host that cannot fetch that URL
+ * (Node refuses `file:`) compiles the bytes itself, and this hands them to the same init as `module_or_path`.
+ * A copy rather than an edit, because a module namespace is frozen; every other export is the original
+ * function, and the wasm-bindgen glue keeps its state at module scope, not on `this`.
+ */
+private fun withCompiledModule(wasm: dynamic, compiled: Any): dynamic {
+    val init = wasm.default
+    val bound: dynamic = js("Object.assign({}, wasm)")
+    bound.default = {
+        val input: dynamic = js("({})")
+        input.module_or_path = compiled
+        init(input)
+    }
+    return bound
+}
 
 /**
  * `import()` a URL known only at runtime — the whole point being that a variable specifier is one no

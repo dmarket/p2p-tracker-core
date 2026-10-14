@@ -366,7 +366,9 @@ The prover ships inside the package (`pkg/` + `transport/`, next to the library'
 build time from an exact-pinned release of
 [`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance)) but is
 `import()`ed **lazily on the first proof**, so a build that never enables it never loads the ~10 MB
-module. Hosting and bundling notes, and how the pin is verified and bumped: [core/PROVER.md](core/PROVER.md).
+module. Hosting and bundling notes, the four seams a host outside the browser replaces (asset location,
+compiled module, notary socket, target connector), and how the pin is verified and bumped:
+[core/PROVER.md](core/PROVER.md).
 
 Proof routing is driven by `proof_required` + the **fixed decisive set**
 ([`DecisiveTransitions`](domain/src/commonMain/kotlin/com/dmarket/p2p/tracker/engine/DecisiveTransitions.kt)),

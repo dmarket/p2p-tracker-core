@@ -77,6 +77,10 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     batch: reports already sent keep their results, and the rest count as unacknowledged and go out again
     on a later cycle. `reportTradeStatus` signals that case with `TradeStatusBatchInterruptedException`,
     which carries what was delivered.
+  - `BundledWasmProverModule` takes an optional `WasmProverHost`: where the prover's assets are, the
+    compiled `.wasm` to hand to its init, the `WebSocket` constructor for each notary connect, and a
+    connector for the target leg in place of the `wss://` proxy. Every member defaults to what the
+    extension does, so the browser path is unchanged.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed

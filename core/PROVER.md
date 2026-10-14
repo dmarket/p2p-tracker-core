@@ -89,6 +89,24 @@ The host's one duty is to ship `pkg/` and `transport/` **at the extension root**
 resources, copied out of the installed `@dmarket/p2p-tracker-core` package (they sit at its root, next to
 `p2p-tracker-core.mjs`). An extension can only load what it packages.
 
+## Hosting outside the browser: the four seams
+
+`BundledWasmProverModule(onProgress, host)` takes a `WasmProverHost` (`notary/WasmProverHost.kt`). Each of its
+four members is `null` by default, and `null` is what the extension runs, so `WasmProverHost()` changes
+nothing on web. A host outside the browser replaces the ones it cannot use:
+
+| Seam | Default (the extension) | Why a host replaces it |
+|---|---|---|
+| `assetUrl(path)` | `runtime.getURL(path)`: `pkg/` and `transport/` at the extension root | there is no extension root; return the files' location on disk as `file:` URLs |
+| `wasmModule()` | none: the façade calls the wasm-pack init with no argument and it fetches `client_wasm_bg.wasm` next to `client_wasm.js` | Node's `fetch` refuses `file:` URLs; compile the `.wasm` yourself and return the `WebAssembly.Module`, which goes to the init as `module_or_path`. Called once |
+| `notaryWebSocket()` | the global `WebSocket`; the transport's `connectNotary(url, token)` offers `tlsn.notary.v2, bearer.<token>` as subprotocols | return a `WebSocket` constructor that sends its own upgrade headers and drops the `bearer.` entry. It is passed as `connectNotary`'s `WebSocketImpl`, and asked for **before every connect**, so headers signed for one upgrade are never reused |
+| `connectTarget(serverName, port)` | the transport's `connectProxy` through `proxyBaseUrl` (`p2p-wss-proxy`), because a browser cannot open TCP | resolve an open `IoChannel` (`read()` → bytes or `null` at EOF, `write(bytes)`, idempotent `close()`) over a TCP socket. It is still dialled lazily, on the prover's first write, and `proxyBaseUrl` is then unused; the issuance trace line says `target=host` |
+
+This source set ships to the browser as well, so the library contains no Node code for any of these: the host
+builds the socket, the WebSocket and the compiled module and hands them in. The prover's threads are the other
+half of a Node host and are entirely its own: `pkg/`'s spawner starts browser `Worker`s, which Node does not
+have.
+
 ## Bundling — the part that is easy to get silently wrong
 
 Getting this wrong produces a green build and a dead prover, with no error at either end.
