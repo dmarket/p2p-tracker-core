@@ -3,16 +3,16 @@ package com.dmarket.p2p.sdk.health
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
-import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.EventObserver
+import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /**
- * Turns the loop's lifecycle events and the state of the pushed secrets into [Health].
+ * Turns the loop's lifecycle events and what the tracker holds ([HeadlessTrackerState]) into [Health].
  *
  * Event-derived problems last as long as their cause: a heartbeat that round-trips clears the DMarket and
  * account problems it would have raised again, a cycle with no failed Steam read clears the read problem, and
@@ -28,7 +28,6 @@ class HealthTracker(
     private val heartbeatStaleAfter: Duration = 5.minutes,
 ) : EventObserver {
     private var lastHeartbeatAt: Instant? = null
-    private var ableSince: Instant? = null
     private var dmarketAuthFailed = false
     private var dmarketUnreachable = false
     private var wrongAccount: Pair<String?, String>? = null
@@ -85,14 +84,6 @@ class HealthTracker(
         }
     }
 
-    /**
-     * Whether the SDK holds what it needs to heartbeat. While it does, a heartbeat that has not come back for
-     * [heartbeatStaleAfter] is reported — the loop itself only speaks up after several failures in a row.
-     */
-    fun ableToAct(able: Boolean) {
-        ableSince = if (able) ableSince ?: clock.now() else null
-    }
-
     /** A pushed token was refused for naming [tokenSteamId] rather than [linkedSteamId]. */
     fun tokenRefused(tokenSteamId: SteamId, linkedSteamId: SteamId?) {
         refusedPush = linkedSteamId?.value to tokenSteamId.value
@@ -104,36 +95,33 @@ class HealthTracker(
     }
 
     /**
-     * The health right now. [hasKey] and [credential] are the pushed secrets' state; [dealsTracked] are the
-     * deals a blocking problem holds up.
+     * The health right now, given what the tracker holds ([state]); [dealsTracked] are the deals a blocking
+     * problem holds up. While the tracker is ready to act, a heartbeat that has not come back for
+     * [heartbeatStaleAfter] is reported — the loop itself only speaks up after several failures in a row.
      */
-    fun snapshot(hasKey: Boolean, credential: SteamCredential?, dealsTracked: List<String> = emptyList()): Health {
+    fun snapshot(state: HeadlessTrackerState, dealsTracked: List<String> = emptyList()): Health {
         val now = clock.now()
+        val expiresAt = state.steamTokenExpiresAt
         val open = linkedMapOf<ProblemCode, Pair<String, List<String>>>()
         fun raise(code: ProblemCode, message: String, deals: Collection<String> = emptyList()) {
             open[code] = message to deals.toList()
         }
 
-        if (!hasKey) raise(ProblemCode.DMARKET_KEY_MISSING, "push the Trading API key: PUT /v1/dmarket/key", dealsTracked)
+        if (!state.hasTradingApiKey) raise(ProblemCode.DMARKET_KEY_MISSING, "push the Trading API key: PUT /v1/dmarket/key", dealsTracked)
         if (dmarketAuthFailed) raise(ProblemCode.DMARKET_AUTH_FAILED, "DMarket refused the Trading API key", dealsTracked)
         if (dmarketUnreachable) {
             raise(ProblemCode.DMARKET_UNREACHABLE, "DMarket answers with errors or not at all", dealsTracked)
         } else {
-            val since = ableSince
+            val since = state.readySince
             val last = listOfNotNull(lastHeartbeatAt, since).maxOrNull()
             if (since != null && last != null && !dmarketAuthFailed && now - last > heartbeatStaleAfter) {
                 raise(ProblemCode.DMARKET_UNREACHABLE, "no heartbeat has come back since $last", dealsTracked)
             }
         }
         when {
-            credential == null -> raise(ProblemCode.STEAM_TOKEN_MISSING, "push a Steam access token: PUT /v1/steam/session", dealsTracked)
-            credential.expiresAt <= now -> raise(
-                ProblemCode.STEAM_TOKEN_EXPIRED,
-                "the Steam token expired at ${credential.expiresAt}",
-                dealsTracked,
-            )
-            credential.expiresAt - now < expiringWithin ->
-                raise(ProblemCode.STEAM_TOKEN_EXPIRING, "the Steam token expires at ${credential.expiresAt}")
+            expiresAt == null -> raise(ProblemCode.STEAM_TOKEN_MISSING, "push a Steam access token: PUT /v1/steam/session", dealsTracked)
+            expiresAt <= now -> raise(ProblemCode.STEAM_TOKEN_EXPIRED, "the Steam token expired at $expiresAt", dealsTracked)
+            expiresAt - now < expiringWithin -> raise(ProblemCode.STEAM_TOKEN_EXPIRING, "the Steam token expires at $expiresAt")
         }
         (wrongAccount ?: refusedPush)?.let { (linked, token) ->
             val named = linked?.let { "DMarket links $it" } ?: "DMarket has not named the linked account yet"
@@ -164,7 +152,7 @@ class HealthTracker(
         return Health(
             status = status,
             problems = problems,
-            steamTokenExpiresAt = credential?.expiresAt?.toString(),
+            steamTokenExpiresAt = expiresAt?.toString(),
             lastHeartbeatAt = lastHeartbeatAt?.toString(),
             version = version,
         )

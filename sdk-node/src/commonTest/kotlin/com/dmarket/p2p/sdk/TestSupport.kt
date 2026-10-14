@@ -1,6 +1,5 @@
 package com.dmarket.p2p.sdk
 
-import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import kotlin.io.encoding.Base64
@@ -32,8 +31,6 @@ fun steamToken(sub: String = STEAM_ID, aud: List<String> = listOf("web", "mobile
     val encode = { text: String -> Base64.UrlSafe.withPadding(Base64.PaddingOption.ABSENT).encode(text.encodeToByteArray()) }
     return "${encode("""{"alg":"EdDSA","typ":"JWT"}""")}.${encode(payload)}.c2lnbmF0dXJl"
 }
-
-fun testKey(): TradingApiKey = requireNotNull(TradingApiKey.parse(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY))
 
 /** Signs nothing: returns the message bytes, so a test can read what was signed off the header. */
 val echoSigner = Ed25519Signer { message -> message }

@@ -2,9 +2,9 @@
 // process per Steam account next to their bot; the bot pushes it the DMarket Trading API key and a Steam
 // access token over a local management API, and nothing secret is written to disk.
 //
-//   commonMain — the platform-free part: config, the pushed secrets and their account binding, health, the
-//                management API's routing and the composition. Unit-tested on the JVM and on Node
-//                (commonTest). Requests are signed by :core.
+//   commonMain — the product shell over :core's headless tracker: config, health, the log and the management
+//                API's routing. The tracker itself (the loop, the pushed secrets, request signing) is :core's.
+//                Unit-tested on the JVM and on Node (commonTest).
 //   jsMain     — the Node actuals: file-backed storage, the HTTP listener and the process entry point.
 //
 // Not published yet: packaging (the Node single-executable build, the container image) comes with the
@@ -26,8 +26,8 @@ kotlin {
             implementation(project(":domain"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
-            // The composition builds the Ktor-backed clients :core exposes; :core keeps Ktor as an
-            // `implementation` dependency, so it is declared here for those constructors to type-check.
+            // The platform hands the tracker an optional Ktor engine (a mock one in tests); :core keeps Ktor as
+            // an `implementation` dependency, so it is declared here for that type to resolve.
             implementation(libs.ktor.client.core)
         }
         commonTest.dependencies {

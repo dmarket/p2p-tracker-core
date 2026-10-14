@@ -4,7 +4,6 @@ import com.dmarket.p2p.sdk.api.ManagementApi
 import com.dmarket.p2p.sdk.node.FileKeyValueStore
 import com.dmarket.p2p.sdk.node.NodeManagementServer
 import com.dmarket.p2p.sdk.node.NodeModules
-import com.dmarket.p2p.sdk.node.randomHex
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +37,7 @@ fun main() {
         val storage = FileKeyValueStore(config.dataDir).also { it.init() }
         val runtime = SdkRuntime(
             config = config,
-            platform = SdkPlatform(storage, ::randomHex, clock, log),
+            platform = SdkPlatform(storage, clock, log),
             scope = scope,
         )
         val server = NodeManagementServer(ManagementApi(config.managementSecret, runtime), scope, log)
