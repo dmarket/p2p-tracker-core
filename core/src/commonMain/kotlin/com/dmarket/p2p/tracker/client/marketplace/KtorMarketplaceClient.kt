@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.marketplace
 
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
+import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
@@ -19,6 +20,7 @@ import com.dmarket.p2p.tracker.policy.ExponentialBackoff
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
 import com.dmarket.p2p.tracker.wire.DealActionResponseDto
 import com.dmarket.p2p.tracker.wire.DealDto
 import com.dmarket.p2p.tracker.wire.HeartbeatResponseDto
@@ -27,6 +29,7 @@ import com.dmarket.p2p.tracker.wire.ReportInventoryResponseDto
 import com.dmarket.p2p.tracker.wire.ReportTradeStatusResponseDto
 import com.dmarket.p2p.tracker.wire.SubmitProofResponseDto
 import com.dmarket.p2p.tracker.wire.TrackerJson
+import com.dmarket.p2p.tracker.wire.chunkByEncodedSize
 import com.dmarket.p2p.tracker.wire.toDomain
 import com.dmarket.p2p.tracker.wire.toDto
 import com.dmarket.p2p.tracker.wire.toRequestDto
@@ -46,6 +49,7 @@ import io.ktor.http.contentType
 import io.ktor.http.encodeURLPath
 import kotlinx.coroutines.delay
 import kotlinx.serialization.encodeToString
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 
 /** Thrown on HTTP 429; [retryAfterSeconds] carries the `Retry-After` header when present. */
@@ -63,6 +67,10 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * carrying `Retry-After`. The backend derives the account from the token, so no request sends an
  * `account_id`.
  *
+ * [maxReportBodyBytes] caps the body of one `/trade-events` or `/trade-actions` request (`0` = no cap): a longer
+ * batch goes out as several requests, in order, stopping at the first that fails. See
+ * [com.dmarket.p2p.tracker.config.HttpConfig.maxReportBodyBytes] for why.
+ *
  * Audit boundary: no method here accepts a Steam credential — by construction the Steam JWT can never
  * be sent to the marketplace. The client also uses a DMarket-only [HttpClient], physically separate
  * from the Steam reader's transport.
@@ -73,6 +81,7 @@ class KtorMarketplaceClient(
     private val authenticator: MarketplaceAuthenticator = TransportManagedMarketplaceAuthenticator,
     private val retry: MarketplaceRetryConfig = MarketplaceRetryConfig(),
     private val random: Random = Random.Default,
+    private val maxReportBodyBytes: Int = 0,
 ) : MarketplaceClient {
 
     /** C2 deal reads the host may proxy (`accept`/`getDeal`). */
@@ -86,7 +95,33 @@ class KtorMarketplaceClient(
         return TrackerJson.decodeFromString<HeartbeatResponseDto>(text).toDomain()
     }
 
+    /**
+     * Over the cap, each request's results are paired with its own reports ([ReportAcknowledgement]) and
+     * returned one per report, in order — the pairing a single request would have had, which a concatenation
+     * of raw responses could lose. A failure after the first request ends the batch with a
+     * [TradeStatusBatchInterruptedException] carrying what was delivered.
+     */
     override suspend fun reportTradeStatus(reports: List<TradeStatusReport>): List<TradeStatusResult> {
+        val chunks = chunkByEncodedSize(reports, maxReportBodyBytes) { TrackerJson.encodeToString(it.toRequestDto()) }
+        if (chunks.size <= 1) return postTradeEvents(reports)
+        val results = mutableListOf<TradeStatusResult>()
+        for (chunk in chunks) {
+            val answer = try {
+                postTradeEvents(chunk)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (results.isEmpty()) throw e
+                throw TradeStatusBatchInterruptedException(results.size, results.toList(), e)
+            }
+            results += ReportAcknowledgement.match(chunk, answer).map {
+                TradeStatusResult(it.report.dealId, it.accepted, it.reason, it.report.source)
+            }
+        }
+        return results
+    }
+
+    private suspend fun postTradeEvents(reports: List<TradeStatusReport>): List<TradeStatusResult> {
         val text = postJson("$baseUrl$extPath/trade-events", TrackerJson.encodeToString(reports.toRequestDto()))
         return TrackerJson.decodeFromString<ReportTradeStatusResponseDto>(text).toDomain()
     }
@@ -96,8 +131,30 @@ class KtorMarketplaceClient(
         return TrackerJson.decodeFromString<SubmitProofResponseDto>(text).toDomain()
     }
 
+    /**
+     * Over the cap, the acks of every request are concatenated: they name their `directive_id`, so they pair
+     * the same way whichever request carried them. A failure after the first request ends the batch with the
+     * acks so far — the outcomes it never sent have none, which counts as unaccepted and keeps them for a resend.
+     */
     override suspend fun reportDirectives(outcomes: List<DirectiveOutcome>): List<DirectiveAck> {
         if (outcomes.isEmpty()) return emptyList()
+        val chunks = chunkByEncodedSize(outcomes, maxReportBodyBytes) { TrackerJson.encodeToString(it.toRequestDto()) }
+        if (chunks.size == 1) return postTradeActions(outcomes)
+        val acks = mutableListOf<DirectiveAck>()
+        for ((index, chunk) in chunks.withIndex()) {
+            try {
+                acks += postTradeActions(chunk)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (index == 0) throw e
+                break
+            }
+        }
+        return acks
+    }
+
+    private suspend fun postTradeActions(outcomes: List<DirectiveOutcome>): List<DirectiveAck> {
         val text = postJson("$baseUrl$extPath/trade-actions", TrackerJson.encodeToString(outcomes.toRequestDto()))
         return TrackerJson.decodeFromString<ReportDirectivesResponseDto>(text).toDomain()
     }

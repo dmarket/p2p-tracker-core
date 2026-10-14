@@ -198,6 +198,13 @@ class TrackerConfigTest {
     }
 
     @Test
+    fun the_report_body_cap_defaults_to_the_surface_and_rejects_a_negative_value() {
+        assertEquals(null, defaults.http.maxReportBodyBytes)
+        assertEquals(0, HttpConfig(maxReportBodyBytes = 0).maxReportBodyBytes)
+        assertFails { HttpConfig(maxReportBodyBytes = -1) }
+    }
+
+    @Test
     fun a_headless_host_keeps_the_browser_floors_and_reports_platform_sdk() {
         val c = defaults.cadence
         for (mode in TrackerMode.entries) {

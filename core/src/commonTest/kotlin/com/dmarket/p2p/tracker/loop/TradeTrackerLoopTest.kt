@@ -47,6 +47,7 @@ import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
@@ -3154,6 +3155,46 @@ class TradeTrackerLoopTest {
         // second one that spends the claim.
         assertEquals(listOf(6, 6), mp.tradeStatusReports.map { it.steamStatusCode }, "the closure is re-sent, not lost")
         assertEquals(1, claims.load().size)
+    }
+
+    @Test
+    fun a_batch_delivered_in_part_spends_claims_and_acknowledges_only_the_part_received() = runTest {
+        // A body-size cap split the batch and the second request failed: the first report was heard and
+        // answered, the second never left. Only the first may spend its claim or count as accepted.
+        val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 6, OfferId("offer-2") to 6))
+        val events = RecordingEventObserver()
+        val claims = PersistedUnprovenClaimStore()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(
+                    tracked("d1", "offer-1", proofRequired = true),
+                    tracked("d2", "offer-2", proofRequired = true),
+                ),
+                ttlSeconds = 60,
+            ),
+        ).apply {
+            tradeStatusResults = { reports ->
+                val first = reports.first()
+                throw TradeStatusBatchInterruptedException(
+                    deliveredCount = 1,
+                    results = listOf(TradeStatusResult(first.dealId, accepted = true, source = first.source)),
+                    cause = MarketplaceServerErrorException(500),
+                )
+            }
+        }
+        val l = loop(marketplace = mp, reader = reader, notary = NoOpNotaryProver, unprovenClaims = claims, eventObserver = events)
+
+        l.runOnce()
+
+        val (heard, lost) = mp.tradeStatusReports.let { it[0] to it[1] }
+        assertEquals(setOf(ProofIntent(heard.dealId, heard.source, 6)), claims.load().toSet())
+        assertEquals(
+            listOf(heard.dealId.value),
+            events.events.filterIsInstance<LifecycleEvent.TradeStatusReported>().map { it.dealId },
+        )
+        val failed = events.events.filterIsInstance<LifecycleEvent.TradeStatusReportFailed>().single()
+        assertEquals(lost.dealId.value, failed.dealId)
+        assertTrue(failed.reason.orEmpty().startsWith("MarketplaceServerErrorException"), failed.reason)
     }
 
     @Test

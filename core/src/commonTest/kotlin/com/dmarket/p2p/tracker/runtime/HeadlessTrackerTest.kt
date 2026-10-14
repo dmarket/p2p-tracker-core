@@ -25,6 +25,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -224,6 +225,24 @@ class HeadlessTrackerTest {
         val report = requests.single { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }
         assertTrue(""""status":"needs_confirmation"""" in report.text() && """"steamOfferId":"555"""" in report.text(), report.text())
         assertTrue(report.headers[TradingApiSignature.REQUEST_SIGN] != null, "the report is signed too")
+    }
+
+    @Test
+    fun a_report_batch_is_split_under_the_headless_body_cap() = runTest {
+        // A hundred refused directives answer in one /trade-actions batch, well past 7 KiB on the wire.
+        val directives = (1..100).joinToString(",") { """{"directiveId":"dir-$it","action":"frobnicate_offer","dealId":"deal-$it"}""" }
+        heartbeatBody = """{"activeTracking":[],"directives":[$directives],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+
+        val reports = requests.filter { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }
+        assertTrue(reports.size > 1, "split into ${reports.size} request(s)")
+        reports.forEach {
+            assertTrue(it.text().encodeToByteArray().size <= HeadlessTracker.MAX_REPORT_BODY_BYTES, "${it.text().length} bytes")
+        }
+        assertEquals(100, reports.sumOf { Json.parseToJsonElement(it.text()).jsonObject.getValue("reports").jsonArray.size })
     }
 
     @Test

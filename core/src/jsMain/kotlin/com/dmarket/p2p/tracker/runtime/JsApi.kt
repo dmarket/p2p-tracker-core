@@ -176,6 +176,7 @@ fun createBrowserLoop(
         baseUrl = baseUrl,
         authenticator = CredentialMarketplaceAuthenticator(marketplaceCredentials),
         retry = config.marketplaceRetry,
+        maxReportBodyBytes = config.http.maxReportBodyBytes ?: 0,
     )
     // RefreshingSteamReadClient wraps this in TradeTrackerCore.createLoop for the 401/403 self-heal.
     val steamReader = KtorSteamReadClient(httpClient = steamHttpClient, endpoints = config.steamEndpoints)
@@ -271,6 +272,7 @@ fun createBrowserMarketplaceClient(baseUrl: String, config: TrackerConfig = Trac
         baseUrl = baseUrl,
         authenticator = CredentialMarketplaceAuthenticator(credentials),
         retry = config.marketplaceRetry,
+        maxReportBodyBytes = config.http.maxReportBodyBytes ?: 0,
     )
 }
 

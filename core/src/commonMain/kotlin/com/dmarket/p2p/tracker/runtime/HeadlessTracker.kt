@@ -220,6 +220,7 @@ class HeadlessTracker(
                 baseUrl = baseUrl,
                 authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor),
                 retry = tunables.marketplaceRetry,
+                maxReportBodyBytes = tunables.http.maxReportBodyBytes ?: MAX_REPORT_BODY_BYTES,
             ),
             steamReader = KtorSteamReadClient(steamHttp, tunables.steamEndpoints),
             scraper = steam.scraper,
@@ -253,6 +254,13 @@ class HeadlessTracker(
     companion object {
         /** Under this much token life no create starts: the seller could not confirm it before the session ends. */
         val MIN_WRITE_TOKEN_LIFETIME: Duration = 30.minutes
+
+        /**
+         * Default report body cap ([com.dmarket.p2p.tracker.config.HttpConfig.maxReportBodyBytes]). Every request
+         * here is signed, and a gateway that spools a body past its buffer checks the signature against an empty
+         * body; the buffer is not known exactly but sits below 9.8 KB, so this stays clear of an 8 KiB one.
+         */
+        const val MAX_REPORT_BODY_BYTES: Int = 7 * 1024
 
         /** How often a tracker that may not act yet re-checks, besides every push. */
         val IDLE_RECHECK: Duration = 30.seconds

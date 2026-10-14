@@ -62,6 +62,14 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     `X-Request-Sign`, with nothing to refresh on a `401`. `platformEd25519Signer` signs through the JDK on
     the JVM and through WebCrypto on the web (Chrome 137+; Node 24), and refuses a secret that does not
     belong to the public key. The secret is never sent.
+  - `HttpConfig.maxReportBodyBytes` caps the body of one `/trade-events` or `/trade-actions` request; a
+    longer batch goes out as several requests, in order, and a single report over the cap goes alone. A
+    gateway that buffers a large body to disk can check a request signature against an empty body, so a
+    signed batch past its buffer is rejected. `null` (the default) means off in the browser and 7 KiB on
+    `HeadlessTracker`; `0` is off. Appended last, so positional calls are unchanged. A failure stops the
+    batch: reports already sent keep their results, and the rest count as unacknowledged and go out again
+    on a later cycle. `reportTradeStatus` signals that case with `TradeStatusBatchInterruptedException`,
+    which carries what was delivered.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed

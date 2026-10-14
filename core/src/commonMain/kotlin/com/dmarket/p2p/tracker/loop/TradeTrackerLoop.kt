@@ -82,6 +82,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
@@ -2456,24 +2457,30 @@ class TradeTrackerLoop(
             // failure the fold synthesizes non-accepted acks that are shape-identical to a backend rejection,
             // so reading "not accepted" as "delivered" would spend a claim on a report the backend never saw,
             // and that transition would then stay silent for good.
-            var delivered = true
+            //
+            // A batch split by a body-size cap can be delivered in part: then only its leading reports were
+            // heard, and only those count as delivered.
+            var delivered = sendable
             val acks = runCatching { marketplace.reportTradeStatus(sendable) }.fold(
                 onSuccess = { ReportAcknowledgement.match(sendable, it) },
                 onFailure = { failure ->
-                    delivered = false
-                    val reason = failure.redactedSummary()
-                    sendable.map { ReportAck(it, accepted = false, reason = reason) }
+                    val partial = failure as? TradeStatusBatchInterruptedException
+                    delivered = sendable.take(partial?.deliveredCount ?: 0)
+                    // The unheard rest is explained by what stopped the batch, not by the wrapper.
+                    val reason = (partial?.cause ?: failure).redactedSummary()
+                    val answered = partial?.let { ReportAcknowledgement.match(delivered, it.results) }.orEmpty()
+                    answered + sendable.drop(delivered.size).map { ReportAck(it, accepted = false, reason = reason) }
                 },
             )
             accepted = acks.filter { it.accepted }.map { it.report }
             // Spend each unproven claim only once its report actually reached the backend. Written before the
             // event is emitted, so a worker that dies between the two has recorded the claim rather than
             // announced one it did not keep.
-            if (delivered) {
-                for (intent in claimable) {
-                    runCatching { unprovenClaims.claim(intent) }
-                    emit(LifecycleEvent.TradeStatusClaimedUnproven(intent.dealId.value, intent.source.wireName, intent.steamStatusCode))
-                }
+            val heardIntents = delivered.mapTo(HashSet()) { ProofIntent(it.dealId, it.source, it.steamStatusCode) }
+            for (intent in claimable) {
+                if (intent !in heardIntents) continue
+                runCatching { unprovenClaims.claim(intent) }
+                emit(LifecycleEvent.TradeStatusClaimedUnproven(intent.dealId.value, intent.source.wireName, intent.steamStatusCode))
             }
             for (ack in acks) {
                 val report = ack.report

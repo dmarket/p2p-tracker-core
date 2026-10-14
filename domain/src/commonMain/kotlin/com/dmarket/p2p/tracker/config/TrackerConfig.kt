@@ -202,7 +202,27 @@ data class CredentialConfig(
 
 /** HTTP client tuning. */
 @JsExport
-data class HttpConfig(val requestTimeoutMs: Int = 30_000)
+data class HttpConfig(
+    val requestTimeoutMs: Int = 30_000,
+    /**
+     * Upper bound, in UTF-8 bytes, for one `/trade-events` or `/trade-actions` request body. A longer batch is
+     * sent as several requests, in order; a single report larger than the cap is sent alone.
+     *
+     * For a gateway that spools a body past its buffer to disk and then checks a request signature against an
+     * empty body, which rejects every signed batch past that size. `null` = the surface's default: off in the
+     * browser (it authenticates with a session token, which this does not affect), 7 KiB on the headless
+     * tracker, which signs every request. `0` = off.
+     *
+     * Appended at the end on purpose: this is an `@JsExport` data class, constructed positionally from JS.
+     */
+    val maxReportBodyBytes: Int? = null,
+) {
+    init {
+        require(maxReportBodyBytes == null || maxReportBodyBytes >= 0) {
+            "maxReportBodyBytes must be null or >= 0, was $maxReportBodyBytes"
+        }
+    }
+}
 
 /**
  * Marketplace 401 retry envelope. On an HTTP 401 the [com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient]

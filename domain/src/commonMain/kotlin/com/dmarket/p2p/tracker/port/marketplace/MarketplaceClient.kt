@@ -84,3 +84,15 @@ class MarketplaceUnauthorizedException : RuntimeException("DMarket request unaut
  * with the Ktor client) because the loop must **catch** it, keeping the loop → domain direction intact.
  */
 class MarketplaceServerErrorException(val statusCode: Int) : RuntimeException("DMarket request failed: HTTP $statusCode")
+
+/**
+ * Thrown by [MarketplaceClient.reportTradeStatus] when a batch sent as several requests (a body-size cap split
+ * it) failed part-way: the first [deliveredCount] reports reached the backend and [results] answers exactly
+ * those, one result per report in report order; the rest were never sent. [cause] is the failure that stopped it.
+ *
+ * Not a plain short result list, because the caller needs *delivery* and not only acceptance: an unproven
+ * report spends its claim once the backend has heard it, and a report the backend never heard must not spend
+ * one. A failure of the first request is not wrapped — nothing was delivered, so it propagates as is.
+ */
+class TradeStatusBatchInterruptedException(val deliveredCount: Int, val results: List<TradeStatusResult>, cause: Throwable) :
+    RuntimeException("Trade status batch interrupted after $deliveredCount reports", cause)
