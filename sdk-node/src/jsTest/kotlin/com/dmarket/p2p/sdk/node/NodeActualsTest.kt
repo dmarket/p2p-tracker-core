@@ -1,14 +1,11 @@
 package com.dmarket.p2p.sdk.node
 
-import com.dmarket.p2p.sdk.PUBLIC_KEY
-import com.dmarket.p2p.sdk.SECRET_SEED
 import com.dmarket.p2p.sdk.SdkLog
 import com.dmarket.p2p.sdk.TestClock
 import com.dmarket.p2p.sdk.api.ManagementActions
 import com.dmarket.p2p.sdk.api.ManagementApi
 import com.dmarket.p2p.sdk.api.PushOutcome
 import com.dmarket.p2p.sdk.health.Health
-import com.dmarket.p2p.sdk.secrets.DmarketKey
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
 import com.dmarket.p2p.tracker.model.AssetId
@@ -34,26 +31,6 @@ import kotlin.test.assertTrue
 import kotlin.time.Instant
 
 class NodeActualsTest {
-
-    private fun ByteArray.hex() = joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
-
-    // ---- Ed25519 -------------------------------------------------------------------------------
-
-    @Test
-    fun the_signer_reproduces_the_rfc_8032_test_vector() {
-        // RFC 8032 §7.1, TEST 1: the empty message under this seed.
-        val signer = nodeEd25519Signer(DmarketKey.parse(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY)!!)
-        assertEquals(
-            "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
-            signer.sign(ByteArray(0)).hex(),
-        )
-    }
-
-    @Test
-    fun a_seed_that_does_not_belong_to_the_public_key_cannot_sign() {
-        val otherSeed = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
-        assertFailsWith<IllegalArgumentException> { nodeEd25519Signer(DmarketKey.parse(PUBLIC_KEY, otherSeed)!!) }
-    }
 
     // ---- file storage --------------------------------------------------------------------------
 

@@ -1,10 +1,10 @@
 package com.dmarket.p2p.sdk
 
-import com.dmarket.p2p.sdk.secrets.DmarketKey
 import com.dmarket.p2p.sdk.secrets.KeyPush
 import com.dmarket.p2p.sdk.secrets.SdkSecrets
 import com.dmarket.p2p.sdk.secrets.TokenPush
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
 import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
 import kotlinx.coroutines.test.runTest
@@ -12,34 +12,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 class SecretsTest {
-
-    // ---- the Trading API key -------------------------------------------------------------------
-
-    @Test
-    fun a_nacl_secret_and_a_bare_seed_both_parse_to_the_seed() {
-        assertEquals(SECRET_SEED, DmarketKey.parse(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY)?.secretSeed)
-        assertEquals(SECRET_SEED, DmarketKey.parse(PUBLIC_KEY.uppercase(), " $SECRET_SEED ")?.secretSeed)
-    }
-
-    @Test
-    fun a_pair_from_two_keys_or_anything_not_hex_is_refused() {
-        val otherPublic = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
-        assertNull(DmarketKey.parse(PUBLIC_KEY, SECRET_SEED + otherPublic), "the NaCl tail must be the public key")
-        assertNull(DmarketKey.parse(PUBLIC_KEY, "zz" + SECRET_SEED.drop(2)))
-        assertNull(DmarketKey.parse(PUBLIC_KEY.drop(2), SECRET_SEED))
-        assertNull(DmarketKey.parse(PUBLIC_KEY, SECRET_SEED.drop(2)))
-    }
-
-    @Test
-    fun a_key_never_prints_its_secret() {
-        val printed = testKey().toString()
-        assertTrue(PUBLIC_KEY in printed)
-        assertTrue(SECRET_SEED !in printed, printed)
-    }
 
     // ---- holding them --------------------------------------------------------------------------
 
@@ -48,7 +22,7 @@ class SecretsTest {
         val secrets = SdkSecrets()
         assertEquals(KeyPush.FIRST, secrets.putDmarketKey(testKey()))
         assertEquals(KeyPush.SAME, secrets.putDmarketKey(testKey()))
-        val other = assertNotNull(DmarketKey.parse("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", SECRET_SEED))
+        val other = assertNotNull(TradingApiKey.parse("3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", SECRET_SEED))
         assertEquals(KeyPush.REPLACED, secrets.putDmarketKey(other))
     }
 

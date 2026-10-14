@@ -15,6 +15,8 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
  *   authenticator reads through it — one auth source of truth, no duplicated refresh. A host that instead
  *   authenticates inside its own transport stack uses [TransportManagedMarketplaceAuthenticator], which
  *   attaches nothing and never retries on 401.
+ * - **Headless** ([TradingApiAuthenticator]): every request is signed with a DMarket Trading API key; nothing
+ *   is refreshed.
  *
  * Deliberately free of Ktor types so it stays trivially unit-testable and the audit surface is obvious.
  */
@@ -30,7 +32,7 @@ interface MarketplaceAuthenticator {
      * reused.
      *
      * The default sends [tokenOrNull] raw in `Authorization` (no `Bearer ` scheme), and nothing when it is
-     * `null`. A request-signing strategy (a Trading API key) overrides this: it sees the method, the path
+     * `null`. A request-signing strategy ([TradingApiAuthenticator]) overrides this: it sees the method, the path
      * with its query and the exact body it has to sign.
      */
     suspend fun headersFor(request: MarketplaceRequest): Map<String, String> =

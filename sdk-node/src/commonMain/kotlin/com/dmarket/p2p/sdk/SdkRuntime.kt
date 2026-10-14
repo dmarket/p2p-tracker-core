@@ -4,12 +4,9 @@ import com.dmarket.p2p.sdk.api.ManagementActions
 import com.dmarket.p2p.sdk.api.PushOutcome
 import com.dmarket.p2p.sdk.health.Health
 import com.dmarket.p2p.sdk.health.HealthTracker
-import com.dmarket.p2p.sdk.secrets.DmarketKey
 import com.dmarket.p2p.sdk.secrets.KeyPush
 import com.dmarket.p2p.sdk.secrets.SdkSecrets
 import com.dmarket.p2p.sdk.secrets.TokenPush
-import com.dmarket.p2p.sdk.signing.Ed25519Signer
-import com.dmarket.p2p.sdk.signing.TradingApiAuthenticator
 import com.dmarket.p2p.tracker.adapter.host.CoroutineScheduler
 import com.dmarket.p2p.tracker.adapter.host.InMemoryCredentialVault
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
@@ -18,6 +15,8 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
+import com.dmarket.p2p.tracker.client.marketplace.TradingApiAuthenticator
+import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCanceller
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
@@ -37,6 +36,7 @@ import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
@@ -44,6 +44,7 @@ import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
+import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import com.dmarket.p2p.tracker.runtime.TradeTrackerCore
 import io.ktor.client.engine.HttpClientEngine
@@ -51,6 +52,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -60,17 +62,18 @@ import kotlin.time.Duration.Companion.seconds
  *
  * @property storage where the loop's progress, claims, throttles and device id persist. No secret is ever
  *   written to it.
- * @property signerFor builds the Ed25519 signer for a pushed key; throws when the key cannot sign.
+ * @property signerFor builds the Ed25519 signer for a pushed key; throws when the key cannot sign. The platform's
+ *   own by default.
  * @property randomHex [bytes] cryptographically random bytes, hex-encoded.
  * @property httpEngine the HTTP engine for both DMarket and Steam; `null` takes the platform's default.
  */
 class SdkPlatform(
     val storage: DeviceKeyValueStore,
-    val signerFor: (DmarketKey) -> Ed25519Signer,
     val randomHex: (bytes: Int) -> String,
     val clock: Clock,
     val log: SdkLog,
     val httpEngine: HttpClientEngine? = null,
+    val signerFor: suspend (TradingApiKey) -> Ed25519Signer = ::platformEd25519Signer,
 )
 
 /**
@@ -142,9 +145,15 @@ class SdkRuntime(
     }
 
     override suspend fun putDmarketKey(publicKey: String, secretKey: String): PushOutcome {
-        val key = DmarketKey.parse(publicKey, secretKey)
+        val key = TradingApiKey.parse(publicKey, secretKey)
             ?: return PushOutcome.Invalid("INVALID_KEY", "expected a hex Ed25519 key pair: a 32-byte public key and its secret")
-        runCatching { platform.signerFor(key) }.getOrElse { return PushOutcome.Invalid("INVALID_KEY", "the secret key cannot sign") }
+        try {
+            platform.signerFor(key)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            return PushOutcome.Invalid("INVALID_KEY", "the secret key cannot sign")
+        }
         when (secrets.putDmarketKey(key)) {
             KeyPush.SAME -> return PushOutcome.Held
             KeyPush.FIRST -> log.info("dmarket key pushed", "publicKey" to key.publicKey)
@@ -232,7 +241,7 @@ class SdkRuntime(
             marketplace = KtorMarketplaceClient(
                 httpClient = marketplaceHttp,
                 baseUrl = config.dmarketBaseUrl,
-                authenticator = TradingApiAuthenticator({ secrets.dmarketKey }, platform.signerFor, clock),
+                authenticator = TradingApiAuthenticator({ secrets.dmarketKey }, clock, platform.signerFor),
                 retry = tunables.marketplaceRetry,
             ),
             steamReader = KtorSteamReadClient(steamHttp, tunables.steamEndpoints),

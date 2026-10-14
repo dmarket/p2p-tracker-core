@@ -2,11 +2,10 @@
 // process per Steam account next to their bot; the bot pushes it the DMarket Trading API key and a Steam
 // access token over a local management API, and nothing secret is written to disk.
 //
-//   commonMain — the platform-free part: config, the pushed secrets and their account binding, request
-//                signing, health, the management API's routing and the composition. Unit-tested on the JVM
-//                and on Node (commonTest).
-//   jsMain     — the Node actuals: file-backed storage, Ed25519 over node:crypto, the HTTP listener and the
-//                process entry point.
+//   commonMain — the platform-free part: config, the pushed secrets and their account binding, health, the
+//                management API's routing and the composition. Unit-tested on the JVM and on Node
+//                (commonTest). Requests are signed by :core.
+//   jsMain     — the Node actuals: file-backed storage, the HTTP listener and the process entry point.
 //
 // Not published yet: packaging (the Node single-executable build, the container image) comes with the
 // distribution work.

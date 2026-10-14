@@ -2,9 +2,12 @@ package com.dmarket.p2p.sdk
 
 import com.dmarket.p2p.sdk.api.PushOutcome
 import com.dmarket.p2p.sdk.health.ProblemCode
-import com.dmarket.p2p.sdk.signing.TradingApiSignature
+import com.dmarket.p2p.tracker.client.marketplace.TradingApiSignature
+import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
+import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
@@ -66,9 +69,12 @@ class SdkRuntimeTest {
 
     private val idle = CoroutineScope(StandardTestDispatcher(TestCoroutineScheduler()))
 
-    private fun runtime(storage: DeviceKeyValueStore = RecordingStore()) = SdkRuntime(
+    private fun runtime(
+        storage: DeviceKeyValueStore = RecordingStore(),
+        signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner },
+    ) = SdkRuntime(
         config = SdkConfig(managementSecret = "m".repeat(32), dataDir = "/unused", dmarketBaseUrl = "https://gateway.test"),
-        platform = SdkPlatform(storage, { echoSigner }, { bytes -> "ab".repeat(bytes) }, clock, SdkLog(clock) { logLines += it }, engine),
+        platform = SdkPlatform(storage, { bytes -> "ab".repeat(bytes) }, clock, SdkLog(clock) { logLines += it }, engine, signerFor),
         scope = idle,
     )
 
@@ -148,6 +154,17 @@ class SdkRuntimeTest {
         assertEquals("STEAM_WRONG_ACCOUNT", refused.error)
         assertEquals(SteamId(STEAM_ID), sdk.secrets.steamCredential?.subjectSteamId)
         assertTrue(ProblemCode.STEAM_WRONG_ACCOUNT in sdk.health().problems.map { it.code })
+    }
+
+    @Test
+    fun a_key_whose_seed_belongs_to_another_key_is_refused_without_quoting_it() = runTest {
+        val sdk = runtime(signerFor = ::platformEd25519Signer)
+        val otherSeed = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+
+        val refused = assertIs<PushOutcome.Invalid>(sdk.putDmarketKey(PUBLIC_KEY, otherSeed))
+        assertTrue(otherSeed !in refused.toString(), "$refused")
+        assertEquals(null, sdk.secrets.dmarketKey, "a refused key is not held")
+        assertEquals(PushOutcome.Held, sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED), "the platform signer takes the real pair")
     }
 
     @Test

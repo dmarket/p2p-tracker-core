@@ -43,6 +43,11 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   - `PushedSteamToken.check` vets a Steam access token a host pushes in: a steamid64 `sub`, a `web`
     audience, no refresh audience (`renew`/`derive`) and an `exp` still ahead. A refusal's reason never
     carries the token.
+  - `TradingApiAuthenticator` signs each DMarket request with a Trading API key (`TradingApiKey`): Ed25519
+    over method, path with query, body and timestamp, sent as `X-Api-Key`, `X-Sign-Date` and
+    `X-Request-Sign`, with nothing to refresh on a `401`. `platformEd25519Signer` signs through the JDK on
+    the JVM and through WebCrypto on the web (Chrome 137+; Node 24), and refuses a secret that does not
+    belong to the public key. The secret is never sent.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed

@@ -13,18 +13,6 @@ internal object NodeModules {
     val buffer: dynamic = js("require('node:buffer').Buffer")
 }
 
-/** A Node `Buffer` view of [bytes], without a copy. */
-internal fun ByteArray.toBuffer(): dynamic {
-    val array: dynamic = this
-    return NodeModules.buffer.from(array.buffer, array.byteOffset, array.length)
-}
-
-/** A copy of a Node `Buffer` as a [ByteArray]. */
-internal fun bufferToByteArray(buffer: dynamic): ByteArray {
-    val length = buffer.length as Int
-    return ByteArray(length) { i -> (buffer[i] as Int).toByte() }
-}
-
 /** [bytes] cryptographically random bytes, hex-encoded. */
 internal fun randomHex(bytes: Int): String = NodeModules.crypto.randomBytes(bytes).toString("hex") as String
 

@@ -1,6 +1,7 @@
 package com.dmarket.p2p.sdk.secrets
 
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,13 +37,13 @@ sealed interface TokenPush {
  */
 class SdkSecrets {
     private val mutex = Mutex()
-    private var key: DmarketKey? = null
+    private var key: TradingApiKey? = null
     private var steam: SteamCredential? = null
 
-    val dmarketKey: DmarketKey? get() = key
+    val dmarketKey: TradingApiKey? get() = key
     val steamCredential: SteamCredential? get() = steam
 
-    suspend fun putDmarketKey(next: DmarketKey): KeyPush = mutex.withLock {
+    suspend fun putDmarketKey(next: TradingApiKey): KeyPush = mutex.withLock {
         val previous = key
         key = next
         when {
