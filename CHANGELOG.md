@@ -48,7 +48,15 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     go stale. It binds to the account the last heartbeat named as linked, once a heartbeat for the current
     DMarket account has come back (`heartbeatReturned`, `forgetLinkedAccount`); before that the first token
     is held on trust. A token for another account is refused (`SteamPushResult.WrongAccount`) and never
-    evicts the held one. Nothing is written to storage, and no result prints the token.
+    evicts the held one. Nothing is written to storage, and no result carries the token:
+    `SteamPushResult.Held` names only the account and the expiry.
+  - `HeadlessTracker` composes and drives the loop for such a host. The host pushes the Trading API key
+    (`pushTradingApiKey`, held once a signer is built for it; `TradingKeyPushResult`) and a Steam access
+    token (`pushSteamToken`); both stay in memory, and a push heartbeats at once. It neither heartbeats nor
+    touches Steam until a key and a live token are held, binds the Steam account fail-closed, starts no
+    create on a token with under 30 minutes left, and generates the Steam `sessionid` from the platform's
+    CSPRNG. `HeadlessPlatform` takes the storage for the loop's non-secret state, the clock, an event
+    observer and an optional HTTP engine; `state()` reports what is held without either secret.
   - `TradingApiAuthenticator` signs each DMarket request with a Trading API key (`TradingApiKey`): Ed25519
     over method, path with query, body and timestamp, sent as `X-Api-Key`, `X-Sign-Date` and
     `X-Request-Sign`, with nothing to refresh on a `401`. `platformEd25519Signer` signs through the JDK on

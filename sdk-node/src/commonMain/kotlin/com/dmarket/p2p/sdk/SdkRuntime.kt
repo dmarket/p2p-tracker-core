@@ -161,8 +161,8 @@ class SdkRuntime(
             health.tokenHeld()
             log.info(
                 "steam token held",
-                "steamId" to push.credential.subjectSteamId.value,
-                "expiresAt" to push.credential.expiresAt.toString(),
+                "steamId" to push.steamId.value,
+                "expiresAt" to push.expiresAt.toString(),
             )
             nudge()
             PushOutcome.Held

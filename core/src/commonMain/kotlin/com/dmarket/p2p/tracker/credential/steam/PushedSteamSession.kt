@@ -9,11 +9,12 @@ import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.time.Instant
 
 /** What a pushed Steam token did. No case carries the token's text. */
 sealed interface SteamPushResult {
-    /** The token is held now; the loop acts on it from its next credential read. */
-    data class Held(val credential: SteamCredential) : SteamPushResult
+    /** The token for [steamId] is held now, until [expiresAt]; the loop acts on it from its next credential read. */
+    data class Held(val steamId: SteamId, val expiresAt: Instant) : SteamPushResult
 
     /** The token names [tokenSteamId], not the account DMarket links ([linkedSteamId]); the held token stays. */
     data class WrongAccount(val tokenSteamId: SteamId, val linkedSteamId: SteamId?) : SteamPushResult
@@ -68,7 +69,7 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
             val expected = linked ?: held?.subjectSteamId
             if (expected != null && expected != subject) return@withLock SteamPushResult.WrongAccount(subject, linked)
             held = credential
-            SteamPushResult.Held(credential)
+            SteamPushResult.Held(subject, credential.expiresAt)
         }
     }
 

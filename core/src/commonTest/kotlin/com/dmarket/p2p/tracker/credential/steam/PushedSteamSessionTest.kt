@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
@@ -32,7 +33,12 @@ class PushedSteamSessionTest {
 
     private fun token(sub: String = MINE, lifetimeHours: Int = 24): String = steamAccessToken(sub, clock.now() + lifetimeHours.hours)
 
-    private suspend fun held(token: String): SteamCredential = assertIs<SteamPushResult.Held>(session.push(token)).credential
+    private suspend fun held(token: String): SteamCredential {
+        val pushed = assertIs<SteamPushResult.Held>(session.push(token))
+        val credential = assertNotNull(session.credential)
+        assertEquals(credential.subjectSteamId to credential.expiresAt, pushed.steamId to pushed.expiresAt)
+        return credential
+    }
 
     // ---- holding a token ---------------------------------------------------------------------------
 
