@@ -1,8 +1,6 @@
-package com.dmarket.p2p.sdk.secrets
+package com.dmarket.p2p.tracker.model.steam
 
 import com.dmarket.p2p.tracker.model.SteamId
-import com.dmarket.p2p.tracker.model.steam.SteamCredential
-import com.dmarket.p2p.tracker.model.steam.SteamTokenJwt
 import kotlin.time.Instant
 
 /** What became of a pushed Steam access token. */
@@ -14,15 +12,17 @@ sealed interface SteamTokenCheck {
 }
 
 /**
- * Checks a Steam access token before the SDK holds it.
+ * Checks a Steam access token a host pushes in, before anything holds it.
  *
- * The SDK takes one credential: a `web`-audience access token, which is at once the `steamLoginSecure` session
+ * The one credential taken is a `web`-audience access token, which is at once the `steamLoginSecure` session
  * and the `webapi_token`. A MobileApp token (`["web","mobile"]`) and a SteamClient token (`["client","web"]`)
  * both qualify. Refused:
  *  - anything that is not a JWT with a steamid64 `sub` and an `exp`;
  *  - a token whose `aud` lacks `web`, because Steam would not accept it as the web session;
- *  - a token that carries `renew` or `derive`: that is a refresh token, the credential the SDK must never hold;
+ *  - a token that carries `renew` or `derive`: that is a refresh token, a credential this library never holds;
  *  - a token already expired at [now].
+ *
+ * The signature is not verified (see [SteamTokenJwt]).
  */
 object PushedSteamToken {
     private val STEAM_ID64 = Regex("^7656119\\d{10}$")

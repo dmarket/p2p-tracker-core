@@ -40,6 +40,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     account (`LinkedSteamIdUnknown`), and `LoopConfig.minWriteTokenLifetime` defers creates on a token about
     to expire. Both are off by default.
   - `TradeTrackerLoop.linkedSteamId`, and `RuntimeSurface.Headless`, which reports platform `sdk`.
+  - `PushedSteamToken.check` vets a Steam access token a host pushes in: a steamid64 `sub`, a `web`
+    audience, no refresh audience (`renew`/`derive`) and an `exp` still ahead. A refusal's reason never
+    carries the token.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed

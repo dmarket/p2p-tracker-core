@@ -6,9 +6,7 @@ import com.dmarket.p2p.sdk.health.Health
 import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.secrets.DmarketKey
 import com.dmarket.p2p.sdk.secrets.KeyPush
-import com.dmarket.p2p.sdk.secrets.PushedSteamToken
 import com.dmarket.p2p.sdk.secrets.SdkSecrets
-import com.dmarket.p2p.sdk.secrets.SteamTokenCheck
 import com.dmarket.p2p.sdk.secrets.TokenPush
 import com.dmarket.p2p.sdk.signing.Ed25519Signer
 import com.dmarket.p2p.sdk.signing.TradingApiAuthenticator
@@ -39,7 +37,9 @@ import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore

@@ -2,11 +2,11 @@ package com.dmarket.p2p.sdk
 
 import com.dmarket.p2p.sdk.secrets.DmarketKey
 import com.dmarket.p2p.sdk.secrets.KeyPush
-import com.dmarket.p2p.sdk.secrets.PushedSteamToken
 import com.dmarket.p2p.sdk.secrets.SdkSecrets
-import com.dmarket.p2p.sdk.secrets.SteamTokenCheck
 import com.dmarket.p2p.sdk.secrets.TokenPush
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
+import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -14,7 +14,6 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlin.time.Duration.Companion.hours
 
 class SecretsTest {
 
@@ -40,34 +39,6 @@ class SecretsTest {
         val printed = testKey().toString()
         assertTrue(PUBLIC_KEY in printed)
         assertTrue(SECRET_SEED !in printed, printed)
-    }
-
-    // ---- the Steam token -----------------------------------------------------------------------
-
-    @Test
-    fun mobile_app_and_steam_client_tokens_are_held() {
-        for (aud in listOf(listOf("web", "mobile"), listOf("client", "web"), listOf("web"))) {
-            val check = PushedSteamToken.check(steamToken(aud = aud), T0)
-            assertIs<SteamTokenCheck.Accepted>(check, "aud=$aud")
-            assertEquals(SteamId(STEAM_ID), check.credential.subjectSteamId)
-            assertEquals(T0 + 24.hours, check.credential.expiresAt)
-        }
-    }
-
-    @Test
-    fun a_refresh_token_a_token_without_web_and_an_expired_one_are_refused() {
-        val refused = mapOf(
-            "refresh" to steamToken(aud = listOf("web", "renew", "derive")),
-            "no web" to steamToken(aud = listOf("mobile")),
-            "expired" to steamToken(exp = T0),
-            "no steamid" to steamToken(sub = "1234"),
-            "not a jwt" to "not-a-token",
-        )
-        for ((case, token) in refused) {
-            val check = PushedSteamToken.check(token, T0)
-            assertIs<SteamTokenCheck.Refused>(check, case)
-            assertTrue("eyJ" !in check.reason, "a refusal never echoes the token: ${check.reason}")
-        }
     }
 
     // ---- holding them --------------------------------------------------------------------------
