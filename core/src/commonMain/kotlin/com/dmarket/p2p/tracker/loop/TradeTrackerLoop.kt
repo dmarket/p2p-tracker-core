@@ -2812,8 +2812,8 @@ class TradeTrackerLoop(
     /**
      * Whether to spend a `GetTradeHistory` read this cycle.
      *
-     * The revert watch is the sparse axis by contract — reverts are rare and non-urgent, and
-     * `docs/P2P_Client-Contract_Spec.md` says poll it ~hourly — but nothing enforced that:
+     * The revert watch is the sparse axis by contract — reverts are rare and non-urgent, so it is meant to be
+     * polled about hourly (`CadenceConfig.revertWatchIntervalMs`) — but nothing enforced that:
      * [PollClass.RevertWatch] is selected by no production caller and there was no interval gate inside a
      * cycle, so the read fired on **every** wake for as long as any deal watched history. Measured on a real
      * session: 47 reads × 14.6 KB in 72 minutes, ~83 s apart, against a config pinning the interval at 1 h.
