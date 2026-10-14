@@ -68,14 +68,38 @@ class SdkRuntime(config: SdkConfig, platform: SdkPlatform, scope: CoroutineScope
 
     override suspend fun putDmarketKey(publicKey: String, secretKey: String): PushOutcome =
         when (val push = tracker.pushTradingApiKey(publicKey, secretKey)) {
-            is TradingKeyPushResult.Invalid -> PushOutcome.Invalid("INVALID_KEY", push.reason)
+            is TradingKeyPushResult.Invalid -> {
+                log.warn("dmarket key refused", "reason" to push.reason)
+                PushOutcome.Invalid("INVALID_KEY", push.reason)
+            }
             is TradingKeyPushResult.Held -> {
+                health.keyHeld()
                 when (push.change) {
                     KeyChange.FIRST -> log.info("dmarket key pushed", "publicKey" to push.publicKey)
+                    KeyChange.ROTATED -> log.info("dmarket key rotated", "publicKey" to push.publicKey)
                     KeyChange.REPLACED -> log.info("dmarket key replaced", "publicKey" to push.publicKey)
                     KeyChange.SAME -> Unit
                 }
                 PushOutcome.Held
+            }
+            is TradingKeyPushResult.AccountChanged -> {
+                health.keyRefused(push.linkedSteamId, push.keyLinkedSteamId)
+                val theirs = push.keyLinkedSteamId?.let { "Steam account ${it.value}" } ?: "no Steam account"
+                log.warn(
+                    "dmarket key for another account refused",
+                    "publicKey" to push.publicKey,
+                    "heldPublicKey" to push.heldPublicKey,
+                    "linkedSteamId" to push.linkedSteamId.value,
+                    "keyLinkedSteamId" to push.keyLinkedSteamId?.value,
+                )
+                PushOutcome.Conflict(
+                    "DMARKET_KEY_ACCOUNT_CHANGED",
+                    "the key's account links $theirs, not ${push.linkedSteamId.value}; the held key stays: switching accounts takes a restart",
+                )
+            }
+            is TradingKeyPushResult.Unverified -> {
+                log.warn("dmarket key unchecked", "publicKey" to push.publicKey, "reason" to push.reason)
+                PushOutcome.Unavailable("DMARKET_UNREACHABLE", "the key could not be checked: ${push.reason}; the held key stays")
             }
         }
 

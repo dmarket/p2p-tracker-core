@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.credential.marketplace
 
 import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import kotlinx.coroutines.sync.Mutex
@@ -15,7 +16,13 @@ enum class KeyChange {
     /** The same key again: nothing changes. */
     SAME,
 
-    /** A different key replaced the held one. The DMarket account it signs for may be another one. */
+    /** A different key for the same DMarket account: its heartbeat named the Steam account the held key is bound to. */
+    ROTATED,
+
+    /**
+     * A different key replaced the held one before any Steam account was bound to compare it with. The DMarket
+     * account it signs for may be another one.
+     */
     REPLACED,
 }
 
@@ -24,8 +31,26 @@ sealed interface TradingKeyPushResult {
     /** The key is held now; [change] says how it relates to the one held before. */
     data class Held(val publicKey: String, val change: KeyChange) : TradingKeyPushResult
 
-    /** The pair is not a key this library can sign with; [reason] never quotes it. The held key stays. */
+    /**
+     * The pair is not a key this library can sign with, or DMarket refused it; [reason] never quotes it. The held
+     * key stays.
+     */
     data class Invalid(val reason: String) : TradingKeyPushResult
+
+    /**
+     * The key signs for another DMarket account: its heartbeat names [keyLinkedSteamId] (`null`: none), not
+     * [linkedSteamId], the Steam account the held key ([heldPublicKey]) is bound to. The held key and the binding
+     * stay; switching accounts takes a restart.
+     */
+    data class AccountChanged(
+        val publicKey: String,
+        val heldPublicKey: String,
+        val linkedSteamId: SteamId,
+        val keyLinkedSteamId: SteamId?,
+    ) : TradingKeyPushResult
+
+    /** The key could not be checked: its heartbeat did not come back ([reason]). The held key stays; push it again. */
+    data class Unverified(val publicKey: String, val reason: String) : TradingKeyPushResult
 }
 
 /**
@@ -44,7 +69,18 @@ internal class PushedTradingApiKey(private val signerFor: suspend (TradingApiKey
     /** The held key; `null` before the first accepted push. */
     val key: TradingApiKey? get() = held
 
-    suspend fun push(publicKey: String, secretKey: String): TradingKeyPushResult {
+    /**
+     * Holds the pair once it can sign. A key other than the one held goes to [vouch] first, which answers for it:
+     * the candidate is held only when the answer is [TradingKeyPushResult.Held]. Pushes go one at a time, so a
+     * check always compares against the key that is held when it finishes.
+     */
+    suspend fun push(
+        publicKey: String,
+        secretKey: String,
+        vouch: suspend (candidate: TradingApiKey, held: TradingApiKey) -> TradingKeyPushResult = { candidate, _ ->
+            TradingKeyPushResult.Held(candidate.publicKey, KeyChange.REPLACED)
+        },
+    ): TradingKeyPushResult {
         val key = TradingApiKey.parse(publicKey, secretKey)
             ?: return TradingKeyPushResult.Invalid("expected a hex Ed25519 key pair: a 32-byte public key and its secret")
         try {
@@ -55,14 +91,11 @@ internal class PushedTradingApiKey(private val signerFor: suspend (TradingApiKey
             return TradingKeyPushResult.Invalid("the secret key cannot sign")
         }
         return mutex.withLock {
-            val previous = held
-            held = key
-            val change = when (previous) {
-                null -> KeyChange.FIRST
-                key -> KeyChange.SAME
-                else -> KeyChange.REPLACED
+            when (val previous = held) {
+                null -> TradingKeyPushResult.Held(key.publicKey, KeyChange.FIRST).also { held = key }
+                key -> TradingKeyPushResult.Held(key.publicKey, KeyChange.SAME)
+                else -> vouch(key, previous).also { if (it is TradingKeyPushResult.Held) held = key }
             }
-            TradingKeyPushResult.Held(key.publicKey, change)
         }
     }
 }

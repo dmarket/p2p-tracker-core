@@ -32,6 +32,7 @@ class HealthTracker(
     private var dmarketUnreachable = false
     private var wrongAccount: Pair<String?, String>? = null
     private var refusedPush: Pair<String?, String>? = null
+    private var refusedKey: Pair<String, String?>? = null
     private var accountUnknown = false
     private var steamRead: Pair<ProblemCode, String>? = null
     private var readFailedThisCycle = false
@@ -94,6 +95,16 @@ class HealthTracker(
         refusedPush = null
     }
 
+    /** A pushed key was refused: its heartbeat named [keyLinkedSteamId], not [linkedSteamId] the held key is bound to. */
+    fun keyRefused(linkedSteamId: SteamId, keyLinkedSteamId: SteamId?) {
+        refusedKey = linkedSteamId.value to keyLinkedSteamId?.value
+    }
+
+    /** A pushed key was held: the refusal above, if any, is over. */
+    fun keyHeld() {
+        refusedKey = null
+    }
+
     /**
      * The health right now, given what the tracker holds ([state]); [dealsTracked] are the deals a blocking
      * problem holds up. While the tracker is ready to act, a heartbeat that has not come back for
@@ -108,6 +119,13 @@ class HealthTracker(
         }
 
         if (!state.hasTradingApiKey) raise(ProblemCode.DMARKET_KEY_MISSING, "push the Trading API key: PUT /v1/dmarket/key", dealsTracked)
+        refusedKey?.let { (linked, theirs) ->
+            val named = theirs?.let { "links $it" } ?: "links no Steam account"
+            raise(
+                ProblemCode.DMARKET_KEY_ACCOUNT_CHANGED,
+                "a key for another account was refused: its account $named, not $linked; switching accounts takes a restart",
+            )
+        }
         if (dmarketAuthFailed) raise(ProblemCode.DMARKET_AUTH_FAILED, "DMarket refused the Trading API key", dealsTracked)
         if (dmarketUnreachable) {
             raise(ProblemCode.DMARKET_UNREACHABLE, "DMarket answers with errors or not at all", dealsTracked)

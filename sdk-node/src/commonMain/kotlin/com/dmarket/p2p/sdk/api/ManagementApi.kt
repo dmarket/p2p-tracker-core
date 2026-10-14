@@ -15,6 +15,9 @@ sealed interface PushOutcome {
     data class Invalid(val error: String, val reason: String) : PushOutcome
 
     data class Conflict(val error: String, val reason: String) : PushOutcome
+
+    /** The push could not be checked right now; pushing it again may succeed. */
+    data class Unavailable(val error: String, val reason: String) : PushOutcome
 }
 
 /** What the API acts on. Implemented by the SDK runtime. */
@@ -30,7 +33,9 @@ interface ManagementActions {
  * The local management API, as a pure function of one request: routing, the bearer check and the JSON in and
  * out. The listener that feeds it is the platform's.
  *
- * - `PUT /v1/dmarket/key {publicKey, secretKey}` → `204`; `400` for a malformed pair.
+ * - `PUT /v1/dmarket/key {publicKey, secretKey}` → `204`; `400 INVALID_KEY` for a malformed pair or one DMarket
+ *   refuses; `409 DMARKET_KEY_ACCOUNT_CHANGED` for a key of another DMarket account; `503 DMARKET_UNREACHABLE`
+ *   when the key's check heartbeat does not come back. The held key stays on every refusal.
  * - `PUT /v1/steam/session {accessToken}` → `204`; `400` for a token the SDK will not hold; `409
  *   STEAM_WRONG_ACCOUNT` for a token of another Steam account (the held one stays).
  * - `GET /v1/health` → `200` with [Health].
@@ -71,6 +76,7 @@ class ManagementApi(private val managementSecret: String, private val actions: M
         PushOutcome.Held -> ApiResponse(204)
         is PushOutcome.Invalid -> error(400, outcome.error, outcome.reason)
         is PushOutcome.Conflict -> error(409, outcome.error, outcome.reason)
+        is PushOutcome.Unavailable -> error(503, outcome.error, outcome.reason)
     }
 
     /** Compares in time independent of where the two differ, so the secret cannot be guessed a byte at a time. */

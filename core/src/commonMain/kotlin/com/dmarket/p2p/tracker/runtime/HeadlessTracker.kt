@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
+import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.client.marketplace.TradingApiAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCanceller
@@ -36,17 +37,21 @@ import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -102,6 +107,7 @@ data class HeadlessTrackerState(
  *  - The account binding fails closed (`requireLinkedSteamId`), and no create starts on a token with less than
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
  *  - It does not heartbeat at all until a key and a live token are held.
+ *  - It serves one DMarket account: a pushed key for another one is refused ([pushTradingApiKey]).
  *
  * No proof is made yet.
  *
@@ -121,6 +127,10 @@ class HeadlessTracker(
     internal val steam = PushedSteamSession(clock) { loop.linkedSteamId }
     private val scheduler = CoroutineScheduler(scope)
     private val cycleMutex = Mutex()
+    private val deviceIds = PersistedDeviceIdStore(platform.storage)
+    private val requestTimeoutMs = tunables.http.requestTimeoutMs.toLong()
+    private val marketplaceHttp = platform.httpEngine?.let { createMarketplaceHttpClient(it, requestTimeoutMs) }
+        ?: createMarketplaceHttpClient(requestTimeoutMs = requestTimeoutMs)
 
     // Written under cycleMutex only. No @Volatile: JS is single-threaded; JVM callers share one scope.
     private var readySince: Instant? = null
@@ -156,17 +166,69 @@ class HeadlessTracker(
     }
 
     /**
-     * Holds the DMarket Trading API key pair, once a signer has been built for it. Another key than the one held
-     * may sign for another DMarket account, so the linked Steam account stops counting until a heartbeat signed
-     * with the new key comes back. A new key heartbeats at once.
+     * Holds the DMarket Trading API key pair, once a signer has been built for it.
+     *
+     * One tracker serves one DMarket account, so a key other than the one held replaces it only after a heartbeat
+     * signed with it ([checkKey]) names the Steam account the held key is bound to. A key for another account is
+     * refused ([TradingKeyPushResult.AccountChanged]), and so is one DMarket refuses or that could not be checked:
+     * the held key and the binding stay. The first key heartbeats at once; a rotated one does not, its check was
+     * that heartbeat. A key that replaced one with no account bound yet unbinds until its own heartbeat comes back.
      */
     suspend fun pushTradingApiKey(publicKey: String, secretKey: String): TradingKeyPushResult {
-        val push = key.push(publicKey, secretKey)
-        if (push is TradingKeyPushResult.Held && push.change != KeyChange.SAME) {
-            if (push.change == KeyChange.REPLACED) steam.forgetLinkedAccount()
-            nudge()
+        val push = key.push(publicKey, secretKey, ::checkKey)
+        if (push is TradingKeyPushResult.Held) {
+            when (push.change) {
+                KeyChange.FIRST -> nudge()
+                KeyChange.REPLACED -> {
+                    steam.forgetLinkedAccount()
+                    nudge()
+                }
+                KeyChange.SAME, KeyChange.ROTATED -> Unit
+            }
         }
         return push
+    }
+
+    /**
+     * Answers for [candidate] replacing [held]: one heartbeat signed with it, for the held token's Steam account and
+     * this device, sent beside the loop rather than through it, so the loop's schedule and state stay as they were.
+     * The directives it leases are leased to this device, so the loop's next heartbeat is served them again.
+     *
+     * The candidate passes when its heartbeat names the account the held key is bound to ([KeyChange.ROTATED]),
+     * or when none is bound yet ([KeyChange.REPLACED]). With no token ever held there is no account to heartbeat
+     * for, and the held key has never been sent either, so there is nothing to check.
+     */
+    private suspend fun checkKey(candidate: TradingApiKey, held: TradingApiKey): TradingKeyPushResult {
+        val replaced = TradingKeyPushResult.Held(candidate.publicKey, KeyChange.REPLACED)
+        val steamId = steam.credential?.subjectSteamId ?: return replaced
+        val request = HeartbeatRequest(
+            clientVersion = TradeTrackerCore.VERSION,
+            platform = RuntimeSurface.Headless.platformWireName,
+            foreground = false,
+            steamId = steamId,
+            deviceId = deviceIds.current(),
+        )
+        val client = KtorMarketplaceClient(marketplaceHttp, baseUrl, TradingApiAuthenticator({ candidate }, clock, platform.signerFor))
+        val unverified = { reason: String -> TradingKeyPushResult.Unverified(candidate.publicKey, reason) }
+        val heartbeat = try {
+            client.heartbeat(request)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: MarketplaceUnauthorizedException) {
+            return TradingKeyPushResult.Invalid(KEY_REFUSED)
+        } catch (e: MarketplaceServerErrorException) {
+            return when (e.statusCode) {
+                HTTP_FORBIDDEN -> TradingKeyPushResult.Invalid(KEY_REFUSED)
+                else -> unverified("its heartbeat failed: HTTP ${e.statusCode}")
+            }
+        } catch (_: RateLimitedException) {
+            return unverified("its heartbeat was rate-limited")
+        } catch (_: Throwable) {
+            return unverified("its heartbeat did not come back")
+        }
+        val bound = steam.boundSteamId() ?: return replaced
+        if (heartbeat.linkedSteamId == bound) return TradingKeyPushResult.Held(candidate.publicKey, KeyChange.ROTATED)
+        return TradingKeyPushResult.AccountChanged(candidate.publicKey, held.publicKey, bound, heartbeat.linkedSteamId)
     }
 
     /** Checks and holds a Steam access token; [PushedSteamSession] says which one is held. A held one heartbeats at once. */
@@ -196,12 +258,9 @@ class HeadlessTracker(
     }
 
     private fun buildLoop(): TradeTrackerLoop {
-        val timeoutMs = tunables.http.requestTimeoutMs.toLong()
         val secretParams = NetworkRedaction.plusSecretParam(tunables.steamEndpoints.paramAccessToken)
-        val steamHttp = platform.httpEngine?.let { createSteamHttpClient(it, timeoutMs, secretParamNames = secretParams) }
-            ?: createSteamHttpClient(requestTimeoutMs = timeoutMs, secretParamNames = secretParams)
-        val marketplaceHttp = platform.httpEngine?.let { createMarketplaceHttpClient(it, timeoutMs) }
-            ?: createMarketplaceHttpClient(requestTimeoutMs = timeoutMs)
+        val steamHttp = platform.httpEngine?.let { createSteamHttpClient(it, requestTimeoutMs, secretParamNames = secretParams) }
+            ?: createSteamHttpClient(requestTimeoutMs = requestTimeoutMs, secretParamNames = secretParams)
         val community = tunables.steamEndpoints.communityBaseUrl
         val adapter = Cs2GameAdapter(tunables.game)
         val sessionId = newSteamSessionId()
@@ -225,7 +284,7 @@ class HeadlessTracker(
             steamReader = KtorSteamReadClient(steamHttp, tunables.steamEndpoints),
             scraper = steam.scraper,
             scheduler = scheduler,
-            deviceId = PersistedDeviceIdStore(storage),
+            deviceId = deviceIds,
             vault = steam.vault,
             clock = clock,
             notary = NoOpNotaryProver,
@@ -264,6 +323,9 @@ class HeadlessTracker(
 
         /** How often a tracker that may not act yet re-checks, besides every push. */
         val IDLE_RECHECK: Duration = 30.seconds
+
+        private const val KEY_REFUSED = "DMarket refused the key"
+        private const val HTTP_FORBIDDEN = 403
     }
 }
 

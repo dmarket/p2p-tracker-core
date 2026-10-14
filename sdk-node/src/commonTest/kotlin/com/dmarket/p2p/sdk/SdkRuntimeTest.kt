@@ -4,12 +4,14 @@ import com.dmarket.p2p.sdk.api.PushOutcome
 import com.dmarket.p2p.sdk.health.Health
 import com.dmarket.p2p.sdk.health.ProblemCode
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
+import com.dmarket.p2p.tracker.client.marketplace.TradingApiSignature
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -32,10 +34,17 @@ class SdkRuntimeTest {
     private val logLines = mutableListOf<String>()
     private var heartbeatBody = """{"activeTracking":[],"directives":[],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
 
+    /** What a heartbeat signed with [OTHER_PUBLIC_KEY] gets instead of [heartbeatBody]. */
+    private var otherKeyHeartbeat: String? = null
+    private var otherKeyStatus = HttpStatusCode.OK
+
     private val engine = MockEngine { request ->
         val json = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        val heartbeat = request.url.encodedPath.endsWith("/p2p/ext/heartbeat")
         when {
-            request.url.encodedPath.endsWith("/p2p/ext/heartbeat") -> respond(heartbeatBody, headers = json)
+            heartbeat && request.headers[TradingApiSignature.API_KEY] == OTHER_PUBLIC_KEY ->
+                respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
+            heartbeat -> respond(heartbeatBody, headers = json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }
@@ -116,6 +125,60 @@ class SdkRuntimeTest {
         assertTrue(sdk.codes().isEmpty(), "${sdk.codes()}")
     }
 
+    /** Key, token, one cycle: the held key is bound to [STEAM_ID]. */
+    private suspend fun boundRuntime(): SdkRuntime = runtime().also {
+        it.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        it.putSteamToken(token)
+        it.tracker.cycle()
+    }
+
+    @Test
+    fun a_key_for_the_same_account_rotates() = runTest {
+        val sdk = boundRuntime()
+        assertEquals(PushOutcome.Held, sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        assertTrue(logLines.any { "\"msg\":\"dmarket key rotated\"" in it && OTHER_PUBLIC_KEY in it }, "$logLines")
+        assertTrue(sdk.codes().isEmpty(), "${sdk.codes()}")
+    }
+
+    @Test
+    fun a_key_for_another_account_is_a_conflict_until_a_key_is_held() = runTest {
+        val sdk = boundRuntime()
+        otherKeyHeartbeat = """{"activeTracking":[],"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+
+        assertEquals(
+            PushOutcome.Conflict(
+                "DMARKET_KEY_ACCOUNT_CHANGED",
+                "the key's account links Steam account $OTHER_STEAM_ID, not $STEAM_ID; the held key stays: switching accounts takes a restart",
+            ),
+            sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        val health = sdk.health()
+        assertEquals(listOf(ProblemCode.DMARKET_KEY_ACCOUNT_CHANGED), health.problems.map { it.code })
+        assertEquals("degraded", health.status, "the held key still serves its own account")
+        val line = logLines.single { "\"msg\":\"dmarket key for another account refused\"" in it }
+        assertTrue(PUBLIC_KEY in line && OTHER_PUBLIC_KEY in line && OTHER_STEAM_ID in line, line)
+
+        assertEquals(PushOutcome.Held, sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED))
+        assertTrue(sdk.codes().isEmpty(), "a held key ends the refusal: ${sdk.codes()}")
+    }
+
+    @Test
+    fun a_key_that_cannot_be_checked_is_refused_by_why() = runTest {
+        val sdk = boundRuntime()
+        otherKeyStatus = HttpStatusCode.Unauthorized
+        assertEquals(PushOutcome.Invalid("INVALID_KEY", "DMarket refused the key"), sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        otherKeyStatus = HttpStatusCode.BadGateway
+        assertEquals(
+            PushOutcome.Unavailable(
+                "DMARKET_UNREACHABLE",
+                "the key could not be checked: its heartbeat failed: HTTP 502; the held key stays",
+            ),
+            sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        assertTrue(logLines.any { "\"msg\":\"dmarket key unchecked\"" in it }, "$logLines")
+        assertTrue(sdk.codes().isEmpty(), "a key that was never held raises nothing: ${sdk.codes()}")
+    }
+
     @Test
     fun the_log_records_every_push_and_no_secret_reaches_it_or_health() = runTest {
         val sdk = runtime()
@@ -124,13 +187,17 @@ class SdkRuntimeTest {
         sdk.putSteamToken(token)
         sdk.tracker.cycle()
         sdk.putSteamToken(steamToken(sub = OTHER_STEAM_ID))
+        otherKeyHeartbeat = """{"activeTracking":[],"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+        val answers = listOf(sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        otherKeyStatus = HttpStatusCode.BadGateway
+        val unchecked = answers + sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED)
 
         for (msg in listOf("dmarket key pushed", "steam token refused", "steam token held", "steam token for another account refused")) {
             assertTrue(logLines.any { "\"msg\":\"$msg\"" in it }, "no \"$msg\" in $logLines")
         }
         assertTrue(logLines.any { "\"msg\":\"event\"" in it }, "the loop's events are logged")
         val payload = token.substringAfter('.').substringBefore('.')
-        for (text in logLines + Json.encodeToString(Health.serializer(), sdk.health())) {
+        for (text in logLines + Json.encodeToString(Health.serializer(), sdk.health()) + unchecked.map { it.toString() }) {
             assertTrue(SECRET_SEED !in text, "the secret key leaked: $text")
             assertTrue(payload !in text, "the Steam token leaked: $text")
         }

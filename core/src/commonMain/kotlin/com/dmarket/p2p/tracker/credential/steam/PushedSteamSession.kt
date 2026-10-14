@@ -65,13 +65,19 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
         }
         return mutex.withLock {
             val subject = credential.subjectSteamId
-            val linked = linkedSteamId().takeIf { linkedNameCounts }
+            val linked = boundSteamId()
             val expected = linked ?: held?.subjectSteamId
             if (expected != null && expected != subject) return@withLock SteamPushResult.WrongAccount(subject, linked)
             held = credential
             SteamPushResult.Held(subject, credential.expiresAt)
         }
     }
+
+    /**
+     * The Steam account this session is bound to: the one the last heartbeat named as linked, once a heartbeat
+     * signed for the current DMarket account has come back. `null` before that, or while DMarket names none.
+     */
+    fun boundSteamId(): SteamId? = linkedSteamId().takeIf { linkedNameCounts }
 
     /** A heartbeat signed for the current DMarket account came back: the linked id it named now counts. */
     fun heartbeatReturned() {

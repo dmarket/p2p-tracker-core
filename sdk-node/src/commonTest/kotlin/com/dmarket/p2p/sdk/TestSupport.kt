@@ -10,6 +10,7 @@ import kotlin.time.Instant
 const val STEAM_ID = "76561198000000001"
 const val OTHER_STEAM_ID = "76561198000000099"
 const val PUBLIC_KEY = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+const val OTHER_PUBLIC_KEY = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
 const val SECRET_SEED = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 
 /** The clock every SDK test starts on: 2026-06-16T12:00:00Z. */

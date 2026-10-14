@@ -13,13 +13,14 @@ class ManagementApiTest {
     private val secret = "s".repeat(40)
     private val bearer = "Bearer $secret"
 
-    private class RecordingActions(var steamOutcome: PushOutcome = PushOutcome.Held) : ManagementActions {
+    private class RecordingActions(var steamOutcome: PushOutcome = PushOutcome.Held, var keyOutcome: PushOutcome = PushOutcome.Held) :
+        ManagementActions {
         val keys = mutableListOf<Pair<String, String>>()
         val tokens = mutableListOf<String>()
 
         override suspend fun putDmarketKey(publicKey: String, secretKey: String): PushOutcome {
             keys += publicKey to secretKey
-            return PushOutcome.Held
+            return keyOutcome
         }
 
         override suspend fun putSteamToken(accessToken: String): PushOutcome {
@@ -60,6 +61,22 @@ class ManagementApiTest {
         assertEquals(409, response.status)
         assertTrue("STEAM_WRONG_ACCOUNT" in response.body)
         assertTrue("eyJsecret" !in response.body)
+    }
+
+    @Test
+    fun a_key_for_another_account_is_a_conflict_and_an_unchecked_one_is_unavailable() = runTest {
+        val body = """{"publicKey":"pk","secretKey":"sk-secret"}"""
+        val actions = RecordingActions(keyOutcome = PushOutcome.Conflict("DMARKET_KEY_ACCOUNT_CHANGED", "another account"))
+        val api = ManagementApi(secret, actions)
+        val conflict = api.handle("PUT", ManagementApi.KEY_PATH, bearer, body)
+        assertEquals(409, conflict.status)
+        assertTrue("DMARKET_KEY_ACCOUNT_CHANGED" in conflict.body, conflict.body)
+
+        actions.keyOutcome = PushOutcome.Unavailable("DMARKET_UNREACHABLE", "the key could not be checked")
+        val unavailable = api.handle("PUT", ManagementApi.KEY_PATH, bearer, body)
+        assertEquals(503, unavailable.status)
+        assertTrue("DMARKET_UNREACHABLE" in unavailable.body, unavailable.body)
+        assertTrue("sk-secret" !in conflict.body + unavailable.body)
     }
 
     @Test

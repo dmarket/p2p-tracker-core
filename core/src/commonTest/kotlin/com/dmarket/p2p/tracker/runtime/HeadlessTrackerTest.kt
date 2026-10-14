@@ -18,9 +18,11 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.job
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.runTest
@@ -47,6 +49,11 @@ class HeadlessTrackerTest {
     private val events = mutableListOf<LifecycleEvent>()
     private var heartbeatBody = """{"activeTracking":[],"directives":[],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
 
+    /** What a heartbeat signed with [OTHER_PUBLIC_KEY] gets instead of [heartbeatBody]. */
+    private var otherKeyHeartbeat: String? = null
+    private var otherKeyStatus = HttpStatusCode.OK
+    private var otherKeyUnreachable = false
+
     private class RecordingStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
 
@@ -67,6 +74,10 @@ class HeadlessTrackerTest {
         requests += request
         val path = request.url.encodedPath
         when {
+            path.endsWith("/p2p/ext/heartbeat") && request.headers[TradingApiSignature.API_KEY] == OTHER_PUBLIC_KEY -> {
+                if (otherKeyUnreachable) throw IllegalStateException("connection refused")
+                respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
+            }
             path.endsWith("/p2p/ext/heartbeat") -> respond(heartbeatBody, headers = json)
             path.endsWith("/p2p/ext/trade-actions") -> respond("""{"results":[{"directiveId":"dir-1","accepted":true}]}""", headers = json)
             path.endsWith("/p2p/ext/trade-events") -> respond("""{"results":[]}""", headers = json)
@@ -77,6 +88,9 @@ class HeadlessTrackerTest {
     }
 
     private val idle = CoroutineScope(StandardTestDispatcher(TestCoroutineScheduler()))
+
+    /** The push nudges launched so far: they wait on [idle], which nothing runs. */
+    private fun nudges() = idle.coroutineContext.job.children.count()
 
     /** Signs nothing: returns the message bytes, so a test can read what was signed off the header. */
     private val echoSigner = Ed25519Signer { message -> message }
@@ -258,22 +272,138 @@ class HeadlessTrackerTest {
         assertEquals(SteamId(STEAM_ID), tracker.state().steamTokenSteamId)
     }
 
+    // ---- another key ------------------------------------------------------------------------------
+
+    /** Key, token, one cycle: the held key is bound to [STEAM_ID]. */
+    private suspend fun boundTracker(): HeadlessTracker = tracker().also {
+        it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        it.pushSteamToken(token)
+        it.cycle()
+        assertEquals(SteamId(STEAM_ID), it.state().linkedSteamId)
+    }
+
+    private fun HttpRequestData.apiKey() = headers[TradingApiSignature.API_KEY]
+
     @Test
-    fun a_replaced_key_unbinds_the_account_until_its_own_heartbeat_comes_back() = runTest {
+    fun a_key_for_the_same_account_rotates_with_one_heartbeat_and_signs_from_then_on() = runTest {
+        val tracker = boundTracker()
+        val before = heartbeats().size
+        val wake = tracker.loop.nextWakeDelay()
+        val nudged = nudges()
+
+        assertEquals(
+            TradingKeyPushResult.Held(OTHER_PUBLIC_KEY, KeyChange.ROTATED),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        assertEquals(nudged, nudges(), "the check was the heartbeat: no second one is asked for")
+        val check = heartbeats().drop(before).single()
+        assertEquals(OTHER_PUBLIC_KEY, check.apiKey(), "the check is signed with the pushed key")
+        val body = Json.parseToJsonElement(check.text()).jsonObject
+        assertEquals(STEAM_ID, body.getValue("steamId").jsonPrimitive.content)
+        assertEquals("sdk", body.getValue("platform").jsonPrimitive.content)
+        assertEquals(heartbeats().first().deviceId(), check.deviceId(), "the same device, not a second one")
+        assertEquals(wake, tracker.loop.nextWakeDelay(), "the loop's schedule did not move")
+
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(OTHER_PUBLIC_KEY, heartbeats().last().apiKey(), "the loop signs with the rotated key")
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId)
+    }
+
+    @Test
+    fun a_key_for_another_account_is_refused_and_the_held_key_and_binding_stay() = runTest {
+        val tracker = boundTracker()
+        otherKeyHeartbeat = """{"activeTracking":[],"directives":[],"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+
+        assertEquals(
+            TradingKeyPushResult.AccountChanged(OTHER_PUBLIC_KEY, PUBLIC_KEY, SteamId(STEAM_ID), SteamId(OTHER_STEAM_ID)),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        otherKeyHeartbeat = """{"activeTracking":[],"directives":[],"ttlSeconds":100}"""
+        assertEquals(
+            TradingKeyPushResult.AccountChanged(OTHER_PUBLIC_KEY, PUBLIC_KEY, SteamId(STEAM_ID), null),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+            "an account that links no Steam account is another account too",
+        )
+
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId, "the binding stays")
+        assertEquals(
+            SteamPushResult.WrongAccount(SteamId(OTHER_STEAM_ID), SteamId(STEAM_ID)),
+            tracker.pushSteamToken(steamAccessToken(OTHER_STEAM_ID, clock.now() + 24.hours)),
+            "a token is still checked against the bound account",
+        )
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(PUBLIC_KEY, heartbeats().last().apiKey(), "the held key still signs")
+        assertEquals(TradingKeyPushResult.Held(PUBLIC_KEY, KeyChange.SAME), tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED))
+    }
+
+    @Test
+    fun a_key_whose_check_does_not_come_back_is_not_held() = runTest {
+        val tracker = boundTracker()
+
+        otherKeyStatus = HttpStatusCode.Unauthorized
+        assertEquals(TradingKeyPushResult.Invalid("DMarket refused the key"), tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        otherKeyStatus = HttpStatusCode.Forbidden
+        assertEquals(TradingKeyPushResult.Invalid("DMarket refused the key"), tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        otherKeyStatus = HttpStatusCode.BadGateway
+        assertEquals(
+            TradingKeyPushResult.Unverified(OTHER_PUBLIC_KEY, "its heartbeat failed: HTTP 502"),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        otherKeyStatus = HttpStatusCode.TooManyRequests
+        assertEquals(
+            TradingKeyPushResult.Unverified(OTHER_PUBLIC_KEY, "its heartbeat was rate-limited"),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        otherKeyUnreachable = true
+        assertEquals(
+            TradingKeyPushResult.Unverified(OTHER_PUBLIC_KEY, "its heartbeat did not come back"),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(PUBLIC_KEY, heartbeats().last().apiKey(), "the held key still signs")
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId)
+    }
+
+    @Test
+    fun with_no_account_bound_yet_a_key_whose_heartbeat_comes_back_replaces_the_held_one() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
         tracker.pushSteamToken(token)
-        tracker.cycle()
 
-        val theirs = steamAccessToken(OTHER_STEAM_ID, clock.now() + 24.hours)
-        assertEquals(SteamPushResult.WrongAccount(SteamId(OTHER_STEAM_ID), SteamId(STEAM_ID)), tracker.pushSteamToken(theirs))
-
-        tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED)
-        assertEquals(
-            SteamPushResult.WrongAccount(SteamId(OTHER_STEAM_ID), null),
-            tracker.pushSteamToken(theirs),
-            "the previous key's linked account no longer counts; the held token's account still does",
+        otherKeyUnreachable = true
+        assertIs<TradingKeyPushResult.Unverified>(
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+            "checked even with nothing bound",
         )
+        otherKeyUnreachable = false
+        val nudged = nudges()
+        assertEquals(
+            TradingKeyPushResult.Held(OTHER_PUBLIC_KEY, KeyChange.REPLACED),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        assertEquals(nudged + 1, nudges(), "a key with nothing bound heartbeats at once to take the binding")
+        val signedWith = heartbeats().map { it.apiKey() }
+        assertEquals(listOf(OTHER_PUBLIC_KEY, OTHER_PUBLIC_KEY), signedWith, "one check per push, signed with the pushed key")
+
+        tracker.cycle()
+        assertEquals(OTHER_PUBLIC_KEY, heartbeats().last().apiKey())
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId, "the binding comes from the new key's heartbeat")
+    }
+
+    @Test
+    fun with_no_token_ever_held_another_key_replaces_the_held_one_unchecked() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+
+        assertEquals(
+            TradingKeyPushResult.Held(OTHER_PUBLIC_KEY, KeyChange.REPLACED),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        assertTrue(requests.isEmpty(), "no Steam account to heartbeat for, and the held key was never sent: $requests")
     }
 
     @Test
@@ -284,9 +414,19 @@ class HeadlessTrackerTest {
         tracker.pushSteamToken(token)
         tracker.cycle()
         tracker.pushSteamToken(steamAccessToken(OTHER_STEAM_ID, clock.now() + 24.hours))
+        val checks = buildList {
+            otherKeyHeartbeat = """{"activeTracking":[],"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+            add(tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+            otherKeyStatus = HttpStatusCode.Unauthorized
+            add(tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+            otherKeyUnreachable = true
+            add(tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        }
+        val sentToDmarket = requests.filter { "gateway" in it.url.host }.map { it.headers.entries().toString() + it.text() }
 
         val payload = token.substringAfter('.').substringBefore('.')
-        val everything = storage.entries.values + events.map { it.toString() } + tracker.state().toString()
+        val everything = storage.entries.values + events.map { it.toString() } + tracker.state().toString() +
+            checks.map { it.toString() } + sentToDmarket
         for (text in everything) {
             assertTrue(SECRET_SEED !in text, "the secret key leaked: $text")
             assertTrue(payload !in text, "the Steam token leaked: $text")

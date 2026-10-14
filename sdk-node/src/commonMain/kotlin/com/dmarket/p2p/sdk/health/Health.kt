@@ -13,6 +13,9 @@ enum class ProblemCode(val blocking: Boolean) {
     /** No Trading API key pushed since start: the SDK does not heartbeat. */
     DMARKET_KEY_MISSING(blocking = true),
 
+    /** A pushed key signs for another DMarket account and was refused; the held key still serves its own. */
+    DMARKET_KEY_ACCOUNT_CHANGED(blocking = false),
+
     /** DMarket refused the pushed key (invalid, revoked or banned). */
     DMARKET_AUTH_FAILED(blocking = true),
 
