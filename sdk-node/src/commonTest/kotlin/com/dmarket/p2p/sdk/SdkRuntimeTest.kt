@@ -152,7 +152,7 @@ class SdkRuntimeTest {
         val refused = sdk.putSteamToken(steamToken(sub = OTHER_STEAM_ID))
         assertIs<PushOutcome.Conflict>(refused)
         assertEquals("STEAM_WRONG_ACCOUNT", refused.error)
-        assertEquals(SteamId(STEAM_ID), sdk.secrets.steamCredential?.subjectSteamId)
+        assertEquals(SteamId(STEAM_ID), sdk.steam.credential?.subjectSteamId)
         assertTrue(ProblemCode.STEAM_WRONG_ACCOUNT in sdk.health().problems.map { it.code })
     }
 

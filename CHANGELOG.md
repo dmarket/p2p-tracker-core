@@ -43,6 +43,12 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   - `PushedSteamToken.check` vets a Steam access token a host pushes in: a steamid64 `sub`, a `web`
     audience, no refresh audience (`renew`/`derive`) and an `exp` still ahead. A refusal's reason never
     carries the token.
+  - `PushedSteamSession` holds a pushed Steam token in memory and is the loop's credential cache and source
+    (`vault`, `scraper`), so a push reaches the loop's next cycle without waiting for the previous token to
+    go stale. It binds to the account the last heartbeat named as linked, once a heartbeat for the current
+    DMarket account has come back (`heartbeatReturned`, `forgetLinkedAccount`); before that the first token
+    is held on trust. A token for another account is refused (`SteamPushResult.WrongAccount`) and never
+    evicts the held one. Nothing is written to storage, and no result prints the token.
   - `TradingApiAuthenticator` signs each DMarket request with a Trading API key (`TradingApiKey`): Ed25519
     over method, path with query, body and timestamp, sent as `X-Api-Key`, `X-Sign-Date` and
     `X-Request-Sign`, with nothing to refresh on a `401`. `platformEd25519Signer` signs through the JDK on

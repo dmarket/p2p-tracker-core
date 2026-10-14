@@ -477,6 +477,13 @@ fun jwtExpiringAt(expiresAt: Instant): String {
     return "eyJhbGciOiJub25lIn0.$payload.sig"
 }
 
+/** A Steam access token shaped like Steam's: an unsigned JWT whose payload carries [sub], [aud] and [exp]. */
+fun steamAccessToken(sub: String, exp: Instant, aud: List<String> = listOf("web", "mobile")): String {
+    val audience = aud.joinToString(",") { "\"$it\"" }
+    val payload = base64UrlNoPad("""{"iss":"r:test","sub":"$sub","aud":[$audience],"exp":${exp.epochSeconds}}""")
+    return "${base64UrlNoPad("""{"alg":"EdDSA","typ":"JWT"}""")}.$payload.c2lnbmF0dXJl"
+}
+
 private fun base64UrlNoPad(text: String): String {
     val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     val bytes = text.encodeToByteArray()

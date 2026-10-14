@@ -6,9 +6,7 @@ import com.dmarket.p2p.sdk.health.Health
 import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.secrets.KeyPush
 import com.dmarket.p2p.sdk.secrets.SdkSecrets
-import com.dmarket.p2p.sdk.secrets.TokenPush
 import com.dmarket.p2p.tracker.adapter.host.CoroutineScheduler
-import com.dmarket.p2p.tracker.adapter.host.InMemoryCredentialVault
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
@@ -23,6 +21,8 @@ import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamNotificationReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.credential.steam.PushedSteamSession
+import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
@@ -37,15 +37,11 @@ import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
-import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
-import com.dmarket.p2p.tracker.model.steam.SteamCredential
-import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
-import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import com.dmarket.p2p.tracker.runtime.TradeTrackerCore
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
@@ -81,9 +77,9 @@ class SdkPlatform(
  *
  * The loop is the browser extension's, with these differences:
  *  - DMarket calls are signed with the pushed Trading API key ([TradingApiAuthenticator]), not a session token.
- *  - The Steam session is the pushed access token: `steamLoginSecure` is built from it per request, and the
- *    `sessionid` double-submit value is generated here once per process. Nothing refreshes it — the bot pushes
- *    a fresh one ([SteamSessionScraper] here only hands the loop what was pushed).
+ *  - The Steam session is the pushed access token, held by [PushedSteamSession]: `steamLoginSecure` is built
+ *    from it per request, and the `sessionid` double-submit value is generated here once per process. Nothing
+ *    refreshes it — the bot pushes a fresh one.
  *  - The account binding fails closed (`requireLinkedSteamId`), and no create starts on a token with less than
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
  *  - It does not heartbeat at all until a key and a live token are held.
@@ -99,23 +95,13 @@ class SdkRuntime(
     private val clock = platform.clock
     private val log = platform.log
     val secrets = SdkSecrets()
+    val steam = PushedSteamSession(clock) { loop.linkedSteamId }
     val health = HealthTracker(clock, version = VERSION)
-    private val vault = InMemoryCredentialVault()
     private val scheduler = CoroutineScheduler(scope)
     private val cycleMutex = Mutex()
 
-    /**
-     * Whether a heartbeat signed with the key held now has come back. Until it has, the linked Steam id the loop
-     * remembers belongs to the previous key's account, if any, and a pushed token is not checked against it.
-     */
-    private var linkedKnownForKey = false
-
-    private val pushedSession = object : SteamSessionScraper {
-        override suspend fun scrape(): SteamCredential? = secrets.steamCredential?.takeIf { it.expiresAt > clock.now() }
-    }
-
     private val observer = EventObserver { event ->
-        if (event is LifecycleEvent.HeartbeatSent) linkedKnownForKey = true
+        if (event is LifecycleEvent.HeartbeatSent) steam.heartbeatReturned()
         health.onEvent(event)
         log.onEvent(event)
     }
@@ -158,7 +144,7 @@ class SdkRuntime(
             KeyPush.SAME -> return PushOutcome.Held
             KeyPush.FIRST -> log.info("dmarket key pushed", "publicKey" to key.publicKey)
             KeyPush.REPLACED -> {
-                linkedKnownForKey = false
+                steam.forgetLinkedAccount()
                 log.info("dmarket key replaced", "publicKey" to key.publicKey)
             }
         }
@@ -166,49 +152,32 @@ class SdkRuntime(
         return PushOutcome.Held
     }
 
-    override suspend fun putSteamToken(accessToken: String): PushOutcome {
-        val credential = when (val check = PushedSteamToken.check(accessToken, clock.now())) {
-            is SteamTokenCheck.Accepted -> check.credential
-            is SteamTokenCheck.Refused -> {
-                log.warn("steam token refused", "reason" to check.reason)
-                return PushOutcome.Invalid("INVALID_TOKEN", check.reason)
-            }
+    override suspend fun putSteamToken(accessToken: String): PushOutcome = when (val push = steam.push(accessToken)) {
+        is SteamPushResult.Invalid -> {
+            log.warn("steam token refused", "reason" to push.reason)
+            PushOutcome.Invalid("INVALID_TOKEN", push.reason)
         }
-        val linked = loop.linkedSteamId.takeIf { linkedKnownForKey }
-        return when (val push = secrets.putSteamCredential(credential, linked)) {
-            is TokenPush.Held -> {
-                hold(push.credential)
-                health.tokenHeld()
-                log.info(
-                    "steam token held",
-                    "steamId" to credential.subjectSteamId.value,
-                    "expiresAt" to credential.expiresAt.toString(),
-                )
-                nudge()
-                PushOutcome.Held
-            }
-            is TokenPush.WrongAccount -> {
-                health.tokenRefused(push.tokenSteamId, push.linkedSteamId)
-                val expected = push.linkedSteamId?.value ?: "the account of the token already held"
-                log.warn("steam token for another account refused", "tokenSteamId" to push.tokenSteamId.value, "expected" to expected)
-                PushOutcome.Conflict("STEAM_WRONG_ACCOUNT", "the token is for ${push.tokenSteamId.value}, not $expected")
-            }
+        is SteamPushResult.Held -> {
+            health.tokenHeld()
+            log.info(
+                "steam token held",
+                "steamId" to push.credential.subjectSteamId.value,
+                "expiresAt" to push.credential.expiresAt.toString(),
+            )
+            nudge()
+            PushOutcome.Held
+        }
+        is SteamPushResult.WrongAccount -> {
+            health.tokenRefused(push.tokenSteamId, push.linkedSteamId)
+            val expected = push.linkedSteamId?.value ?: "the account of the token already held"
+            log.warn("steam token for another account refused", "tokenSteamId" to push.tokenSteamId.value, "expected" to expected)
+            PushOutcome.Conflict("STEAM_WRONG_ACCOUNT", "the token is for ${push.tokenSteamId.value}, not $expected")
         }
     }
 
-    override fun health(): Health = health.snapshot(hasKey = secrets.dmarketKey != null, credential = secrets.steamCredential)
+    override fun health(): Health = health.snapshot(hasKey = secrets.dmarketKey != null, credential = steam.credential)
 
-    private fun ready(): Boolean {
-        if (secrets.dmarketKey == null) return false
-        val credential = secrets.steamCredential ?: return false
-        return credential.expiresAt > clock.now()
-    }
-
-    /** Puts a newly held token in front of the loop at once, rather than when the cached one goes stale. */
-    private suspend fun hold(credential: SteamCredential) {
-        if (vault.readSteamCredential()?.subjectSteamId != credential.subjectSteamId) vault.clearSteamCredential()
-        vault.writeSteamCredential(credential)
-    }
+    private fun ready(): Boolean = secrets.dmarketKey != null && steam.ready()
 
     /** A push changed what the SDK can do: heartbeat now instead of at the next scheduled wake. */
     private fun nudge() {
@@ -245,10 +214,10 @@ class SdkRuntime(
                 retry = tunables.marketplaceRetry,
             ),
             steamReader = KtorSteamReadClient(steamHttp, tunables.steamEndpoints),
-            scraper = pushedSession,
+            scraper = steam.scraper,
             scheduler = scheduler,
             deviceId = PersistedDeviceIdStore(storage),
-            vault = vault,
+            vault = steam.vault,
             clock = clock,
             notary = NoOpNotaryProver,
             offerCreator = HeaderSessionSteamOfferCreator(steamHttp, sessionId, community, adapter),
