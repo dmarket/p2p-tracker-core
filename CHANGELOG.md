@@ -55,15 +55,18 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     token (`pushSteamToken`); both stay in memory, and the first key and every held token heartbeat at once.
     It neither heartbeats nor touches Steam until a key and a live token are held, binds the Steam account
     fail-closed, starts no create on a token with under 30 minutes left, and generates the Steam `sessionid`
-    from the platform's CSPRNG. `HeadlessPlatform` takes the storage for the loop's non-secret state, the clock, an event
-    observer and an optional HTTP engine; `state()` reports what is held without either secret.
+    from the platform's CSPRNG. `HeadlessPlatform` takes the storage for the loop's non-secret state
+    (`storageFor`, one store per Steam account), the clock, an event observer and an optional HTTP engine;
+    `state()` reports what is held without either secret.
   - `HeadlessTracker` serves one DMarket account. A key pushed while another is held replaces it only after a
     heartbeat signed with it names the Steam account the held key is bound to (`KeyChange.ROTATED`). A key for
     another account is refused (`TradingKeyPushResult.AccountChanged`, naming both public keys and both linked
     accounts), and so is one DMarket refuses (`Invalid`) or whose heartbeat does not come back (`Unverified`):
     the held key and the binding stay, and switching accounts takes a restart. The check is one heartbeat beside
     the loop, for the same device, and leaves the loop's schedule as it was. With no account bound yet a checked
-    key replaces the held one (`KeyChange.REPLACED`); with no Steam token ever pushed there is nothing to check.
+    key replaces the held one (`KeyChange.REPLACED`); with no Steam token ever pushed there is nothing to check,
+    and the first heartbeat after a token is pushed takes the binding. A key whose account links no Steam
+    account is another account's.
   - `TradingApiAuthenticator` signs each DMarket request with a Trading API key (`TradingApiKey`): Ed25519
     over method, path with query, body and timestamp, sent as `X-Api-Key`, `X-Sign-Date` and
     `X-Request-Sign`, with nothing to refresh on a `401`. `platformEd25519Signer` signs through the JDK on
@@ -97,6 +100,33 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     `WasmProverHost` seams; the notary socket must authenticate by headers. `HeaderSteamProofCookieSource`
     (and `PushedSteamSession.proofCookies`) builds the Steam web session a cookie-authenticated proven read
     sends from the token. `TradingApiSignature.redact` blanks signed-header values in a log line.
+  - `HeadlessTracker`'s heartbeat reports `foreground` from the token: `true` only while the account is bound
+    to the token's and the token has 30 minutes left. Once an account is bound, a token that expires or is
+    missing no longer stops the heartbeat: it goes on for the bound account with `foreground: false` and
+    touches nothing on Steam. In the loop these are `LoopConfig.foregroundMinTokenLifetime` and
+    `LoopConfig.heartbeatWithoutCredential`, off by default.
+  - `HeadlessTracker` keeps the loop's state per account: `HeadlessPlatform.storageFor` is called for the
+    Steam account DMarket links to the key's account. Until the first heartbeat names it, the state of the
+    held token's account is read and writes are held in memory; a heartbeat for that account writes them,
+    one for another drops them.
+  - `HeadlessTracker(steamWrites = false)` builds no offer writer, and `LoopConfig.steamWrites` off drops
+    every leased `create_offer` and `cancel_offer` unreported and refuses `createTrade`.
+  - `LoopConfig.reportUnsentCreates` off never answers `FAILED` for a `create_offer` that did not reach
+    Steam (refused by the account or buyer-role guard, or deferred), which DMarket reads as the seller failing
+    to deliver; the lease lapses instead. `HeadlessTracker` turns it off.
+  - A 429 from DMarket quiets `HeadlessTracker` until `Retry-After` has passed and not before a backoff that
+    doubles from 30 s to 10 min, with up to a quarter more at random. `LoopConfig.heartbeatJitter` lands the
+    heartbeat up to that fraction later, never past the advertised ttl (0.1 on `HeadlessTracker`, off by
+    default). `createLoop` takes the `Random` its draws use.
+  - `HeadlessTrackerState` adds `trackedDealIds`, `clockOffset` and `clockSkewed` (DMarket's `Date` against
+    the host's clock, past `HeadlessTracker.MAX_CLOCK_SKEW`), `steamNotLinked` (the heartbeat's
+    `403 P2P_STEAM_NOT_LINKED`), and `updateRequired` and `updateDueTime`. A key refused while the clock is off
+    is `Unverified`, not `Invalid`. `TradeTrackerLoop.trackedDealIds` lists the last heartbeat's deals.
+  - `HeartbeatResponse.updateRequired` and `updateDueTime` read the backend's minimum-version signals; absent,
+    they are `false` and `null`, and a malformed time is no schedule.
+  - `KtorMarketplaceClient(onServerDate = …)` hears the `Date` of every DMarket reply, a refusal included, and
+    `HttpStatusException.serverDate` carries it. A failed heartbeat's body is read for the gateway's
+    machine code, carried as `MarketplaceServerErrorException.errorCode`.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed
