@@ -320,10 +320,27 @@ class TrackerTickTest {
     }
 
     @Test
-    fun the_reversal_site_alone_proves_only_the_refunding_codes() {
-        val deal = tracked(proofRequired = true, watch = historyWatch, proofSites = setOf(ProofSite.TRADE_REVERSED))
-        assertEquals(1, intentsFor(deal, ObservedTrade(historyStatus = 12)).proofIntents.size, "history 12")
-        assertTrue(intentsFor(deal, ObservedTrade(historyStatus = 3)).proofIntents.isEmpty(), "history 3")
+    fun with_every_site_off_only_a_reversal_is_proven() {
+        // What a current backend sends when it enforces nothing: the reversal site alone, because a refund is
+        // never moved on an unproven report. Both axes watched, so the site list alone decides.
+        val deal = tracked(
+            proofRequired = true,
+            watch = setOf(WatchTarget.GET_TRADE_OFFER, WatchTarget.GET_TRADE_HISTORY),
+            proofSites = setOf(ProofSite.TRADE_REVERSED),
+        )
+        for (code in listOf(4, 5, 6, 7, 11, 12)) {
+            val plan = intentsFor(deal, ObservedTrade(historyStatus = code))
+            assertEquals(1, plan.proofIntents.size, "history $code is a reversal and is proven")
+        }
+        val unproven = listOf(TradeStatusSource.HISTORY to 3, TradeStatusSource.HISTORY to 9) +
+            listOf(2, 3, 4, 6, 7, 8, 10).map { TradeStatusSource.OFFER to it }
+        for ((source, code) in unproven) {
+            assertTrue(DecisiveTransitions.isDecisive(source, code), "$source $code")
+            val observed = if (source == TradeStatusSource.OFFER) ObservedTrade(offerState = code) else ObservedTrade(historyStatus = code)
+            val plan = intentsFor(deal, observed)
+            assertTrue(plan.proofIntents.isEmpty(), "$source $code is not proven")
+            assertEquals(listOf(code), plan.reports.map { it.steamStatusCode }, "$source $code is reported at once")
+        }
     }
 
     @Test
