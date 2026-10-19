@@ -22,6 +22,14 @@ import kotlin.time.Duration
  * @param minWriteTokenLifetime When set, a leased `create_offer` is not attempted while the Steam credential has
  *   less than this left: it is deferred unreported, so its lease lapses and the backend re-leases it. For a
  *   host whose token is pushed from outside and cannot be refreshed here. `null` (the default) never defers.
+ * @param foregroundMinTokenLifetime When set, the heartbeat's `foreground` follows the Steam session instead of
+ *   [mode]: `true` only while the last heartbeat named the credential's account as linked and the credential has at
+ *   least this long left, so the backend counts the device present only while it can deliver. `null` (the default)
+ *   reports [mode].
+ * @param heartbeatWithoutCredential When `true`, a due heartbeat still goes out while no Steam credential is held —
+ *   for the Steam account the last heartbeat named as linked, with `foreground: false` — and the cycle takes no
+ *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the
+ *   default) keeps the browser behaviour: no Steam session, no heartbeat.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -30,4 +38,6 @@ data class LoopConfig(
     val tunables: TrackerConfig = TrackerConfig.defaults(),
     val requireLinkedSteamId: Boolean = false,
     val minWriteTokenLifetime: Duration? = null,
+    val foregroundMinTokenLifetime: Duration? = null,
+    val heartbeatWithoutCredential: Boolean = false,
 )

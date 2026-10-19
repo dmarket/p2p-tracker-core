@@ -221,6 +221,21 @@ class SdkRuntimeTest {
     }
 
     @Test
+    fun a_lapsed_token_degrades_while_the_sdk_keeps_heartbeating() = runTest {
+        val sdk = runtime()
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        sdk.putSteamToken(steamToken(exp = T0 + 1.hours))
+        sdk.tracker.cycle()
+        clock.advance(2.hours)
+        sdk.tracker.cycle()
+
+        val health = sdk.health()
+        assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED), health.problems.map { it.code })
+        assertEquals("degraded", health.status)
+        assertEquals((T0 + 2.hours).toString(), health.lastHeartbeatAt, "the heartbeat went on without a token")
+    }
+
+    @Test
     fun the_log_records_every_push_and_no_secret_reaches_it_or_health() = runTest {
         val sdk = runtime()
         sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY)

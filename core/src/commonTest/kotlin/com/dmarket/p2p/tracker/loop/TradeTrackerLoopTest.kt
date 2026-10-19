@@ -5529,4 +5529,18 @@ class TradeTrackerLoopTest {
         assertEquals(listOf(true), refresher.forcedCalls, "an explicit force clears the latch and retries")
         assertEquals(TrackerBlock.NONE, l.blockingState)
     }
+
+    @Test
+    fun by_default_foreground_is_the_mode_and_no_session_means_no_heartbeat() = runTest {
+        val marketplace = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60, linkedSteamId = fakeSteamCredential().subjectSteamId))
+        val loop = loop(marketplace = marketplace)
+        loop.runOnce()
+        loop.forceHeartbeatNow()
+        loop.runOnce()
+        assertEquals(listOf(false, false), marketplace.heartbeatsSent.map { it.foreground }, "the browser loop reports its Background mode")
+
+        val sessionless = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60))
+        loop(marketplace = sessionless, credential = false).runOnce()
+        assertTrue(sessionless.heartbeatsSent.isEmpty(), "no Steam session, no heartbeat")
+    }
 }

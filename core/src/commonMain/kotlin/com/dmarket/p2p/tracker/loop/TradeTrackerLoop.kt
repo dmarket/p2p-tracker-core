@@ -1262,7 +1262,10 @@ class TradeTrackerLoop(
             // advanced here (that happens only after a successful heartbeat), so every due wake retries.
             setSteamSessionMissing(credentials.sessionMissing)
             if (credentials.lastRefreshFailedLoggedOut) emit(LifecycleEvent.ReLoginNeeded("steam"))
-            return@withLock TickOutcome.EMPTY
+            // A host that heartbeats without a Steam session does so for the account it is already bound to, and
+            // only when one is due: it stays known to DMarket, not present, and touches nothing on Steam.
+            val bound = lastLinkedSteamId?.takeIf { config.heartbeatWithoutCredential && action == CycleAction.HEARTBEAT }
+            return@withLock bound?.let { heartbeatWithoutCredential(it) } ?: TickOutcome.EMPTY
         }
         // A credential in hand proves the Steam session is live — clear the block before anything else can
         // emit, so a host reading blockingState inside a later event in this cycle sees the cleared value.
@@ -1287,83 +1290,7 @@ class TradeTrackerLoop(
             return@withLock outcome
         }
         // action == HEARTBEAT: the full cycle below.
-        // Heartbeat-failure guards, in priority order:
-        //  - MarketplaceUnauthorizedException (401, token absent/un-refreshable) → missing-connection.
-        //  - MarketplaceServerErrorException (non-401 4xx/5xx: DMarket reached but erroring) →
-        //    connection-error. The token is fine, so this is NOT missing-connection; it surfaces as a
-        //    distinct "can't reach DMarket" state so the host never claims tracking is live while the
-        //    heartbeat is failing. A deterministic 4xx surfaces immediately; a transient 5xx must fail
-        //    SERVER_ERROR_THRESHOLD cycles in a row first (no error prompt for a single blip).
-        //  - RateLimitedException (429, explicit backend backpressure) → idle tick, state untouched.
-        //  - Any other Throwable (a status-less failure: fetch rejection — network down, DNS, CORS /
-        //    missing host permission — or a decode error) → the heartbeat did not round-trip, so
-        //    tracking is NOT live: surfaces as connection-error under the same SERVER_ERROR_THRESHOLD
-        //    debounce as a transient 5xx, with statusCode 0 marking the status-less failure. Unlike
-        //    the server-error catch it leaves the missing-connection sticky untouched — no HTTP reply
-        //    proves nothing about the session.
-        // Both sticky states emit their lifecycle event only on ENTRY (avoids per-cycle log spam) and
-        // are cleared by the next successful heartbeat below. The sticky is always set BEFORE its event
-        // is emitted: delivery is synchronous (a JS host reads blockingState from inside the handler —
-        // see CallbackEventObserver), so emitting first would expose the pre-transition state and the
-        // host would mirror a stale NONE it is never poked to correct (entry-only events don't repeat).
-        val heartbeat = try {
-            sendHeartbeat(credential)
-        } catch (_: MarketplaceUnauthorizedException) {
-            marketplaceConnectionMissingSticky = true
-            clearServerErrorStreak()
-            if (!marketplaceReLoginAnnounced) {
-                marketplaceReLoginAnnounced = true
-                emit(LifecycleEvent.ReLoginNeeded("marketplace"))
-            }
-            return@withLock TickOutcome.EMPTY
-        } catch (e: MarketplaceServerErrorException) {
-            // A non-401 HTTP reply came back WITH our token, so the DMarket connection is live — this is a
-            // server-side error, NOT a logout. Clear any stale missing-connection state (e.g. left over
-            // from a prior logout): otherwise it would outrank DM_CONNECTION_ERROR (see [blockingState]) and,
-            // on an endpoint that always errors (e.g. a not-yet-deployed route returning 404), never clear
-            // — because the successful heartbeat that clears it never comes. A deterministic 4xx surfaces
-            // immediately; a transient 5xx must fail SERVER_ERROR_THRESHOLD cycles first.
-            val before = blockingState
-            marketplaceConnectionMissingSticky = false
-            marketplaceReLoginAnnounced = false
-            consecutiveServerErrors += 1
-            runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
-            val transient = e.statusCode in 500..599
-            if (!transient || consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
-            // Gate the entry event on the RESOLVED-state transition, not the sticky flip alone: the
-            // missing-connection clear above can re-expose an already-set server-error sticky (a re-login
-            // while the endpoint keeps erroring — the 401/no-token paths never clear it), and a
-            // sticky-gated emit would stay silent, leaving an event-mirroring host stuck showing
-            // DM_SESSION_MISSING. Still entry-only while DM_CONNECTION_ERROR itself persists.
-            if (marketplaceServerErrorSticky && blockingState != before) {
-                emit(LifecycleEvent.MarketplaceServerError("heartbeat", e.statusCode))
-            }
-            return@withLock TickOutcome.EMPTY
-        } catch (_: RateLimitedException) {
-            return@withLock TickOutcome.EMPTY
-        } catch (_: CancellationException) {
-            // Teardown, not a network failure: swallow without touching the error counter (pre-existing
-            // behavior for a cancelled cycle), so a Tracker.stop mid-heartbeat can't flash an error.
-            return@withLock TickOutcome.EMPTY
-        } catch (_: Throwable) {
-            val before = blockingState
-            consecutiveServerErrors += 1
-            // Persist the streak like the server-error catch above: a network outage is exactly when
-            // nothing keeps the MV3 worker alive between retries, so an in-memory-only counter would
-            // restart at 0 on every respawn and the threshold would never be crossed.
-            runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
-            if (consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
-            if (marketplaceServerErrorSticky && blockingState != before) {
-                emit(LifecycleEvent.MarketplaceServerError("heartbeat", 0))
-            }
-            return@withLock TickOutcome.EMPTY
-        }
-        // The heartbeat round-tripped, so the DMarket connection is live — clear the error states. The
-        // episode is over, so the next logout announces itself again.
-        marketplaceConnectionMissingSticky = false
-        marketplaceReLoginAnnounced = false
-        marketplaceServerErrorSticky = false
-        clearServerErrorStreak()
+        val heartbeat = heartbeatOrNull(credential.subjectSteamId, foregroundFor(credential)) ?: return@withLock TickOutcome.EMPTY
 
         // Wrong-account guard: the backend reports which Steam id it linked to this DMarket account. If it
         // disagrees with the token we hold, this session would act on the wrong Steam account — block ALL
@@ -1407,6 +1334,122 @@ class TradeTrackerLoop(
         )
         emit(LifecycleEvent.CycleCompleted(directivesExecuted, reportsSent, proofsSubmitted, outcome.watching))
         outcome
+    }
+
+    /**
+     * Sends one heartbeat for [steamId] and folds a failure into the DMarket connection states; `null` when it did
+     * not round-trip. Runs inside [runOnce], under [cycleMutex].
+     */
+    private suspend fun heartbeatOrNull(steamId: SteamId, foreground: Boolean): HeartbeatResponse? {
+        // Heartbeat-failure guards, in priority order:
+        //  - MarketplaceUnauthorizedException (401, token absent/un-refreshable) → missing-connection.
+        //  - MarketplaceServerErrorException (non-401 4xx/5xx: DMarket reached but erroring) →
+        //    connection-error. The token is fine, so this is NOT missing-connection; it surfaces as a
+        //    distinct "can't reach DMarket" state so the host never claims tracking is live while the
+        //    heartbeat is failing. A deterministic 4xx surfaces immediately; a transient 5xx must fail
+        //    SERVER_ERROR_THRESHOLD cycles in a row first (no error prompt for a single blip).
+        //  - RateLimitedException (429, explicit backend backpressure) → idle tick, state untouched.
+        //  - Any other Throwable (a status-less failure: fetch rejection — network down, DNS, CORS /
+        //    missing host permission — or a decode error) → the heartbeat did not round-trip, so
+        //    tracking is NOT live: surfaces as connection-error under the same SERVER_ERROR_THRESHOLD
+        //    debounce as a transient 5xx, with statusCode 0 marking the status-less failure. Unlike
+        //    the server-error catch it leaves the missing-connection sticky untouched — no HTTP reply
+        //    proves nothing about the session.
+        // Both sticky states emit their lifecycle event only on ENTRY (avoids per-cycle log spam) and
+        // are cleared by the next successful heartbeat below. The sticky is always set BEFORE its event
+        // is emitted: delivery is synchronous (a JS host reads blockingState from inside the handler —
+        // see CallbackEventObserver), so emitting first would expose the pre-transition state and the
+        // host would mirror a stale NONE it is never poked to correct (entry-only events don't repeat).
+        val heartbeat = try {
+            sendHeartbeat(steamId, foreground)
+        } catch (_: MarketplaceUnauthorizedException) {
+            marketplaceConnectionMissingSticky = true
+            clearServerErrorStreak()
+            if (!marketplaceReLoginAnnounced) {
+                marketplaceReLoginAnnounced = true
+                emit(LifecycleEvent.ReLoginNeeded("marketplace"))
+            }
+            return null
+        } catch (e: MarketplaceServerErrorException) {
+            // A non-401 HTTP reply came back WITH our token, so the DMarket connection is live — this is a
+            // server-side error, NOT a logout. Clear any stale missing-connection state (e.g. left over
+            // from a prior logout): otherwise it would outrank DM_CONNECTION_ERROR (see [blockingState]) and,
+            // on an endpoint that always errors (e.g. a not-yet-deployed route returning 404), never clear
+            // — because the successful heartbeat that clears it never comes. A deterministic 4xx surfaces
+            // immediately; a transient 5xx must fail SERVER_ERROR_THRESHOLD cycles first.
+            val before = blockingState
+            marketplaceConnectionMissingSticky = false
+            marketplaceReLoginAnnounced = false
+            consecutiveServerErrors += 1
+            runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
+            val transient = e.statusCode in 500..599
+            if (!transient || consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
+            // Gate the entry event on the RESOLVED-state transition, not the sticky flip alone: the
+            // missing-connection clear above can re-expose an already-set server-error sticky (a re-login
+            // while the endpoint keeps erroring — the 401/no-token paths never clear it), and a
+            // sticky-gated emit would stay silent, leaving an event-mirroring host stuck showing
+            // DM_SESSION_MISSING. Still entry-only while DM_CONNECTION_ERROR itself persists.
+            if (marketplaceServerErrorSticky && blockingState != before) {
+                emit(LifecycleEvent.MarketplaceServerError("heartbeat", e.statusCode))
+            }
+            return null
+        } catch (_: RateLimitedException) {
+            return null
+        } catch (_: CancellationException) {
+            // Teardown, not a network failure: swallow without touching the error counter (pre-existing
+            // behavior for a cancelled cycle), so a Tracker.stop mid-heartbeat can't flash an error.
+            return null
+        } catch (_: Throwable) {
+            val before = blockingState
+            consecutiveServerErrors += 1
+            // Persist the streak like the server-error catch above: a network outage is exactly when
+            // nothing keeps the MV3 worker alive between retries, so an in-memory-only counter would
+            // restart at 0 on every respawn and the threshold would never be crossed.
+            runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
+            if (consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
+            if (marketplaceServerErrorSticky && blockingState != before) {
+                emit(LifecycleEvent.MarketplaceServerError("heartbeat", 0))
+            }
+            return null
+        }
+        heartbeatReturned()
+        return heartbeat
+    }
+
+    /** The heartbeat round-tripped, so the DMarket connection is live: the error states clear. */
+    private suspend fun heartbeatReturned() {
+        // The episode is over, so the next logout announces itself again.
+        marketplaceConnectionMissingSticky = false
+        marketplaceReLoginAnnounced = false
+        marketplaceServerErrorSticky = false
+        clearServerErrorStreak()
+    }
+
+    /**
+     * The heartbeat of a host with no Steam session ([LoopConfig.heartbeatWithoutCredential]), for the Steam account
+     * the last heartbeat named as linked, with `foreground: false`. It keeps the device known and the binding and the
+     * tracking list current, and re-sends the outcomes the device already holds; it reads nothing on Steam and runs
+     * no directive, so their leases lapse to a device that can.
+     */
+    private suspend fun heartbeatWithoutCredential(linked: SteamId): TickOutcome {
+        val heartbeat = heartbeatOrNull(linked, foreground = false) ?: return TickOutcome.EMPTY
+        lastLinkedSteamId = heartbeat.linkedSteamId
+        scheduleNextHeartbeat(heartbeat.ttlSeconds)
+        lastActiveTracking = heartbeat.activeTracking
+        releaseStaleClaims(heartbeat)
+        emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
+        if (directivesEnabled) resendHandledOutcomes(DirectivePlanner.plan(heartbeat, progress.loadHandledDirectives()).alreadyHandled)
+        return TickOutcome(watching = heartbeat.activeTracking.size)
+    }
+
+    /**
+     * The heartbeat's `foreground`: the host's [LoopConfig.mode], or — with [LoopConfig.foregroundMinTokenLifetime]
+     * set — whether this device can act for the account right now: the last heartbeat named [credential]'s account
+     * as linked and the credential has that long left.
+     */
+    private fun foregroundFor(credential: SteamCredential): Boolean {
+        val minimum = config.foregroundMinTokenLifetime ?: return config.mode == TrackerMode.Foreground
+        return lastLinkedSteamId == credential.subjectSteamId && credential.expiresAt - clock.now() >= minimum
     }
 
     /**
@@ -1567,12 +1610,12 @@ class TradeTrackerLoop(
         null
     }
 
-    private suspend fun sendHeartbeat(credential: SteamCredential): HeartbeatResponse {
+    private suspend fun sendHeartbeat(steamId: SteamId, foreground: Boolean): HeartbeatResponse {
         val request = HeartbeatRequest(
             clientVersion = config.clientVersion,
             platform = config.surface.platformWireName,
-            foreground = config.mode == TrackerMode.Foreground,
-            steamId = credential.subjectSteamId,
+            foreground = foreground,
+            steamId = steamId,
             deviceId = deviceId.current(),
         )
         return marketplace.heartbeat(request)

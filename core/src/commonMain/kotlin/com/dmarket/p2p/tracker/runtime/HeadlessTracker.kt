@@ -87,8 +87,8 @@ class HeadlessPlatform(
  * @property steamTokenSteamId the Steam account of the held token; `null` before the first accepted push.
  * @property steamTokenExpiresAt when the held token expires; it stays held, expired, until a fresh one is pushed.
  * @property linkedSteamId the Steam account the last heartbeat named as linked to the DMarket account.
- * @property readySince since when, as of the last cycle, a key and a live token have both been held; `null` while
- *   they are not. A heartbeat is owed only from then.
+ * @property readySince since when, as of the last cycle, the tracker has owed heartbeats — a key held, and a live
+ *   token or a bound account; `null` while it does not. A heartbeat is owed only from then.
  * @property trackedDealIds the deals the last heartbeat asked this device to track.
  * @property clockOffset how far DMarket's clock (the `Date` of its last reply) is ahead of this host's; `null`
  *   before a reply. Past [HeadlessTracker.MAX_CLOCK_SKEW] the gateway refuses every signature.
@@ -120,7 +120,12 @@ data class HeadlessTrackerState(
  *    host pushes a fresh one.
  *  - The account binding fails closed (`requireLinkedSteamId`), and no create starts on a token with less than
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
- *  - It does not heartbeat at all until a key and a live token are held.
+ *  - `foreground` follows the token, not a mode: `true` only while the account is bound to the token's and the token
+ *    has [MIN_WRITE_TOKEN_LIFETIME] left. DMarket counts the tracker present only then.
+ *  - It does not heartbeat at all until a key and a live token are held. Once a heartbeat has bound the account, a
+ *    token that expires or is missing does not stop the heartbeat: it goes on for the bound account with
+ *    `foreground: false`, and nothing touches Steam until a fresh token is pushed. After a restart nothing is bound
+ *    (nothing is kept across one), so it waits for both pushes again.
  *  - It serves one DMarket account: a pushed key for another one is refused ([pushTradingApiKey]).
  *
  * No proof is made yet.
@@ -167,12 +172,13 @@ class HeadlessTracker(
     }
 
     /**
-     * Runs one loop cycle when the tracker may act, and arms the next wake either way. Without a key and a live
-     * token it neither heartbeats nor touches Steam; it re-checks every [IDLE_RECHECK] and on every push.
+     * Runs one loop cycle when the tracker owes heartbeats, and arms the next wake either way. Without a key, or
+     * with neither a live token nor a bound account, it neither heartbeats nor touches Steam; it re-checks every
+     * [IDLE_RECHECK] and on every push.
      */
     suspend fun cycle() {
         cycleMutex.withLock {
-            if (!ready()) {
+            if (!heartbeating()) {
                 readySince = null
                 scheduler.schedule(IDLE_RECHECK)
                 return
@@ -279,7 +285,7 @@ class HeadlessTracker(
         )
     }
 
-    private fun ready(): Boolean = key.key != null && steam.ready()
+    private fun heartbeating(): Boolean = key.key != null && (steam.ready() || steam.boundSteamId() != null)
 
     private fun heardServerDate(serverNow: Instant) {
         clockOffset = serverNow - clock.now()
@@ -322,6 +328,8 @@ class HeadlessTracker(
                 tunables = tunables,
                 requireLinkedSteamId = true,
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
+                foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
+                heartbeatWithoutCredential = true,
             ),
             marketplace = NotLinkedWatch(
                 KtorMarketplaceClient(
@@ -363,7 +371,10 @@ class HeadlessTracker(
     }
 
     companion object {
-        /** Under this much token life no create starts: the seller could not confirm it before the session ends. */
+        /**
+         * Under this much token life no create starts — the seller could not confirm it before the session ends — and
+         * the heartbeat stops claiming the device present.
+         */
         val MIN_WRITE_TOKEN_LIFETIME: Duration = 30.minutes
 
         /**

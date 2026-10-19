@@ -200,20 +200,71 @@ class HeadlessTrackerTest {
         assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId)
     }
 
+    private fun HttpRequestData.foreground(): Boolean =
+        Json.parseToJsonElement(text()).jsonObject.getValue("foreground").jsonPrimitive.content.toBoolean()
+
+    private fun HttpRequestData.steamId(): String = Json.parseToJsonElement(text()).jsonObject.getValue("steamId").jsonPrimitive.content
+
     @Test
-    fun an_expired_token_stops_the_tracker_until_a_fresh_one_is_pushed() = runTest {
+    fun the_tracker_is_foreground_only_while_bound_to_a_token_with_thirty_minutes_left() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
-        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 1.hours))
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 2.hours))
         tracker.cycle()
-        assertEquals(1, heartbeats().size)
+        assertEquals(false, heartbeats().last().foreground(), "no account is bound before the first heartbeat comes back")
 
-        clock.advance(61.minutes)
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
-        assertEquals(1, heartbeats().size, "no heartbeat on an expired token")
-        assertNull(tracker.state().readySince)
+        assertEquals(true, heartbeats().last().foreground(), "bound, with two hours left")
+
+        clock.advance(91.minutes)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(false, heartbeats().last().foreground(), "29 minutes left")
+    }
+
+    @Test
+    fun a_token_that_lapses_after_the_binding_leaves_the_tracker_heartbeating_absent() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","steamOfferId":"555","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-2",
+               "partnerSteamId":"$OTHER_STEAM_ID","assetIds":["asset-7"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 20.minutes))
+        tracker.cycle()
+        assertEquals(1, heartbeats().size)
+        val steamBefore = steamRequests().size
+
+        clock.advance(21.minutes)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        val lapsed = heartbeats().drop(1).single()
+        assertEquals(false, lapsed.foreground())
+        assertEquals(STEAM_ID, lapsed.steamId(), "the bound account")
+        assertEquals(steamBefore, steamRequests().size, "no Steam request on an expired token")
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/tradeoffer/new/send") }, "no create")
+        assertTrue(tracker.state().readySince != null, "it still owes heartbeats")
+        assertEquals(listOf("deal-1"), tracker.state().trackedDealIds.map { it.value })
         assertEquals(clock.now() - 1.minutes, tracker.state().steamTokenExpiresAt, "the expired token stays held")
+
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 24.hours))
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(true, heartbeats().last().foreground(), "a fresh token makes it present again")
+    }
+
+    @Test
+    fun a_key_with_no_token_and_nothing_bound_does_not_heartbeat() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 1.minutes))
+        clock.advance(2.minutes)
+        tracker.cycle()
+        assertTrue(requests.isEmpty(), "an expired token never bound anything: $requests")
+        assertNull(tracker.state().readySince)
     }
 
     @Test
