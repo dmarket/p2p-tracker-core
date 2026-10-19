@@ -141,6 +141,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     `{"code","message"}` reply as sent, a status text with no `P2P_` prefix included, or the first `P2P_…`
     token in a body that is not such an object.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
+- `DirectiveDropped.dealId` names the deal of an offer write dropped because `LoopConfig.steamWrites` is off
+  (reason `OFFER_WRITES_DISABLED`, now public). Appended last with a `null` default; the event's JSON carries
+  `dealId` only when it is set, so the browser's events are unchanged.
 
 ### Changed
 

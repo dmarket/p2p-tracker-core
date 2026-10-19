@@ -2,6 +2,7 @@ package com.dmarket.p2p.sdk.health
 
 import com.dmarket.p2p.sdk.prover.ProofProblems
 import com.dmarket.p2p.sdk.prover.ProverOutput
+import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
@@ -43,6 +44,7 @@ class HealthTracker(
     private var throttledThisCycle = false
     private val tokenHeldDeals = linkedSetOf<String>()
     private var tokenHeldThisCycle = false
+    private val writesLeasedWhileDisabled = LeasedDeals()
     private val directiveFailures = linkedMapOf<String, String>()
     private val proofFailures = linkedMapOf<String, String>()
     private val proverFailures = linkedMapOf<String, ProofFailure>()
@@ -62,6 +64,10 @@ class HealthTracker(
                 dmarketAuthFailed = false
                 dmarketUnreachable = false
                 wrongAccount = null
+                writesLeasedWhileDisabled.heartbeat()
+            }
+            is LifecycleEvent.DirectiveDropped -> event.dealId?.let { deal ->
+                if (event.reason == OFFER_WRITES_DISABLED) writesLeasedWhileDisabled += deal
             }
             is LifecycleEvent.ReLoginNeeded -> if (event.axis == "marketplace") dmarketAuthFailed = true
             is LifecycleEvent.MarketplaceServerError -> dmarketUnreachable = true
@@ -222,6 +228,13 @@ class HealthTracker(
         }
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
+        writesLeasedWhileDisabled.deals.takeIf { it.isNotEmpty() }?.let {
+            raise(
+                ProblemCode.STEAM_WRITES_DISABLED,
+                "DMarket leases Steam offer writes to this SDK, which runs with steamWrites: false; they lapse to another device",
+                it,
+            )
+        }
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)
         // A refused proof can name a problem a heartbeat already raised (a refused key, a skewed clock): its deals join.
         proverFailures.entries.groupBy { ProofProblems.problemFor(it.value, state.clockSkewed) }.forEach { (code, entries) ->
@@ -264,6 +277,28 @@ class HealthTracker(
         "401", "403" -> ProblemCode.STEAM_SESSION_REJECTED
         "429" -> ProblemCode.STEAM_RATE_LIMITED
         else -> ProblemCode.STEAM_UNREACHABLE
+    }
+
+    /**
+     * The deals one kind of leased directive named in the last two heartbeats: a heartbeat's drops are told after it,
+     * so the one before still counts while they arrive, and a deal the backend stopped leasing goes one heartbeat later.
+     */
+    private class LeasedDeals {
+        private var current = linkedSetOf<String>()
+        private var previous = linkedSetOf<String>()
+
+        val deals: Set<String> get() = previous + current
+
+        operator fun contains(deal: String): Boolean = deal in current || deal in previous
+
+        operator fun plusAssign(deal: String) {
+            current += deal
+        }
+
+        fun heartbeat() {
+            previous = current
+            current = linkedSetOf()
+        }
     }
 
     private companion object {

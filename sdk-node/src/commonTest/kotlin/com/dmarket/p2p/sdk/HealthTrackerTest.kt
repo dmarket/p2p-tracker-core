@@ -3,6 +3,7 @@ package com.dmarket.p2p.sdk
 import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.health.ProblemCode
 import com.dmarket.p2p.sdk.health.Severity
+import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
@@ -261,5 +262,30 @@ class HealthTrackerTest {
         assertEquals(listOf(ProblemCode.SDK_UPDATE_REQUIRED), required.problems.map { it.code })
         assertEquals("degraded", required.status, "below the minimum the SDK still serves its deals")
         assertTrue(!required.isDown)
+    }
+
+    // ---- leased writes this SDK does not run -------------------------------------------------------
+
+    @Test
+    fun writes_leased_to_an_sdk_without_steam_writes_are_their_own_problem_until_no_longer_leased() = runTest {
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 2))
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-1", OFFER_WRITES_DISABLED, "deal-1"))
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("cancel_offer", "dir-2", OFFER_WRITES_DISABLED, "deal-2"))
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-3", "refused: malformed"))
+        val problem = tracker.snapshot(state()).problems.single()
+        assertEquals(ProblemCode.STEAM_WRITES_DISABLED, problem.code)
+        assertEquals("degraded", problem.severity)
+        assertEquals(listOf("deal-1", "deal-2"), problem.affectedDeals.map { it.dealId })
+        assertTrue("steamWrites: false" in problem.message, problem.message)
+
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 1))
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-1", OFFER_WRITES_DISABLED, "deal-1"))
+        assertEquals(listOf("deal-1", "deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 1))
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-1", OFFER_WRITES_DISABLED, "deal-1"))
+        assertEquals(listOf("deal-1"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
+        assertEquals(emptyList(), codes())
     }
 }

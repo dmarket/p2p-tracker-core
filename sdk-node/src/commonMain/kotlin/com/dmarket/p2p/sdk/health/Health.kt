@@ -85,6 +85,9 @@ enum class ProblemCode(val severity: Severity) {
 
     /** A `create_offer` or `cancel_offer` failed (item gone, trade hold, a Steam EResult). */
     DIRECTIVE_FAILED(Severity.DEGRADED),
+
+    /** DMarket leases offer writes to this SDK, which runs with `steamWrites: false`: they lapse to another device. */
+    STEAM_WRITES_DISABLED(Severity.DEGRADED),
 }
 
 /** A deal a problem holds up. [deadline] is the time it lapses, when the SDK knows it. */

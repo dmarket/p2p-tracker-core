@@ -58,6 +58,8 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("kind", event.kind)
             put("directiveId", event.directiveId)
             put("reason", event.reason)
+            // Only when set: the browser path never sets it, and its events stay as they were.
+            event.dealId?.let { put("dealId", it) }
         }
         is LifecycleEvent.DuplicateWriteSuppressed -> {
             put("event", "DuplicateWriteSuppressed")

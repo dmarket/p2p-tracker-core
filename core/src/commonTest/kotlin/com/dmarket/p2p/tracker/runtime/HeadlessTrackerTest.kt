@@ -358,8 +358,8 @@ class HeadlessTrackerTest {
 
         assertTrue(requests.none { "/tradeoffer/" in it.url.encodedPath }, "no offer write: ${requests.map { it.url }}")
         assertTrue(requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }, "nothing reported: the leases lapse")
-        val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>().map { it.directiveId }
-        assertEquals(listOf("dir-1", "dir-2"), dropped)
+        val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>()
+        assertEquals(listOf("dir-1" to "deal-2", "dir-2" to "deal-1"), dropped.map { it.directiveId to it.dealId })
         assertTrue(steamRequests().isNotEmpty(), "reads go on")
     }
 

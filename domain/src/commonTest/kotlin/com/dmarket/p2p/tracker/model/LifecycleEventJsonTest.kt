@@ -106,6 +106,15 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun a_dropped_directive_names_its_deal_only_when_it_has_one() {
+        val bare = parse(LifecycleEvent.DirectiveDropped("create_offer", "d4", "missing partner"))
+        assertEquals(setOf("event", "kind", "directiveId", "reason"), bare.keys, "the browser's events stay as they were")
+
+        val withDeal = parse(LifecycleEvent.DirectiveDropped("cancel_offer", "d5", "not run", "deal-5"))
+        assertEquals("deal-5", withDeal["dealId"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun cycle_started_is_a_bare_event() {
         assertEquals("""{"event":"CycleStarted"}""", LifecycleEvent.CycleStarted.toWireJson())
     }

@@ -74,9 +74,10 @@ sealed interface LifecycleEvent {
      * an unanswered one is re-leased on every heartbeat while its deal stands still.
      *
      * [kind] is the action's wire name — for an unrecognised action, the string the **backend** sent,
-     * not this client's `unknown` placeholder.
+     * not this client's `unknown` placeholder. [dealId] is the deal a dropped offer write was for, set where a host
+     * reports by deal: a write refused because offer writes are off.
      */
-    data class DirectiveDropped(val kind: String, val directiveId: String, val reason: String) : LifecycleEvent
+    data class DirectiveDropped(val kind: String, val directiveId: String, val reason: String, val dealId: String? = null) : LifecycleEvent
 
     /**
      * A non-idempotent Steam write (`create_offer` / `cancel_offer`) was **suppressed before touching

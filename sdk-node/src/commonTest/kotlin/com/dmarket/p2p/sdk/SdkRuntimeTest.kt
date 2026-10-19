@@ -262,6 +262,9 @@ class SdkRuntimeTest {
         sdk.tracker.cycle()
         assertTrue(requested.none { "/tradeoffer/" in it }, "$requested")
         assertTrue(requested.any { it.endsWith("/p2p/ext/heartbeat") })
+        val problem = sdk.health().problems.single()
+        assertEquals(ProblemCode.STEAM_WRITES_DISABLED, problem.code)
+        assertEquals(listOf("deal-1"), problem.affectedDeals.map { it.dealId })
     }
 
     @Test
