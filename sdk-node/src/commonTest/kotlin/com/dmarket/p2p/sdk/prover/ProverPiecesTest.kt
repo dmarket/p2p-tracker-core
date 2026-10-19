@@ -64,4 +64,23 @@ class ProverPiecesTest {
         assertFalse("pubkey" in redacted || "1781611200" in redacted || "cd".repeat(64) in redacted || token in redacted, redacted)
         assertTrue("<redacted>" in redacted)
     }
+
+    @Test
+    fun the_prover_config_defaults_to_one_proof_per_process_and_bounds_its_knobs() {
+        val config = com.dmarket.p2p.sdk.SdkConfig.parse("""{"managementSecret":"${"s".repeat(32)}","dataDir":"/data"}""").prover
+        assertTrue(config.enabled)
+        assertEquals(1, config.maxConcurrency)
+        assertEquals(1, config.proofsPerChild)
+        assertEquals("wss://api.dmarket.com/provenance/v1/", config.notaryUrl)
+        val parsed = com.dmarket.p2p.sdk.SdkConfig.parse(
+            """{"managementSecret":"${"s".repeat(
+                32,
+            )}","dataDir":"/data","prover":{"notaryUrl":"wss://api-dev2.devss.xyz/provenance/v1/","maxConcurrency":2,"proofsPerChild":5}}""",
+        ).prover
+        assertEquals(2, parsed.maxConcurrency)
+        assertEquals(5, parsed.proofsPerChild)
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(maxConcurrency = 3) }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(proofsPerChild = 6) }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(notaryUrl = "https://notary") }
+    }
 }

@@ -1,5 +1,6 @@
 package com.dmarket.p2p.sdk
 
+import com.dmarket.p2p.sdk.prover.ProverConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.Json
  * @property dmarketBaseUrl the DMarket gateway the loop talks to.
  * @property steamWrites `false` for a buying bot's SDK: it then creates and cancels no Steam offer, whatever DMarket
  *   leases it.
+ * @property prover how proofs are made: the notary, and the prover processes' limits.
  */
 @Serializable
 data class SdkConfig(
@@ -27,6 +29,7 @@ data class SdkConfig(
     @SerialName("listenPort") val listenPort: Int = DEFAULT_PORT,
     @SerialName("dmarketBaseUrl") val dmarketBaseUrl: String = TrackerConfig.DEFAULT_DMARKET_BASE_URL,
     @SerialName("steamWrites") val steamWrites: Boolean = true,
+    @SerialName("prover") val prover: ProverConfig = ProverConfig(),
 ) {
     init {
         require(managementSecret.length >= MIN_SECRET_LENGTH) { "managementSecret must be at least $MIN_SECRET_LENGTH characters" }
@@ -36,7 +39,7 @@ data class SdkConfig(
 
     override fun toString(): String =
         "SdkConfig(managementSecret=<redacted>, dataDir=$dataDir, listenHost=$listenHost, listenPort=$listenPort, " +
-            "dmarketBaseUrl=$dmarketBaseUrl, steamWrites=$steamWrites)"
+            "dmarketBaseUrl=$dmarketBaseUrl, steamWrites=$steamWrites, prover=$prover)"
 
     companion object {
         const val DEFAULT_PORT: Int = 8790

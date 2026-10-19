@@ -13,6 +13,9 @@ internal object NodeModules {
     val buffer: dynamic = js("require('node:buffer').Buffer")
     val childProcess: dynamic = js("require('node:child_process')")
     val os: dynamic = js("require('node:os')")
+    val net: dynamic = js("require('node:net')")
+    val url: dynamic = js("require('node:url')")
+    val ws: dynamic = js("require('ws')")
 }
 
 /** [bytes] cryptographically random bytes, hex-encoded. */

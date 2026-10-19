@@ -7,7 +7,6 @@ import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeSigner
 import com.dmarket.p2p.tracker.notary.ProofFailure
-import com.dmarket.p2p.tracker.notary.ProofHost
 import com.dmarket.p2p.tracker.port.host.Clock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
@@ -72,7 +71,7 @@ class ForkedProofHost(
     private val env: Map<String, String> = minimalProverEnv(),
     private val backoff: ProverBackoff = ProverBackoff(),
     private val onOutcome: (dealId: String, failure: ProofFailure?) -> Unit = { _, _ -> },
-) : ProofHost {
+) : SdkProofHost {
     private val lock = Mutex()
     private val idle = ArrayDeque<ForkedChild>()
     private val live = mutableSetOf<ForkedChild>()
@@ -114,10 +113,10 @@ class ForkedProofHost(
     }
 
     /** A newly held key may answer a notary 401: the next proof need not wait for the old one's backoff. */
-    fun keyChanged() = backoff.keyChanged()
+    override fun keyChanged() = backoff.keyChanged()
 
     /** Kills every prover process, idle or proving: the SDK is stopping. */
-    fun close() {
+    override fun close() {
         live.forEach { it.kill() }
         live.clear()
         idle.clear()

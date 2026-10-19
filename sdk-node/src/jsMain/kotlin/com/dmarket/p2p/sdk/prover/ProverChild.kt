@@ -24,7 +24,8 @@ fun interface ChildProver {
 sealed interface ChildResult {
     data class Proved(val presentation: String) : ChildResult
 
-    data class Failed(val failure: ProofFailure) : ChildResult
+    /** [exitAfter]: the prover is still running and cannot be stopped, so the process ends after answering. */
+    data class Failed(val failure: ProofFailure, val exitAfter: Boolean = false) : ChildResult
 }
 
 /**
@@ -63,6 +64,10 @@ fun runProverChild(prover: ChildProver) {
                         },
                     ),
                 )
+                if (result is ChildResult.Failed && result.exitAfter) {
+                    // Past the IPC flush: the answer is on its way, and a wasm that never returns must not hold the process.
+                    js("setTimeout")({ process.exit(0) }, EXIT_FLUSH_MS)
+                }
             }
             null -> Unit
         }
@@ -70,6 +75,8 @@ fun runProverChild(prover: ChildProver) {
     // The SDK closing the channel is the end of this process's work; the prover's worker threads would keep it alive.
     process.on("disconnect") { process.exit(0) }
 }
+
+private const val EXIT_FLUSH_MS = 200
 
 private fun send(text: String) {
     runCatching { NodeModules.process.send(text) }
