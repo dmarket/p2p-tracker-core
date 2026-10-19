@@ -526,6 +526,24 @@ class HeadlessTrackerTest {
             tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
         )
         assertTrue(requests.isEmpty(), "no Steam account to heartbeat for, and the held key was never sent: $requests")
+        assertNull(tracker.state().linkedSteamId, "nothing is bound yet")
+    }
+
+    @Test
+    fun a_key_taken_unchecked_binds_with_the_first_heartbeat_and_later_keys_are_checked_against_it() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED)
+
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(OTHER_PUBLIC_KEY, heartbeats().single().apiKey(), "the first heartbeat is signed with the key held then")
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId, "and takes the binding")
+
+        // The first key, pushed again, is now checked: its account links another Steam account.
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+        assertIs<TradingKeyPushResult.AccountChanged>(tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED))
+        assertEquals(SteamId(STEAM_ID), tracker.state().linkedSteamId)
     }
 
     @Test

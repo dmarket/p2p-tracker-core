@@ -287,8 +287,12 @@ class HeadlessTracker(
      * The directives it leases are leased to this device, so the loop's next heartbeat is served them again.
      *
      * The candidate passes when its heartbeat names the account the held key is bound to ([KeyChange.ROTATED]),
-     * or when none is bound yet ([KeyChange.REPLACED]). With no token ever held there is no account to heartbeat
-     * for, and the held key has never been sent either, so there is nothing to check.
+     * or when none is bound yet ([KeyChange.REPLACED]).
+     *
+     * With no token ever held it is taken unchecked ([KeyChange.REPLACED]): a heartbeat names a Steam account, and
+     * there is none to name — and none to protect either, since without a token nothing has heartbeat and nothing is
+     * bound. The binding stays unverified until the first heartbeat after a token is pushed: that one is signed with
+     * the key held then and takes the binding from its answer, and every key pushed after it is checked against it.
      */
     private suspend fun checkKey(candidate: TradingApiKey, held: TradingApiKey): TradingKeyPushResult {
         val replaced = TradingKeyPushResult.Held(candidate.publicKey, KeyChange.REPLACED)
