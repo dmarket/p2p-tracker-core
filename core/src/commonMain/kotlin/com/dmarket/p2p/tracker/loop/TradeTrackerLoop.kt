@@ -2845,6 +2845,7 @@ class TradeTrackerLoop(
      * A deal's `assetId` is immutable for its lifetime, so it is fetched once and cached — steady-state
      * cycles then issue zero `/p2p/deals/{id}` reads on the watch path (was an N+1 per history-watched
      * deal, every tick). In-memory: a respawned worker simply re-fetches on the next history read.
+     * Only for a backend that does not name the asset on the watch entry ([TrackedDeal.assetId]).
      */
     private val assetIdCache = mutableMapOf<DealId, AssetId>()
 
@@ -2954,7 +2955,7 @@ class TradeTrackerLoop(
         return clock.now() - last >= cadence.targetInterval(PollClass.RevertWatch)
     }
 
-    /** Both Steam axes per tracked deal: offer by `steam_offer_id`; history by asset id (cached). */
+    /** Both Steam axes per tracked deal: offer by `steam_offer_id`; history by trade id, else by asset id. */
     private suspend fun observeTracked(
         tracking: List<TrackedDeal>,
         credential: SteamCredential,
@@ -3107,11 +3108,14 @@ class TradeTrackerLoop(
      * returns under its original id after a rollback and may be sold again).
      *
      * The asset ref is the fallback for a deal with **no** trade id: an offer Steam no longer lists, or one
-     * this build never saw accepted. It is weaker and it costs a `/p2p/deals/{id}` read to learn the ref, so it
-     * is only reached when a transfer can exist at all — an offer known to be pre-acceptance
-     * ([TransferCorrelation.isTransferDue]) provably has no row, and must not spend a deal read every tick.
-     * A wrong or rotated ref used to silence the axis for the life of the worker with nothing to show for it,
-     * so the ref is re-read once (bounded by [assetIdRefetched]) before the miss is reported.
+     * this build never saw accepted. It is weaker, so it is only reached when a transfer can exist at all — an
+     * offer known to be pre-acceptance ([TransferCorrelation.isTransferDue]) provably has no row.
+     *
+     * The backend names the ref on the watch entry ([TrackedDeal.assetId]), and that one costs nothing and is
+     * never re-read here: the next heartbeat carries the backend's current ref. Only a backend that does not
+     * send it costs a `/p2p/deals/{id}` read to learn the ref, which is why the gate above must hold before
+     * it. A wrong or rotated ref used to silence the axis for the life of the worker with nothing to show for
+     * it, so a looked-up ref is re-read once (bounded by [assetIdRefetched]) before the miss is reported.
      *
      * The re-read **replaces** the memoised key only on success. Discarding it first would mean a transient
      * `/p2p/deals/{id}` failure left the deal with no key at all, and since its one re-key attempt is already
@@ -3155,6 +3159,12 @@ class TradeTrackerLoop(
         // No trade id. A transfer can only exist if Steam either accepted the offer or no longer tells us
         // about it at all — anything else is provably pre-transfer and must not cost a deal read.
         if (offer != null && !TransferCorrelation.isTransferDue(offer.state)) return null
+        deal.assetId?.let { key ->
+            TransferCorrelation.select(transfers, key)?.let { return it }
+            uncorrelated += deal.dealId
+            emit(LifecycleEvent.HistoryCorrelationMiss(deal.dealId.value, transfers.size, refetched = false))
+            return null
+        }
         val cached = assetIdCache[deal.dealId] ?: lookupAssetId(deal.dealId)
         cached?.let { key -> TransferCorrelation.select(transfers, key)?.let { return it } }
         // Only re-key a value we actually had: a lookup that just failed is already retried next tick.

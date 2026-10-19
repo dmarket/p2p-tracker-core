@@ -1727,6 +1727,63 @@ class TradeTrackerLoopTest {
     }
 
     @Test
+    fun the_heartbeats_asset_id_correlates_the_history_axis_without_a_deal_read() = runTest {
+        // The same compound ref the deal snapshot serves, now on the watch entry: no `/p2p/deals/{id}` read is
+        // spent, so a failing one cannot surface as a lookup failure either.
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(historyTracked.copy(assetId = AssetId("302028390:1989275999:44977997680:730"))),
+                ttlSeconds = 60,
+            ),
+        )
+        mp.getDealThrows = true
+        val reader = FakeSteamReadClient(
+            initialTransfers = listOf(
+                SteamTransfer(
+                    partnerSteamId = SteamId(PARTNER),
+                    assetIds = setOf(AssetId("44977997680")),
+                    status = ROLLBACK_CODE,
+                    tradeId = TradeId("739304749312013446"),
+                    initiatedAt = Instant.fromEpochSeconds(1_785_929_600),
+                    modifiedAt = Instant.fromEpochSeconds(1_785_929_822),
+                ),
+            ),
+        )
+        val l = loop(marketplace = mp, reader = reader, eventObserver = events, notifications = FakeSteamNotificationReader(reverser))
+
+        l.runOnce()
+        l.runOnce()
+
+        assertEquals(ROLLBACK_CODE, mp.tradeStatusReports.single { it.source == TradeStatusSource.HISTORY }.steamStatusCode)
+        assertEquals(0, mp.getDealCalls)
+        assertTrue(events.events.none { it is LifecycleEvent.DealLookupFailed })
+    }
+
+    @Test
+    fun a_heartbeat_asset_id_that_matches_nothing_is_re_keyed_by_the_next_heartbeat_not_a_deal_read() = runTest {
+        val events = RecordingEventObserver()
+        val stale = historyTracked.copy(steamOfferId = OfferId("offer-1"), assetId = AssetId("stale-key"))
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(stale), ttlSeconds = 60),
+            dealForGet = fakeDeal(dealId = "deal-1", assetId = "asset-77"),
+        )
+        val reader = rollbackFixture(ROLLBACK_CODE).also { it.offers = mapOf(OfferId("offer-1") to 3) }
+        val l = loop(marketplace = mp, reader = reader, eventObserver = events, notifications = FakeSteamNotificationReader(reverser))
+
+        l.runOnce()
+        assertEquals(0, mp.getDealCalls, "the backend's ref is not second-guessed with a deal read")
+        assertFalse(events.events.filterIsInstance<LifecycleEvent.HistoryCorrelationMiss>().single().refetched)
+        assertTrue(mp.tradeStatusReports.none { it.source == TradeStatusSource.HISTORY })
+
+        mp.heartbeatResponse = HeartbeatResponse(activeTracking = listOf(stale.copy(assetId = AssetId("asset-77"))), ttlSeconds = 60)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(ROLLBACK_CODE, mp.tradeStatusReports.single { it.source == TradeStatusSource.HISTORY }.steamStatusCode)
+        assertEquals(0, mp.getDealCalls)
+    }
+
+    @Test
     fun a_watch_pass_that_reports_nothing_still_says_why() = runTest {
         // The observability hole that made the live rollback undiagnosable: `plan.isEmpty` returned before
         // anything was emitted, so a deduped cycle and a cycle that never saw the axis were the same silence.

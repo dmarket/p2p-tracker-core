@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.wire
 
 import com.dmarket.p2p.tracker.engine.DealRoleBinding
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
@@ -243,6 +244,37 @@ class P2pSerializationTest {
         assertEquals(deal, roundTrip(deal))
         val directive = DirectiveDto(directiveId = "dir-1", action = "create_offer", dealId = "d1", deadlineTime = "2026-10-16T14:00:00Z")
         assertEquals(directive, roundTrip(directive))
+    }
+
+    // ---- asset id -------------------------------------------------------------------------------
+
+    @Test
+    fun heartbeat_response_carries_the_deals_asset_id() {
+        val json = """
+            {
+              "activeTracking": [
+                {"dealId":"d1","assetId":"302028390:1989275999:44977997680:730"},
+                {"dealId":"d2"},
+                {"dealId":"d3","assetId":""},
+                {"dealId":"d4","assetId":null}
+              ],
+              "ttlSeconds": 92
+            }
+        """.trimIndent()
+        val domain = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain()
+
+        assertEquals(AssetId("302028390:1989275999:44977997680:730"), domain.activeTracking[0].assetId)
+        assertNull(domain.activeTracking[1].assetId, "absent from a backend that predates the field")
+        // `AssetId` throws on a blank: unmapped, this one entry would take the whole heartbeat down.
+        assertNull(domain.activeTracking[2].assetId, "an unset proto3 string is no asset, not a thrown decode")
+        assertNull(domain.activeTracking[3].assetId)
+        assertEquals(92, domain.ttlSeconds)
+    }
+
+    @Test
+    fun tracked_deal_round_trips_with_its_asset_id() {
+        val dto = TrackedDealDto(dealId = "d1", assetId = "302028390:1989275999:44977997680:730")
+        assertEquals(dto, roundTrip(dto))
     }
 
     /**

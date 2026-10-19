@@ -58,6 +58,7 @@ fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     proofSites = proofSites.orEmpty().map(ProofSite::fromWire).toSet(),
     // Fail-open like a freshness mark: a malformed or zero deadline is no deadline, never a failed heartbeat.
     deadline = deadlineTime.toFreshnessMark(),
+    assetId = assetId?.takeIf { it.isNotBlank() }?.let(::AssetId),
 )
 
 /**

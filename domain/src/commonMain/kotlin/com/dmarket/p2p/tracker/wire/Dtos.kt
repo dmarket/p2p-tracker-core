@@ -91,6 +91,12 @@ data class TrackedDealDto(
      * [com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.deadline].
      */
     @SerialName("deadlineTime") val deadlineTime: String? = null,
+    /**
+     * The deal's asset, in the same composite form as [DealDto.assetId]. A `String` because an unset proto3
+     * string renders as `""` and `AssetId` throws on a blank; see
+     * [com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.assetId].
+     */
+    @SerialName("assetId") val assetId: String? = null,
 )
 
 @Serializable

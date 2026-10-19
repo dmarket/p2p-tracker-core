@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.model.marketplace
 
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.OfferId
@@ -145,6 +146,12 @@ data class TrackedDeal(
      * zero value degrades to. Informational: nothing in the loop acts on it; [dealDeadlines] reads it.
      */
     val deadline: Instant? = null,
+    /**
+     * The deal's asset, as the deal snapshot (`GET /p2p/deals/{id}`) names it, or `null` from a backend that
+     * does not send it. The history axis's join key for a deal with no trade id; with it, that join costs no
+     * deal read (see `TradeTrackerLoop.correlateTransfer`).
+     */
+    val assetId: AssetId? = null,
 )
 
 /**
