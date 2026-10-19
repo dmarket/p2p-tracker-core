@@ -53,6 +53,7 @@ class SdkLog(private val clock: Clock, private val writeLine: (String) -> Unit) 
         is LifecycleEvent.TradeStatusReportFailed,
         is LifecycleEvent.LinkedSteamIdUnknown,
         is LifecycleEvent.SteamWriteDeferred,
+        is LifecycleEvent.CreateUnanswered,
         -> "warn"
         is LifecycleEvent.DirectiveExecuted -> if (event.status == "FAILED") "warn" else "info"
         else -> "info"

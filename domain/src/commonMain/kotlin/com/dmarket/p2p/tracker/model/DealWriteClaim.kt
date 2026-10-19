@@ -40,10 +40,23 @@ data class DealWriteClaim(
     val directiveId: DirectiveId,
     /** The completed write's outcome (carries the `steam_offer_id`), replayed to duplicates. Set iff [ClaimPhase.COMPLETED]. */
     val outcome: DirectiveOutcome? = null,
+    /**
+     * Set on an [ClaimPhase.IN_FLIGHT] create whose request got no answer from Steam: what to look for among the
+     * account's sent offers to learn whether it made one. The claim stays in flight meanwhile, so no second create
+     * starts for the deal. See [com.dmarket.p2p.tracker.engine.UnansweredCreateCheck].
+     */
+    val unanswered: UnansweredCreate? = null,
 ) {
     /** The store key: one live claim per deal per write action. */
     val key: DealWriteKey get() = DealWriteKey(dealId, action)
 }
+
+/**
+ * A `create_offer` sent to Steam with no answer back — a timeout, a refused connection, a failed lookup — so whether
+ * Steam made the offer is unknown. [partner] and [assetIds] are what the offer would carry; [deadline] is the
+ * create's deadline, past which nothing is concluded about it.
+ */
+data class UnansweredCreate(val partner: SteamId, val assetIds: Set<AssetId>, val deadline: Instant? = null)
 
 /** The `(deal, action)` identity of a claim — one live non-idempotent write per pair. */
 data class DealWriteKey(val dealId: DealId, val action: DirectiveAction)

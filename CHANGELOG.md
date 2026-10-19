@@ -141,6 +141,18 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     `{"code","message"}` reply as sent, a status text with no `P2P_` prefix included, or the first `P2P_…`
     token in a body that is not such an object.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
+- `LoopConfig.unansweredCreateGrace`, off by default: a `create_offer` Steam did not answer
+  (`SteamCreateFailureCause.TRANSPORT`) is not reported `FAILED`, since Steam may have made the offer and
+  `FAILED` would leave it with nobody to cancel it. The deal's claim stays in flight, so no second create
+  starts, and later cycles read the account's sent offers (`SteamReadClient.sentOffers`, `SteamSentOffer`):
+  the offer to the same partner giving the same assets is reported `needs_confirmation`/`success` with its
+  id; none once the grace has passed since the attempt is reported `failed`; a failed read waits. The check
+  ends with the claim's TTL or the create's deadline (`UnansweredCreateCheck`), reporting nothing, told as
+  `DirectiveDropped` with `UNANSWERED_CREATE_UNSETTLED`. `LifecycleEvent.CreateUnanswered` says a create is
+  held. `DealWriteClaim.unanswered` (`UnansweredCreate`) and `DealWriteClaimStore.hold`/`settle` carry it;
+  an implementation of `DealWriteClaimStore` outside this library must add the two. `SteamReadClient.sentOffers`
+  has a default that throws, so such a create is then never settled by a read. `HeadlessTracker` turns it on
+  with a two-minute grace and reads Ktor's JS `Fail to fetch` as a transport failure.
 - `DirectiveDropped.dealId` names the deal of an offer write dropped because `LoopConfig.steamWrites` is off
   (reason `OFFER_WRITES_DISABLED`, now public). Appended last with a `null` default; the event's JSON carries
   `dealId` only when it is set, so the browser's events are unchanged.

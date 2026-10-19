@@ -166,6 +166,28 @@ class KtorSteamReadClientTest {
     }
 
     @Test
+    fun sent_offers_are_read_from_the_sent_side_only_with_partner_items_and_creation_time() = runTest {
+        val sent = """{"tradeofferid":"77","accountid_other":39734274,"trade_offer_state":9,"time_created":1792420000,
+            "time_updated":1792420000,"items_to_give":[{"appid":730,"contextid":"2","assetid":"a1"},
+            {"appid":730,"contextid":"2","assetid":"a2"}]}"""
+        val recording =
+            RecordingSteam(listBody = """{"response":{"trade_offers_sent":[$sent],"trade_offers_received":[${sentOffer("88", 2)}]}}""")
+
+        val offers = recording.client.sentOffers(credential)
+
+        val offer = offers.single()
+        assertEquals(OfferId("77"), offer.offerId)
+        assertEquals(SteamId("76561198000000002"), offer.partner)
+        assertEquals(9, offer.state)
+        assertEquals(setOf(AssetId("a1"), AssetId("a2")), offer.assetIdsGiven)
+        assertEquals(Instant.fromEpochSeconds(1792420000), offer.createdAt)
+        val params = recording.listParams.single()
+        assertEquals("1", params[recording.endpoints.paramGetSentOffers])
+        assertEquals("0", params[recording.endpoints.paramGetReceivedOffers])
+        assertEquals("0", params[recording.endpoints.paramGetDescriptions])
+    }
+
+    @Test
     fun a_received_offer_resolves_from_the_bulk_list_without_a_fallback_call() = runTest {
         val recording = RecordingSteam(
             listBody = """{"response":{"trade_offers_received":[${receivedOffer("11", 2)},${receivedOffer("12", 3)}]}}""",

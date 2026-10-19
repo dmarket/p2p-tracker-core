@@ -42,3 +42,6 @@ private const val STEAM_ID64_BASE = 76561197960265728L
  * replaces the next time that actual is touched).
  */
 fun SteamId.toAccountId(): Long? = value.toLongOrNull()?.let { it - STEAM_ID64_BASE }
+
+/** The steamid64 of the individual account [accountId] — the inverse of [toAccountId]. */
+fun steamIdOfAccount(accountId: Long): SteamId = SteamId((STEAM_ID64_BASE + accountId).toString())

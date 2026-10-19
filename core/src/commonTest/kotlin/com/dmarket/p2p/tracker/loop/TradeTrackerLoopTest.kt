@@ -19,6 +19,7 @@ import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.ReportedStatus
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.AssetId
+import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
@@ -39,6 +40,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
@@ -176,6 +178,7 @@ class TradeTrackerLoopTest {
         minWriteTokenLifetime: Duration? = null,
         reportUnsentCreates: Boolean = true,
         foregroundMinTokenLifetime: Duration? = null,
+        unansweredCreateGrace: Duration? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -194,6 +197,7 @@ class TradeTrackerLoopTest {
                 minWriteTokenLifetime,
                 foregroundMinTokenLifetime = foregroundMinTokenLifetime,
                 reportUnsentCreates = reportUnsentCreates,
+                unansweredCreateGrace = unansweredCreateGrace,
             ),
             marketplace = marketplace,
             steamReader = reader,
@@ -5677,5 +5681,261 @@ class TradeTrackerLoopTest {
 
         assertIs<CreateOfferResult.AccountMismatch>(result)
         assertTrue(mp.directiveOutcomes.isEmpty(), "nothing reached Steam, so nothing is reported")
+    }
+
+    // ---- a create Steam did not answer: held, then settled from the account's sent offers ----------
+
+    private val unanswered = CreateOfferResult.Failed(
+        "HttpTransportException: timeout on POST https://steamcommunity.com/tradeoffer/new/send",
+    )
+
+    private fun sentOffer(
+        id: String = "offer-77",
+        partner: String = PARTNER,
+        assets: Set<String> = setOf("asset-1"),
+        state: Int = 9,
+        createdAt: Instant = FakeClock().now(),
+    ) = SteamSentOffer(OfferId(id), SteamId(partner), state, assets.mapTo(mutableSetOf(), ::AssetId), createdAt)
+
+    private fun createLease(vararg directives: Directive) = FakeMarketplaceClient(
+        heartbeatResponse = HeartbeatResponse(
+            activeTracking = listOf(tracked(role = DealRole.SELLER)),
+            directives = directives.toList(),
+            ttlSeconds = 60,
+        ),
+    )
+
+    @Test
+    fun an_unanswered_create_is_not_reported_and_holds_its_deal() = runTest {
+        val observer = RecordingEventObserver()
+        val claims = PersistedDealWriteClaimStore()
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = unanswered)
+        loop(
+            marketplace = mp,
+            creator = creator,
+            claims = claims,
+            directivesEnabled = true,
+            eventObserver = observer,
+            unansweredCreateGrace = 2.minutes,
+        )
+            .runOnce()
+
+        assertTrue(mp.directiveOutcomes.isEmpty(), "no FAILED: whether Steam made the offer is unknown")
+        val held = claims.all().single()
+        assertEquals(ClaimPhase.IN_FLIGHT, held.phase)
+        assertEquals(setOf(AssetId("asset-1")), held.unanswered?.assetIds)
+        val event = observer.events.filterIsInstance<LifecycleEvent.CreateUnanswered>().single()
+        assertEquals("deal-1" to "dir-1", event.dealId to event.directiveId)
+        assertTrue(observer.events.filterIsInstance<LifecycleEvent.DirectiveExecuted>().isEmpty())
+    }
+
+    @Test
+    fun without_the_grace_set_an_unanswered_create_is_reported_failed_at_once() = runTest {
+        val mp = createLease(createDirective())
+        val claims = PersistedDealWriteClaimStore()
+        loop(marketplace = mp, creator = FakeSteamOfferCreator(result = unanswered), claims = claims, directivesEnabled = true).runOnce()
+
+        assertEquals(listOf(DirectiveStatus.FAILED), mp.directiveOutcomes.map { it.status })
+        assertTrue(claims.all().isEmpty(), "the claim goes, as for any failed create")
+    }
+
+    @Test
+    fun the_next_cycle_reports_the_offer_found_among_the_sent_ones() = runTest {
+        val clock = FakeClock()
+        val claims = PersistedDealWriteClaimStore()
+        val reader = FakeSteamReadClient()
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = unanswered)
+        val l = loop(
+            marketplace = mp,
+            creator = creator,
+            reader = reader,
+            claims = claims,
+            clock = clock,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+        assertEquals(0, reader.sentOffersCalls, "nothing is read in the cycle that sent it")
+
+        reader.sentOffers = listOf(
+            sentOffer(id = "offer-other-partner", partner = "76561198000000555", createdAt = clock.now()),
+            sentOffer(id = "offer-other-item", assets = setOf("asset-9"), createdAt = clock.now()),
+            sentOffer(id = "offer-old", createdAt = clock.now() - 1.hours),
+            sentOffer(id = "offer-77", createdAt = clock.now() + 2.seconds),
+        )
+        clock.advance(60.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveId("dir-1"), outcome.directiveId)
+        assertEquals(DirectiveStatus.NEEDS_CONFIRMATION, outcome.status)
+        assertEquals(OfferId("offer-77"), outcome.steamOfferId)
+        assertEquals(1, creator.created.size, "the re-leased directive is handled now: no second create")
+        assertEquals(ClaimPhase.COMPLETED, claims.all().single().phase)
+    }
+
+    @Test
+    fun an_offer_found_past_confirmation_is_reported_success() = runTest {
+        val clock = FakeClock()
+        val reader = FakeSteamReadClient()
+        val mp = createLease(createDirective())
+        val l = loop(
+            marketplace = mp,
+            creator = FakeSteamOfferCreator(result = unanswered),
+            reader = reader,
+            clock = clock,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+        reader.sentOffers = listOf(sentOffer(state = 2, createdAt = clock.now()))
+        clock.advance(60.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertEquals(DirectiveStatus.SUCCESS to OfferId("offer-77"), mp.directiveOutcomes.single().let { it.status to it.steamOfferId })
+    }
+
+    @Test
+    fun no_offer_within_the_grace_waits_and_no_offer_past_it_is_failed_and_free_to_create_again() = runTest {
+        val clock = FakeClock()
+        val claims = PersistedDealWriteClaimStore()
+        val reader = FakeSteamReadClient()
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = unanswered)
+        val l = loop(
+            marketplace = mp,
+            creator = creator,
+            reader = reader,
+            claims = claims,
+            clock = clock,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+
+        clock.advance(60.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(1, reader.sentOffersCalls)
+        assertTrue(mp.directiveOutcomes.isEmpty(), "a minute in, a missing offer may still be on its way")
+        assertEquals(1, creator.created.size, "and the deal stays held")
+
+        clock.advance(61.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        val failed = mp.directiveOutcomes.first()
+        assertEquals(DirectiveStatus.FAILED, failed.status)
+        assertEquals(DirectiveId("dir-1"), failed.directiveId)
+        assertEquals(2, creator.created.size, "the claim went with the FAILED, so the re-leased create runs again")
+    }
+
+    @Test
+    fun a_failed_read_says_nothing_and_holds_the_deal() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val claims = PersistedDealWriteClaimStore()
+        val reader = FakeSteamReadClient().apply { sentOffersThrows = true }
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = unanswered)
+        val l = loop(
+            marketplace = mp,
+            creator = creator,
+            reader = reader,
+            claims = claims,
+            clock = clock,
+            directivesEnabled = true,
+            eventObserver = observer,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+        clock.advance(5.minutes)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertTrue(mp.directiveOutcomes.isEmpty())
+        assertEquals(1, creator.created.size)
+        assertNotNull(claims.all().single().unanswered, "still held, for the next read")
+        assertTrue(observer.events.filterIsInstance<LifecycleEvent.SteamReadFailed>().any { it.axis == "sent_offers" })
+    }
+
+    @Test
+    fun a_fresh_lease_for_a_held_deal_creates_nothing() = runTest {
+        val clock = FakeClock()
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = unanswered)
+        val l = loop(
+            marketplace = mp,
+            creator = creator,
+            reader = FakeSteamReadClient().apply { sentOffersThrows = true },
+            clock = clock,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+        mp.heartbeatResponse = mp.heartbeatResponse.copy(directives = listOf(createDirective(id = "dir-2")))
+        clock.advance(60.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertEquals(1, creator.created.size, "one deal, one create, whatever the lease is called")
+        assertTrue(mp.directiveOutcomes.isEmpty())
+    }
+
+    @Test
+    fun past_the_create_deadline_nothing_is_read_or_reported() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val claims = PersistedDealWriteClaimStore()
+        val reader = FakeSteamReadClient()
+        val mp = createLease(createDirective().copy(deadline = clock.now() + 90.seconds))
+        val l = loop(
+            marketplace = mp,
+            creator = FakeSteamOfferCreator(result = unanswered),
+            reader = reader,
+            claims = claims,
+            clock = clock,
+            directivesEnabled = true,
+            eventObserver = observer,
+            unansweredCreateGrace = 2.minutes,
+        )
+        l.runOnce()
+        mp.heartbeatResponse = mp.heartbeatResponse.copy(directives = emptyList())
+        clock.advance(3.minutes)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        assertEquals(0, reader.sentOffersCalls)
+        assertTrue(mp.directiveOutcomes.isEmpty(), "nothing is known against the seller, so nothing is said")
+        val dropped = observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().single()
+        assertEquals(UNANSWERED_CREATE_UNSETTLED to "deal-1", dropped.reason to dropped.dealId)
+        val claim = claims.all().single()
+        assertEquals(ClaimPhase.IN_FLIGHT to null, claim.phase to claim.unanswered, "it guards the deal until its TTL")
+    }
+
+    @Test
+    fun a_host_create_steam_did_not_answer_is_settled_by_the_loop() = runTest {
+        val clock = FakeClock()
+        val reader = FakeSteamReadClient()
+        val mp = FakeMarketplaceClient(HeartbeatResponse(activeTracking = listOf(tracked(role = DealRole.SELLER)), ttlSeconds = 60))
+        val l = loop(
+            marketplace = mp,
+            creator = FakeSteamOfferCreator(result = unanswered),
+            reader = reader,
+            clock = clock,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+        val result = l.createTrade(DirectiveId("dir-ft"), DealId("deal-1"), draft(), linkedSteamId = matchingSteamId)
+        assertIs<CreateOfferResult.Failed>(result)
+        assertTrue(mp.directiveOutcomes.isEmpty())
+
+        reader.sentOffers = listOf(sentOffer(createdAt = clock.now()))
+        clock.advance(60.seconds)
+        l.runOnce()
+        assertEquals(DirectiveId("dir-ft") to OfferId("offer-77"), mp.directiveOutcomes.single().let { it.directiveId to it.steamOfferId })
     }
 }

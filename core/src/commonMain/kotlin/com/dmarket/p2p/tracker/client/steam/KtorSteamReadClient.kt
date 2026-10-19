@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import io.ktor.client.HttpClient
@@ -79,6 +80,18 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
             parameter(endpoints.paramGetDescriptions, 0)
         }.bodyAsText()
         return SteamReadResponses.bulkOfferSnapshots(responseText)
+    }
+
+    /** `GetTradeOffers`, sent offers only and in any state, without item descriptions. */
+    override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> {
+        val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
+            parameter(endpoints.paramAccessToken, credential.token)
+            parameter(endpoints.paramGetSentOffers, 1)
+            parameter(endpoints.paramGetReceivedOffers, 0)
+            parameter(endpoints.paramActiveOnly, 0)
+            parameter(endpoints.paramGetDescriptions, 0)
+        }.bodyAsText()
+        return SteamReadResponses.sentOffers(responseText)
     }
 
     override suspend fun recentTransfers(credential: SteamCredential, maxTrades: Int): List<SteamTransfer> {

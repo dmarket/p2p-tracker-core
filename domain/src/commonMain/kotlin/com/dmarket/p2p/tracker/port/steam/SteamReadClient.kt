@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 
 /**
@@ -48,4 +49,12 @@ interface SteamReadClient {
      * absent row); a read failure throws, so the axis fails closed rather than reporting a wrong code.
      */
     suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer>
+
+    /**
+     * The offers this account sent (`GetTradeOffers`, sent only), for recognising the offer of a create whose answer
+     * never came back. Throws on a failed read. A client that does not implement it throws too, and such a create is
+     * then never settled by a read: its claim lapses with its TTL, unreported.
+     */
+    suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
+        throw UnsupportedOperationException("this Steam read client does not list sent offers")
 }

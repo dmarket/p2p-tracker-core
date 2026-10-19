@@ -3,12 +3,15 @@ package com.dmarket.p2p.tracker.loop
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.engine.ClaimVerdict
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DealWriteKey
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.UnansweredCreate
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
@@ -180,6 +183,60 @@ class DealWriteClaimStoreTest {
         val respawned = PersistedDealWriteClaimStore(storage)
         val verdict = assertIs<ClaimVerdict.AlreadyCompleted>(respawned.claim(claim(directiveId = "dir-2"), t0, ttl))
         assertEquals(OfferId("offer-1"), verdict.claim.outcome?.steamOfferId)
+    }
+
+    @Test
+    fun a_held_create_keeps_its_claim_in_flight_with_what_to_look_for_across_a_respawn() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        val unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"), AssetId("a2")), t0 + 10.minutes)
+        PersistedDealWriteClaimStore(storage).apply {
+            claim(claim(), t0, ttl)
+            hold(key, unanswered)
+        }
+        val respawned = PersistedDealWriteClaimStore(storage)
+        val held = respawned.all().single()
+        assertEquals(ClaimPhase.IN_FLIGHT to unanswered, held.phase to held.unanswered)
+        assertIs<ClaimVerdict.InFlight>(respawned.claim(claim(directiveId = "dir-2"), t0 + 1.minutes, ttl), "no second create")
+    }
+
+    @Test
+    fun a_held_create_settles_into_a_completed_claim_or_none() = runTest {
+        val store = PersistedDealWriteClaimStore()
+        store.claim(claim(), t0, ttl)
+        store.hold(key, UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"))))
+        val held = store.all().single()
+
+        assertTrue(store.settle(held, outcome()))
+        val completed = store.all().single()
+        assertEquals(ClaimPhase.COMPLETED, completed.phase)
+        assertEquals(null, completed.unanswered)
+        assertEquals(false, store.settle(held, null), "settled once, so the old claim is not there any more")
+
+        store.release(setOf(key))
+        store.claim(claim(), t0, ttl)
+        store.hold(key, UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"))))
+        assertTrue(store.settle(store.all().single(), null))
+        assertTrue(store.all().isEmpty(), "absent: released")
+    }
+
+    @Test
+    fun holding_needs_a_claim_in_flight_and_null_lets_the_check_go() = runTest {
+        val store = PersistedDealWriteClaimStore()
+        val unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1")))
+        store.hold(key, unanswered)
+        assertTrue(store.all().isEmpty(), "nothing to hold")
+
+        store.claim(claim(), t0, ttl)
+        store.complete(key, outcome())
+        store.hold(key, unanswered)
+        assertEquals(null, store.all().single().unanswered, "a completed claim is not held")
+
+        store.release(setOf(key))
+        store.claim(claim(), t0, ttl)
+        store.hold(key, unanswered)
+        store.hold(key, null)
+        val claim = store.all().single()
+        assertEquals(ClaimPhase.IN_FLIGHT to null, claim.phase to claim.unanswered)
     }
 
     @Test

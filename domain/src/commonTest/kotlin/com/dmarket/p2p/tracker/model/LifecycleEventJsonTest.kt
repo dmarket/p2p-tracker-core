@@ -275,6 +275,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.DeadOfferClaimReleased("deal1", "778899", 10, "watch"),
             LifecycleEvent.SteamWriteDeferred("create_offer", "d6", "partner cooling down", "deal1", 120),
             LifecycleEvent.CreateChainStopped("76561199497281579", "d7", "too many trade offers", 21),
+            LifecycleEvent.CreateUnanswered("deal1", "d8", "HttpTransportException: timeout on POST"),
             LifecycleEvent.SteamReadFailed("offer", "500"),
             LifecycleEvent.HistoryCorrelationMiss("deal1", rows = 51, refetched = true),
             LifecycleEvent.DealLookupFailed("deal1", "404"),

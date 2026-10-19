@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import io.ktor.http.HttpStatusCode
@@ -34,6 +35,9 @@ class RefreshingSteamReadClient(private val delegate: SteamReadClient, private v
 
     override suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer> =
         withRefreshRetry(credential) { delegate.transfersByTradeId(it, tradeId) }
+
+    override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
+        withRefreshRetry(credential) { delegate.sentOffers(it) }
 
     // ---- private -----------------------------------------------------------------------------------
 

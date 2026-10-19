@@ -148,6 +148,9 @@ data class HeadlessTrackerState(
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
  *  - A `create_offer` that never reached Steam — refused by the account or buyer-role guard, or deferred — is never
  *    reported `FAILED`, which DMarket reads as the seller failing to deliver; its lease lapses instead.
+ *  - A `create_offer` Steam did not answer (a timeout, a refused connection) is not reported `FAILED` either: its deal
+ *    is held and later cycles look for the offer among the account's sent offers — reported with its id when found,
+ *    `failed` when still missing [UNANSWERED_CREATE_GRACE] after the attempt (`LoopConfig.unansweredCreateGrace`).
  *  - `foreground` follows the token, not a mode: `true` while the token has [MIN_WRITE_TOKEN_LIFETIME] left and no
  *    heartbeat has named another account as linked — from the first heartbeat on, since the gateway checks the
  *    account itself. DMarket counts the tracker present only then.
@@ -447,13 +450,14 @@ class HeadlessTracker(
                 clientVersion = TradeTrackerCore.VERSION,
                 surface = RuntimeSurface.Headless,
                 mode = TrackerMode.Background,
-                tunables = tunables,
+                tunables = tunables.withNodeTransportMarker(),
                 requireLinkedSteamId = true,
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
                 reportUnsentCreates = false,
+                unansweredCreateGrace = UNANSWERED_CREATE_GRACE,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(
@@ -518,6 +522,15 @@ class HeadlessTracker(
          */
         val MAX_CLOCK_SKEW: Duration = 60.seconds
 
+        /**
+         * How long after a create Steam did not answer its offer may still be missing from the sent offers before
+         * the create counts as not made. Covers Steam finishing a request this host stopped waiting for (the 30 s
+         * request timeout) and its offer list lagging the write. With the 60 s poll floor the first read lands about a
+         * minute after the attempt and finds a slow offer; the second, two minutes in, may conclude it is absent —
+         * well inside the 15-minute claim and any create deadline.
+         */
+        val UNANSWERED_CREATE_GRACE: Duration = 2.minutes
+
         /** The first wait after a 429 with no longer `Retry-After`; it doubles with each 429 in a row. */
         val RATE_LIMIT_BACKOFF_BASE: Duration = 30.seconds
 
@@ -545,6 +558,19 @@ private object RefusedOfferWrites : SteamOfferCreator, SteamOfferCanceller {
 
     override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): Unit = throw IllegalStateException(REFUSED)
 }
+
+/**
+ * [this] with Ktor's JS-engine fetch failure (`Error: Fail to fetch`, in Node as in the browser) among the transport
+ * markers, so a create whose request never reached Steam reads as unanswered here. Added for this tracker only: the
+ * browser's defaults are left as they are.
+ */
+private fun TrackerConfig.withNodeTransportMarker(): TrackerConfig {
+    val markers = steamWrites.transportFailureMarkers
+    if (markers.any { it.equals(KTOR_JS_FETCH_FAILURE, ignoreCase = true) }) return this
+    return copy(steamWrites = steamWrites.copy(transportFailureMarkers = markers + KTOR_JS_FETCH_FAILURE))
+}
+
+private const val KTOR_JS_FETCH_FAILURE = "fail to fetch"
 
 /**
  * A fresh Steam `sessionid`: 12 random bytes, hex, the size Steam's own clients generate. Steam only checks that

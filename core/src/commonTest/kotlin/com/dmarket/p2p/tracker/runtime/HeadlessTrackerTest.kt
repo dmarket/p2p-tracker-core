@@ -68,6 +68,10 @@ class HeadlessTrackerTest {
     /** The `Retry-After` every DMarket reply carries; `null` sends none. */
     private var retryAfter: String? = null
 
+    /** Thrown by the create POST instead of answering: a request that never got a reply. */
+    private var createThrows: Throwable? = null
+    private var sentOffersBody = """{"response":{"trade_offers_sent":[]}}"""
+
     private class RecordingStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
 
@@ -101,8 +105,11 @@ class HeadlessTrackerTest {
             path.endsWith("/p2p/ext/heartbeat") -> respond(heartbeatBody, heartbeatStatus, json)
             path.endsWith("/p2p/ext/trade-actions") -> respond("""{"results":[{"directiveId":"dir-1","accepted":true}]}""", headers = json)
             path.endsWith("/p2p/ext/trade-events") -> respond("""{"results":[]}""", headers = json)
-            path.endsWith("/tradeoffer/new/send") -> respond("""{"tradeofferid":"555","needs_mobile_confirmation":true}""", headers = json)
-            path.contains("GetTradeOffers") -> respond("""{"response":{"trade_offers_sent":[]}}""", headers = json)
+            path.endsWith("/tradeoffer/new/send") -> {
+                createThrows?.let { throw it }
+                respond("""{"tradeofferid":"555","needs_mobile_confirmation":true}""", headers = json)
+            }
+            path.contains("GetTradeOffers") -> respond(sentOffersBody, headers = json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }
@@ -386,6 +393,38 @@ class HeadlessTrackerTest {
         val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>()
         assertEquals(listOf("dir-1" to "deal-2", "dir-2" to "deal-1"), dropped.map { it.directiveId to it.dealId })
         assertTrue(steamRequests().isNotEmpty(), "reads go on")
+    }
+
+    @Test
+    fun a_create_that_got_no_answer_is_held_and_reported_with_the_offer_steam_made() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1",
+               "partnerSteamId":"$OTHER_STEAM_ID","assetIds":["asset-7"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        // What Ktor's JS engine throws for a fetch that never got a reply, in Node as in the browser.
+        createThrows = IllegalStateException("Fail to fetch")
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }, "no FAILED for an unanswered create")
+        assertTrue(events.any { it is LifecycleEvent.CreateUnanswered }, "$events")
+
+        val partnerAccountId = OTHER_STEAM_ID.toLong() - 76561197960265728L
+        sentOffersBody = """{"response":{"trade_offers_sent":[{"tradeofferid":"556","accountid_other":$partnerAccountId,
+            "trade_offer_state":9,"time_created":${clock.now().epochSeconds},"time_updated":${clock.now().epochSeconds},
+            "items_to_give":[{"appid":730,"contextid":"2","assetid":"asset-7"}]}]}}"""
+        clock.advance(60.seconds)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+
+        val report = requests.single { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }
+        val outcome = Json.parseToJsonElement(report.text()).jsonObject.getValue("reports").jsonArray.single().jsonObject
+        assertEquals("dir-1", outcome.getValue("directiveId").jsonPrimitive.content)
+        assertEquals("556", outcome.getValue("steamOfferId").jsonPrimitive.content)
+        assertEquals(1, requests.count { it.url.encodedPath.endsWith("/tradeoffer/new/send") }, "one create, never a second")
     }
 
     @Test

@@ -32,6 +32,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.steam.InventoryScan
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
@@ -228,6 +229,17 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         tradeIdsQueried += tradeId
         if (transfersByTradeIdThrows) error("simulated transfersByTradeId failure")
         return transfersByTradeId[tradeId].orEmpty()
+    }
+
+    /** What `GetTradeOffers` lists as sent, for settling a create Steam did not answer. */
+    var sentOffers: List<SteamSentOffer> = emptyList()
+    var sentOffersCalls = 0
+    var sentOffersThrows = false
+
+    override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> {
+        sentOffersCalls++
+        if (sentOffersThrows) error("simulated sentOffers failure")
+        return sentOffers
     }
 }
 

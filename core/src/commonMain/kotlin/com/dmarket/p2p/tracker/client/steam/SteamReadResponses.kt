@@ -6,7 +6,9 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamNotification
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
+import com.dmarket.p2p.tracker.model.steam.steamIdOfAccount
 import com.dmarket.p2p.tracker.wire.trackerJson
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -41,6 +43,20 @@ internal object SteamReadResponses {
     fun bulkOfferSnapshots(body: String): Map<OfferId, SteamOfferSnapshot> {
         val response = json.decodeFromString<GetTradeOffersWrapper>(body).response ?: return emptyMap()
         return (response.sent + response.received).associate { OfferId(it.tradeOfferId) to it.toSnapshot() }
+    }
+
+    /** `GetTradeOffers` asked for sent offers only: each with its partner, state, given assets and creation time. */
+    fun sentOffers(body: String): List<SteamSentOffer> {
+        val response = json.decodeFromString<GetTradeOffersWrapper>(body).response ?: return emptyList()
+        return response.sent.map {
+            SteamSentOffer(
+                offerId = OfferId(it.tradeOfferId),
+                partner = steamIdOfAccount(it.accountIdOther),
+                state = it.state,
+                assetIdsGiven = it.itemsToGive.mapTo(mutableSetOf()) { asset -> AssetId(asset.assetId) },
+                createdAt = Instant.fromEpochSeconds(it.timeCreated),
+            )
+        }
     }
 
     /**

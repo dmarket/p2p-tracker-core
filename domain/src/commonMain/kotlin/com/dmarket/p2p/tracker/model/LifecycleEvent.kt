@@ -129,6 +129,16 @@ sealed interface LifecycleEvent {
     ) : LifecycleEvent
 
     /**
+     * A `create_offer` got no answer from Steam (a timeout, a refused connection, a failed lookup), so whether Steam
+     * made the offer is unknown. Nothing is reported for it yet: the deal's claim is held, so no second create
+     * starts, and later cycles look for the offer among the account's sent offers. The verdict comes as a
+     * [DirectiveExecuted] — `needs_confirmation`/`success` with the offer found, or `failed` once a read shows
+     * there is none. Only a loop with `LoopConfig.unansweredCreateGrace` set emits it. [error] is the redacted
+     * transport failure.
+     */
+    data class CreateUnanswered(val dealId: String, val directiveId: String, val error: String? = null) : LifecycleEvent
+
+    /**
      * A counterparty's `create_offer` chain **stopped early**: creates are grouped per partner and run one
      * at a time within a group, and the first failure ends that group for the cycle so the client learns a
      * refusal once instead of once per leased directive. [skipped] is how many of that chain's creates were

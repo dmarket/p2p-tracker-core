@@ -4,12 +4,15 @@ import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.engine.ClaimVerdict
 import com.dmarket.p2p.tracker.engine.DealWriteGuard
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DealWriteKey
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.UnansweredCreate
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
@@ -62,6 +65,20 @@ interface DealWriteClaimStore {
 
     /** Every stored claim, for the heartbeat's [DealWriteGuard.staleClaims] reconciliation. */
     suspend fun all(): Collection<DealWriteClaim>
+
+    /**
+     * Keeps the in-flight claim for [key] standing with [unanswered] attached — the create got no answer from Steam,
+     * so it is neither completed nor released — or, with `null`, detaches it and leaves the claim to its TTL. A no-op
+     * unless an in-flight claim stands for [key].
+     */
+    suspend fun hold(key: DealWriteKey, unanswered: UnansweredCreate?)
+
+    /**
+     * Settles a held create: completes [claim] with [outcome], or releases it when [outcome] is `null`. Only when the
+     * claim stored for its key is still [claim] — one that lapsed and was taken again meanwhile is left alone.
+     * Returns whether it was settled.
+     */
+    suspend fun settle(claim: DealWriteClaim, outcome: DirectiveOutcome?): Boolean
 }
 
 /** JSON surrogate for [DealWriteClaim] (the domain types stay non-`@Serializable`, keeping `:domain` pure). */
@@ -75,6 +92,9 @@ private data class StoredDealWriteClaim(
     val outcomeStatus: String? = null,
     val outcomeSteamOfferId: String? = null,
     val outcomeError: String? = null,
+    val unansweredPartner: String? = null,
+    val unansweredAssetIds: List<String>? = null,
+    val unansweredDeadlineMs: Long? = null,
 )
 
 private fun DealWriteClaim.toStored(): StoredDealWriteClaim = StoredDealWriteClaim(
@@ -86,6 +106,9 @@ private fun DealWriteClaim.toStored(): StoredDealWriteClaim = StoredDealWriteCla
     outcomeStatus = outcome?.status?.wireName,
     outcomeSteamOfferId = outcome?.steamOfferId?.value,
     outcomeError = outcome?.error,
+    unansweredPartner = unanswered?.partner?.value,
+    unansweredAssetIds = unanswered?.assetIds?.map { it.value },
+    unansweredDeadlineMs = unanswered?.deadline?.toEpochMilliseconds(),
 )
 
 /** `null` when the stored row no longer parses (dropped, not fatal — the claim simply stops guarding). */
@@ -109,6 +132,13 @@ private fun StoredDealWriteClaim.toDomain(): DealWriteClaim? {
                 dealId = deal,
                 steamOfferId = outcomeSteamOfferId?.let(::OfferId),
                 error = outcomeError,
+            )
+        },
+        unanswered = unansweredPartner?.let { partner ->
+            UnansweredCreate(
+                partner = SteamId(partner),
+                assetIds = unansweredAssetIds.orEmpty().mapTo(mutableSetOf(), ::AssetId),
+                deadline = unansweredDeadlineMs?.let(Instant::fromEpochMilliseconds),
             )
         },
     )
@@ -146,7 +176,7 @@ class PersistedDealWriteClaimStore(
         restore()
         val verdict = DealWriteGuard.evaluate(claims[claim.key], now, ttl)
         if (verdict is ClaimVerdict.Proceed) {
-            claims[claim.key] = claim.copy(phase = ClaimPhase.IN_FLIGHT, outcome = null)
+            claims[claim.key] = claim.copy(phase = ClaimPhase.IN_FLIGHT, outcome = null, unanswered = null)
             persist()
         }
         verdict
@@ -155,8 +185,28 @@ class PersistedDealWriteClaimStore(
     override suspend fun complete(key: DealWriteKey, outcome: DirectiveOutcome) = mutex.withLock {
         restore()
         val existing = claims[key] ?: return@withLock
-        claims[key] = existing.copy(phase = ClaimPhase.COMPLETED, outcome = outcome)
+        claims[key] = existing.copy(phase = ClaimPhase.COMPLETED, outcome = outcome, unanswered = null)
         persist()
+    }
+
+    override suspend fun hold(key: DealWriteKey, unanswered: UnansweredCreate?) = mutex.withLock {
+        restore()
+        val existing = claims[key]?.takeIf { it.phase == ClaimPhase.IN_FLIGHT } ?: return@withLock
+        if (existing.unanswered == unanswered) return@withLock
+        claims[key] = existing.copy(unanswered = unanswered)
+        persist()
+    }
+
+    override suspend fun settle(claim: DealWriteClaim, outcome: DirectiveOutcome?): Boolean = mutex.withLock {
+        restore()
+        if (claims[claim.key] != claim) return@withLock false
+        if (outcome != null) {
+            claims[claim.key] = claim.copy(phase = ClaimPhase.COMPLETED, outcome = outcome, unanswered = null)
+        } else {
+            claims.remove(claim.key)
+        }
+        persist()
+        true
     }
 
     override suspend fun release(keys: Set<DealWriteKey>) = mutex.withLock {

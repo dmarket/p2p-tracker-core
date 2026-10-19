@@ -38,6 +38,14 @@ import kotlin.time.Duration
  *   `SteamWriteConfig.reportThrottledWrites` on). The backend reads `FAILED` as the seller failing to deliver, and
  *   nothing was tried; unanswered, the lease lapses to a device that can. `true` (the default) keeps the browser's
  *   reporting.
+ * @param unansweredCreateGrace When set, a `create_offer` that got no answer from Steam (a timeout, a refused
+ *   connection — `SteamCreateFailureCause.TRANSPORT`) is not reported `FAILED`: whether Steam made the offer is unknown,
+ *   and `FAILED` would leave an offer it did make with nobody to cancel it. The deal's claim is held instead, so no
+ *   second create starts, and later cycles read the account's sent offers: the offer found is reported
+ *   `needs_confirmation`/`success` with its id; one not found once this long has passed since the attempt is
+ *   reported `failed`; a failed read says nothing and is tried again. The check ends with the claim's TTL or the
+ *   create's deadline, whichever comes first, reporting nothing. `null` (the default) reports such a create `FAILED`
+ *   at once, as the browser does.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -50,4 +58,5 @@ data class LoopConfig(
     val heartbeatWithoutCredential: Boolean = false,
     val steamWrites: Boolean = true,
     val reportUnsentCreates: Boolean = true,
+    val unansweredCreateGrace: Duration? = null,
 )
