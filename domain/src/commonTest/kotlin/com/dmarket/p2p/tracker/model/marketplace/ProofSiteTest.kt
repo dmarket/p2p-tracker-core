@@ -1,6 +1,11 @@
 package com.dmarket.p2p.tracker.model.marketplace
 
 import com.dmarket.p2p.tracker.engine.DecisiveTransitions
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -8,27 +13,24 @@ import kotlin.test.assertNull
 class ProofSiteTest {
 
     /**
-     * The backend's rows, by site name: what its `provableTransitions` maps each (axis, code) to. A site whose
-     * codes drift from these is a code proven where the backend does not want it, or reported unproven where
-     * it refuses one.
+     * The backend's sites ([BACKEND_PROOF_SITES_JSON]): site name → axis → codes. A site whose codes drift from
+     * these is a code proven where the backend does not want it, or reported unproven where it refuses one.
      */
-    private val backendRows: Map<String, Pair<TradeStatusSource, Set<Int>>> = mapOf(
-        "offer_created" to (TradeStatusSource.OFFER to emptySet()),
-        "offer_confirmed" to (TradeStatusSource.OFFER to setOf(2)),
-        "offer_accepted" to (TradeStatusSource.OFFER to setOf(3)),
-        "offer_declined" to (TradeStatusSource.OFFER to setOf(4, 7)),
-        "offer_cancelled" to (TradeStatusSource.OFFER to setOf(6, 8, 10)),
-        "trade_completed" to (TradeStatusSource.HISTORY to setOf(3, 9)),
-        "trade_reversed" to (TradeStatusSource.HISTORY to setOf(4, 5, 6, 7, 11, 12)),
-    )
+    private val backendSites: Map<String, Map<String, Set<Int>>> =
+        Json.parseToJsonElement(BACKEND_PROOF_SITES_JSON).jsonObject.getValue("sites").jsonObject.mapValues { (_, axes) ->
+            axes.jsonObject.mapValues { (_, codes) -> codes.jsonArray.mapTo(mutableSetOf()) { it.jsonPrimitive.int } }
+        }
 
     private val known = ProofSite.entries - ProofSite.UNKNOWN
 
     @Test
     fun every_site_maps_to_exactly_the_backends_codes() {
-        assertEquals(backendRows.keys, known.map { it.wireName }.toSet(), "the site names")
+        assertEquals(backendSites.keys, known.map { it.wireName }.toSet(), "the site names")
         for (site in known) {
-            assertEquals(backendRows.getValue(site.wireName), site.source to site.codes, site.wireName)
+            val axes = backendSites.getValue(site.wireName)
+            // A site that proves nothing names no axis; ours keeps the axis it gates, with no code on it.
+            val expected = if (site.codes.isEmpty()) emptyMap() else mapOf(checkNotNull(site.source).wireName to site.codes)
+            assertEquals(expected, axes, site.wireName)
         }
     }
 
@@ -36,12 +38,14 @@ class ProofSiteTest {
     fun every_decisive_code_belongs_to_exactly_one_site() {
         // Both directions, so neither copy can drift alone: a decisive code on no site would never be proven
         // on a deal that names its sites, and a site code outside the decisive set would never be proven on
-        // one that names none.
+        // one that names none. Checked against ours and against the backend's.
         for (source in TradeStatusSource.entries) {
             for (code in 0..20) {
-                val sites = known.filter { it.source == source && code in it.codes }
                 val expected = if (DecisiveTransitions.isDecisive(source, code)) 1 else 0
+                val sites = known.filter { it.source == source && code in it.codes }
                 assertEquals(expected, sites.size, "$source $code is on $sites")
+                val backend = backendSites.filterValues { code in it[source.wireName].orEmpty() }.keys
+                assertEquals(expected, backend.size, "$source $code is on the backend's $backend")
             }
         }
     }
