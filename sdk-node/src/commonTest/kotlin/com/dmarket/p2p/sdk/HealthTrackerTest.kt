@@ -30,6 +30,7 @@ class HealthTrackerTest {
         steamNotLinked: Boolean = false,
         updateRequired: Boolean = false,
         updateDueTime: Instant? = null,
+        deadlines: Map<String, Instant> = emptyMap(),
     ) = HeadlessTrackerState(
         hasTradingApiKey = hasKey,
         steamTokenSteamId = tokenExpiresIn?.let { SteamId(STEAM_ID) },
@@ -41,6 +42,7 @@ class HealthTrackerTest {
         steamNotLinked = steamNotLinked,
         updateRequired = updateRequired,
         updateDueTime = updateDueTime,
+        dealDeadlines = deadlines.mapKeys { DealId(it.key) },
     )
 
     private fun codes(state: HeadlessTrackerState = state()) = tracker.snapshot(state).problems.map { it.code }
@@ -107,6 +109,16 @@ class HealthTrackerTest {
         tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 0))
         val later = tracker.snapshot(state(tokenExpiresIn = 20.minutes)).problems.single()
         assertTrue(later.affectedDeals.isEmpty(), "a cycle with nothing held back and nothing tracked names no deal: $later")
+    }
+
+    @Test
+    fun an_affected_deal_carries_its_deadline_when_the_heartbeat_gave_one() = runTest {
+        val deadline = T0 + 2.hours
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = "deal-1", error = "(26)"))
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = "deal-2", error = "(26)"))
+        val problem = tracker.snapshot(state(deadlines = mapOf("deal-1" to deadline))).problems.single()
+        assertEquals(ProblemCode.DIRECTIVE_FAILED, problem.code)
+        assertEquals(listOf("deal-1" to deadline.toString(), "deal-2" to null), problem.affectedDeals.map { it.dealId to it.deadline })
     }
 
     @Test

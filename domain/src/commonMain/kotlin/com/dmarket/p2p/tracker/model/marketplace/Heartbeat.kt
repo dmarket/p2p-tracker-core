@@ -139,6 +139,12 @@ data class TrackedDeal(
      * report. Empty from a backend that does not send the field. [provesTransition] reads it.
      */
     val proofSites: Set<ProofSite> = emptySet(),
+    /**
+     * When the phase this watch serves times out on the backend, or `null` when it has none to give — a
+     * frozen or terminal deal, or a backend that does not send the field — which is also what a malformed or
+     * zero value degrades to. Informational: nothing in the loop acts on it; [dealDeadlines] reads it.
+     */
+    val deadline: Instant? = null,
 )
 
 /**
@@ -223,3 +229,15 @@ data class HeartbeatResponse(
     val updateRequired: Boolean = false,
     val updateDueTime: Instant? = null,
 )
+
+/**
+ * The time each deal this heartbeat names lapses: the earlier of its watch's phase deadline
+ * ([TrackedDeal.deadline]) and its `create_offer`'s create deadline ([Directive.deadline]). A deal with
+ * neither is absent.
+ */
+fun HeartbeatResponse.dealDeadlines(): Map<DealId, Instant> {
+    val creates = directives.filter { it.action == DirectiveAction.CREATE_OFFER }
+        .mapNotNull { d -> d.dealId?.let { id -> d.deadline?.let { id to it } } }
+    val phases = activeTracking.mapNotNull { t -> t.deadline?.let { t.dealId to it } }
+    return (phases + creates).groupBy({ it.first }, { it.second }).mapValues { (_, times) -> times.min() }
+}

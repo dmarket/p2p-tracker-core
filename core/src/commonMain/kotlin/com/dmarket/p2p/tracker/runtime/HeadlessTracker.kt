@@ -47,6 +47,7 @@ import com.dmarket.p2p.tracker.model.marketplace.InventoryReport
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
+import com.dmarket.p2p.tracker.model.marketplace.dealDeadlines
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
@@ -114,6 +115,8 @@ class HeadlessPlatform(
  *   account (`403 P2P_STEAM_NOT_LINKED`); cleared by the next heartbeat that comes back.
  * @property updateRequired whether the last heartbeat said this version is below DMarket's minimum for the platform.
  * @property updateDueTime when, per the last heartbeat, a minimum this version is below comes into force.
+ * @property dealDeadlines when each deal the last heartbeat named lapses: the earlier of its phase deadline and its
+ *   `create_offer`'s create deadline. A deal the backend gave no deadline for is absent.
  */
 data class HeadlessTrackerState(
     val hasTradingApiKey: Boolean,
@@ -126,6 +129,7 @@ data class HeadlessTrackerState(
     val steamNotLinked: Boolean = false,
     val updateRequired: Boolean = false,
     val updateDueTime: Instant? = null,
+    val dealDeadlines: Map<DealId, Instant> = emptyMap(),
 ) {
     /** Whether [clockOffset] is past what the gateway's signature check allows. */
     val clockSkewed: Boolean get() = clockOffset?.let { it.absoluteValue > HeadlessTracker.MAX_CLOCK_SKEW } ?: false
@@ -192,6 +196,7 @@ class HeadlessTracker(
     private var rateLimitedUntil: Instant? = null
     private var updateRequired = false
     private var updateDueTime: Instant? = null
+    private var dealDeadlines: Map<DealId, Instant> = emptyMap()
     private var rateLimitStreak = 0
 
     private val observer = EventObserver { event ->
@@ -363,6 +368,7 @@ class HeadlessTracker(
             steamNotLinked = steamNotLinked,
             updateRequired = updateRequired,
             updateDueTime = updateDueTime,
+            dealDeadlines = dealDeadlines,
         )
     }
 
@@ -381,6 +387,8 @@ class HeadlessTracker(
         override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse = try {
             watched { client.heartbeat(request) }.also { response ->
                 steamNotLinked = false
+                // Taken from every heartbeat that comes back, like the loop's tracking list it sits beside.
+                dealDeadlines = response.dealDeadlines()
                 response.linkedSteamId?.let { storage.confirm(it) }
                 // A heartbeat for another account's Steam id is answered without being forwarded, and carries
                 // neither signal: it says nothing about this version.

@@ -193,6 +193,58 @@ class P2pSerializationTest {
         assertEquals(dto, roundTrip(dto))
     }
 
+    // ---- deadlines ------------------------------------------------------------------------------
+
+    @Test
+    fun heartbeat_response_carries_the_phase_and_create_deadlines() {
+        val json = """
+            {
+              "activeTracking": [
+                {"dealId":"d1","proofRequired":true,"deadlineTime":"2026-10-16T14:00:00Z"},
+                {"dealId":"d2","proofRequired":true}
+              ],
+              "directives": [
+                {"directiveId":"dir-1","action":"create_offer","dealId":"d3","deadlineTime":"2026-10-16T15:00:00Z"},
+                {"directiveId":"dir-2","action":"cancel_offer","dealId":"d1","steamOfferId":"8000000001"}
+              ],
+              "ttlSeconds": 92
+            }
+        """.trimIndent()
+        val domain = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain()
+
+        assertEquals(Instant.parse("2026-10-16T14:00:00Z"), domain.activeTracking[0].deadline)
+        assertNull(domain.activeTracking[1].deadline, "absent on a frozen deal, and from an older backend")
+        assertEquals(Instant.parse("2026-10-16T15:00:00Z"), domain.directives[0].deadline)
+        assertNull(domain.directives[1].deadline, "a cancel carries none")
+    }
+
+    /** Like a freshness mark: a deadline that cannot be read costs its own field, never the heartbeat. */
+    @Test
+    fun a_malformed_deadline_is_no_deadline_and_the_heartbeat_still_decodes() {
+        for (bad in listOf("\"\"", "\"soon\"", "\"1970-01-01T00:00:00Z\"", "\"0001-01-01T00:00:00Z\"", "null")) {
+            val json = """
+                {
+                  "activeTracking": [{"dealId":"d1","deadlineTime":$bad}],
+                  "directives": [{"directiveId":"dir-1","action":"create_offer","dealId":"d2","deadlineTime":$bad}],
+                  "ttlSeconds": 92
+                }
+            """.trimIndent()
+            val domain = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain()
+
+            assertNull(domain.activeTracking.single().deadline, bad)
+            assertNull(domain.directives.single().deadline, bad)
+            assertEquals(92, domain.ttlSeconds, bad)
+        }
+    }
+
+    @Test
+    fun tracked_deal_and_directive_round_trip_with_their_deadlines() {
+        val deal = TrackedDealDto(dealId = "d1", proofRequired = true, deadlineTime = "2026-10-16T14:00:00Z")
+        assertEquals(deal, roundTrip(deal))
+        val directive = DirectiveDto(directiveId = "dir-1", action = "create_offer", dealId = "d1", deadlineTime = "2026-10-16T14:00:00Z")
+        assertEquals(directive, roundTrip(directive))
+    }
+
     /**
      * protojson renders an unset proto3 **string** as `""`, and `TradeId`'s own `init require` throws on a
      * blank. Inside `toDomain()` that throw is not scoped to one deal: it aborts the whole heartbeat decode.

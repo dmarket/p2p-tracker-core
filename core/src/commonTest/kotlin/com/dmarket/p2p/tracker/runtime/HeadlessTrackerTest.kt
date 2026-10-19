@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
 import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
+import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
@@ -756,6 +757,28 @@ class HeadlessTrackerTest {
         tracker.cycle()
         assertEquals(false, tracker.state().updateRequired)
         assertNull(tracker.state().updateDueTime)
+    }
+
+    @Test
+    fun the_deal_deadlines_are_read_from_the_last_heartbeat() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","deadlineTime":"2026-10-16T14:00:00Z"},{"dealId":"deal-2"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-3","deadlineTime":"2026-10-16T15:00:00Z"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(
+            mapOf(DealId("deal-1") to Instant.parse("2026-10-16T14:00:00Z"), DealId("deal-3") to Instant.parse("2026-10-16T15:00:00Z")),
+            tracker.state().dealDeadlines,
+        )
+
+        heartbeatBody = """{"activeTracking":[{"dealId":"deal-1"}],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(emptyMap(), tracker.state().dealDeadlines, "a deadline the backend stops sending is gone")
     }
 
     // ---- 429 and jitter -----------------------------------------------------------------------------

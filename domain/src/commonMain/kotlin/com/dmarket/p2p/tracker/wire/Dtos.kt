@@ -85,6 +85,12 @@ data class TrackedDealDto(
      * throw on that — inside `toDomain()`, taking the whole heartbeat down rather than one deal.
      */
     @SerialName("proofSites") val proofSites: List<String>? = null,
+    /**
+     * RFC3339: when the phase this watch serves times out. Absent on a frozen or terminal deal, and from a
+     * backend that predates the field. A `String` for the same reason as [proveAfter]; see
+     * [com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.deadline].
+     */
+    @SerialName("deadlineTime") val deadlineTime: String? = null,
 )
 
 @Serializable
@@ -97,6 +103,8 @@ data class DirectiveDto(
     @SerialName("tradeToken") val tradeToken: String? = null,
     @SerialName("contextId") val contextId: Int = 0,
     @SerialName("steamOfferId") val steamOfferId: String? = null,
+    /** RFC3339: a `create_offer`'s create deadline. Absent on every other action, and from an older backend. */
+    @SerialName("deadlineTime") val deadlineTime: String? = null,
 ) {
     /**
      * Redacted: [tradeToken] is a bearer capability. This is also what `HeartbeatResponseDto.toString()`
@@ -106,7 +114,7 @@ data class DirectiveDto(
     override fun toString(): String = "DirectiveDto(directiveId=$directiveId, dealId=$dealId, action=$action, " +
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +
         "tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, " +
-        "contextId=$contextId, steamOfferId=$steamOfferId)"
+        "contextId=$contextId, steamOfferId=$steamOfferId, deadlineTime=$deadlineTime)"
 }
 
 @Serializable

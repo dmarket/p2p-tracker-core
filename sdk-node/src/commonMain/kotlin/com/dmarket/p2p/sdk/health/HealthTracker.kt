@@ -238,6 +238,7 @@ class HealthTracker(
         if (directiveFailures.isNotEmpty()) raise(ProblemCode.DIRECTIVE_FAILED, directiveFailures.values.first(), directiveFailures.keys)
 
         since.keys.retainAll(open.keys)
+        val deadlines = state.dealDeadlines.mapKeys { it.key.value }
         val problems = open.map { (code, detail) ->
             val first = since.getOrPut(code) { now }
             Problem(
@@ -245,7 +246,7 @@ class HealthTracker(
                 severity = code.severity.wireName,
                 since = first.toString(),
                 message = detail.first,
-                affectedDeals = detail.second.distinct().map { AffectedDeal(it) },
+                affectedDeals = detail.second.distinct().map { AffectedDeal(it, deadlines[it]?.toString()) },
             )
         }
         val worst = problems.maxOfOrNull { it.code.severity.rank } ?: Severity.INFO.rank

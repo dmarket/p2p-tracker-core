@@ -56,6 +56,8 @@ fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     steamTradeId = steamTradeId?.takeIf { it.isNotBlank() }?.let(::TradeId),
     proveAfter = proveAfter.toFreshnessMark(),
     proofSites = proofSites.orEmpty().map(ProofSite::fromWire).toSet(),
+    // Fail-open like a freshness mark: a malformed or zero deadline is no deadline, never a failed heartbeat.
+    deadline = deadlineTime.toFreshnessMark(),
 )
 
 /**
@@ -102,6 +104,7 @@ fun DirectiveDto.toDomain(): Directive = Directive(
     // Kept rather than discarded once [DirectiveAction.fromWire] has collapsed it: an action this build
     // does not know is reported back, and the report has to name what the backend asked for.
     rawAction = action.takeIf { it.isNotBlank() },
+    deadline = deadlineTime.toFreshnessMark(),
 )
 
 fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(

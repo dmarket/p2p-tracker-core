@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
+import kotlin.time.Instant
 
 /**
  * The one-shot commands the backend hands the tracker in a `HeartbeatResponse` (golden `Directive`).
@@ -62,12 +63,18 @@ data class Directive(
      * the report actionable on their side.
      */
     val rawAction: String? = null,
+    /**
+     * A `create_offer`'s create deadline: past it the backend gives up on the offer. `null` on every other
+     * action, on a `create_offer` re-served to a frozen deal, and from a backend that does not send it — and
+     * that is also what a malformed or zero value degrades to. Informational: nothing in the loop acts on it.
+     */
+    val deadline: Instant? = null,
 ) {
     /** Redacted: [tradeToken] is a bearer capability — see [com.dmarket.p2p.tracker.model.steam.TradeDraft]. */
     override fun toString(): String = "Directive(directiveId=$directiveId, action=$action, dealId=$dealId, " +
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +
         "tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, " +
-        "contextId=$contextId, steamOfferId=$steamOfferId, rawAction=$rawAction)"
+        "contextId=$contextId, steamOfferId=$steamOfferId, rawAction=$rawAction, deadline=$deadline)"
 }
 
 /**
