@@ -196,8 +196,10 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             // age independent of how long the notary takes, which is the only half of that race we own.
             val serverIo = lazyTargetChannel(onTrace = onProgress, connect = { connectTarget(request) })
             try {
-                prover.prove(notaryIo, serverIo, issuanceConfig(request), httpRequest(request), progressCallback())
+                val issued = prover.prove(notaryIo, serverIo, issuanceConfig(request), httpRequest(request), progressCallback())
                     .unsafeCast<Promise<dynamic>>().await()
+                host.onTargetResponse?.let { inspect -> targetStatus(issued)?.let(inspect) }
+                issued
             } finally {
                 // Whether `prove` closes its channels on every path is unconfirmed upstream; closing an
                 // already-closed WsIoChannel is a no-op, leaking two open sockets per failed proof is not.
@@ -252,6 +254,12 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             Unit
         }
     }
+}
+
+/** The target's HTTP status from a `ProveOutput`, or `null` when this build of the façade does not carry one. */
+private fun targetStatus(issued: dynamic): Int? {
+    val status = issued?.response?.status
+    return if (jsTypeOf(status) == "number") status.unsafeCast<Int>() else null
 }
 
 /** Reinterpret the presentation `Uint8Array` as a [ByteArray] — Kotlin/JS backs `ByteArray` with `Int8Array`. */

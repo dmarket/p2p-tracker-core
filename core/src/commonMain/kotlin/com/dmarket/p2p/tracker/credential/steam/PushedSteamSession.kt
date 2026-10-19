@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
+import com.dmarket.p2p.tracker.port.notary.SteamProofCookieSource
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -91,6 +92,13 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
     fun forgetLinkedAccount() {
         linkedNameCounts = false
     }
+
+    /**
+     * The Steam web session for a cookie-authenticated proven read, built from the held token while it is live and
+     * [sessionId], the `sessionid` value the tracker's writes send.
+     */
+    fun proofCookies(sessionId: String): SteamProofCookieSource =
+        HeaderSteamProofCookieSource({ held?.takeIf { it.expiresAt > clock.now() } }, sessionId)
 
     /** Hands the loop the held token, or `null` once it has expired: nothing here can renew it. */
     val scraper: SteamSessionScraper = object : SteamSessionScraper {

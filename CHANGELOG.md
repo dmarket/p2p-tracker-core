@@ -80,7 +80,23 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   - `BundledWasmProverModule` takes an optional `WasmProverHost`: where the prover's assets are, the
     compiled `.wasm` to hand to its init, the `WebSocket` constructor for each notary connect, and a
     connector for the target leg in place of the `wss://` proxy. Every member defaults to what the
-    extension does, so the browser path is unchanged.
+    extension does, so the browser path is unchanged. `WasmProverHost.onTargetResponse` is handed the
+    target's HTTP status before the presentation is built and can refuse it; unset, the status is not read.
+  - `HeadlessPlatform.proving` (`HeadlessProving`) lets `HeadlessTracker` prove through a host that runs the
+    prover itself (`ProofHost`), at most one proof at a time by default and two at most. `HostedNotaryProver`
+    hands each proof to the host as a credential-free `NotaryProofRequest` with the Steam token and session
+    id beside it (`HostedProofRequest`), and a `NotaryUpgradeSigner`: the host asks it for the notary upgrade's
+    `X-Api-Key`, `X-Sign-Date` and `X-Request-Sign` right before it connects, signed afresh each time over
+    `GET` of the notary URL's path with an empty body (`TradingApiNotaryUpgradeSigner`). The key never leaves
+    the tracker. No proof starts on a Steam token with under 30 minutes left (`PROOF_TOKEN_EXPIRING_REASON`).
+    The host answers `HostedProofOutcome`: a presentation, or a `ProofFailure` that keeps what ended the proof
+    apart (refused upgrade and its status, closed session and its code, unreachable notary, protocol version,
+    Steam leg, MPC limits, killed prover and why, not started); `ProofFailures.classify` reads one out of what a
+    host observed. Without `proving` the tracker makes no proof, as before.
+  - `runHostedProof` runs one such proof in a host's prover context with the wasm prover over the
+    `WasmProverHost` seams; the notary socket must authenticate by headers. `HeaderSteamProofCookieSource`
+    (and `PushedSteamSession.proofCookies`) builds the Steam web session a cookie-authenticated proven read
+    sends from the token. `TradingApiSignature.redact` blanks signed-header values in a log line.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed

@@ -11,6 +11,7 @@ import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.client.marketplace.TradingApiAuthenticator
+import com.dmarket.p2p.tracker.client.marketplace.TradingApiNotaryUpgradeSigner
 import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCanceller
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
@@ -45,6 +46,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
+import com.dmarket.p2p.tracker.notary.HostedNotaryProver
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
@@ -52,6 +54,7 @@ import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
@@ -77,6 +80,7 @@ import kotlin.uuid.Uuid
  * @property httpEngine the HTTP engine for both DMarket and Steam; `null` takes the platform's default.
  * @property signerFor builds the Ed25519 signer for a pushed key; throws when the key cannot sign. The platform's
  *   own by default.
+ * @property proving how proofs are made; `null` makes none (the no-op prover), as before.
  */
 class HeadlessPlatform(
     val storage: DeviceKeyValueStore,
@@ -84,6 +88,7 @@ class HeadlessPlatform(
     val eventObserver: EventObserver = NoOpEventObserver,
     val httpEngine: HttpClientEngine? = null,
     val signerFor: suspend (TradingApiKey) -> Ed25519Signer = ::platformEd25519Signer,
+    val proving: HeadlessProving? = null,
 )
 
 /**
@@ -134,7 +139,8 @@ data class HeadlessTrackerState(
  *    (nothing is kept across one), so it waits for both pushes again.
  *  - It serves one DMarket account: a pushed key for another one is refused ([pushTradingApiKey]).
  *
- * No proof is made yet.
+ * Proofs are made only when the platform supplies [HeadlessPlatform.proving]: its host runs each one, with the
+ * notary upgrade signed by the pushed key. No proof starts on a token with less than [MIN_WRITE_TOKEN_LIFETIME] left.
  *
  * Build one per process and Steam account: the persisted stores' locks are what serialise the loop's writes.
  *
@@ -172,6 +178,21 @@ class HeadlessTracker(
         if (event is LifecycleEvent.HeartbeatSent) steam.heartbeatReturned()
         platform.eventObserver.onEvent(event)
     }
+
+    private val steamSessionId = newSteamSessionId()
+    private val authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor)
+
+    /** What proves for the loop: the platform's host when it gave one, the no-op prover otherwise. */
+    internal val prover: NotaryProver = platform.proving?.let { proving ->
+        HostedNotaryProver(
+            host = proving.host,
+            upgrade = TradingApiNotaryUpgradeSigner(authenticator, tunables.notary.notaryUrl),
+            clock = clock,
+            steamSessionId = steamSessionId,
+            maxConcurrency = proving.maxConcurrency,
+            minTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
+        )
+    } ?: NoOpNotaryProver
 
     internal val loop: TradeTrackerLoop = buildLoop()
 
@@ -328,7 +349,7 @@ class HeadlessTracker(
             ?: createSteamHttpClient(requestTimeoutMs = requestTimeoutMs, secretParamNames = secretParams)
         val community = tunables.steamEndpoints.communityBaseUrl
         val adapter = Cs2GameAdapter(tunables.game)
-        val sessionId = newSteamSessionId()
+        val sessionId = steamSessionId
         val storage = platform.storage
         val creator = if (steamWrites) HeaderSessionSteamOfferCreator(steamHttp, sessionId, community, adapter) else RefusedOfferWrites
         val canceller = if (steamWrites) HeaderSessionSteamOfferCanceller(steamHttp, sessionId, community) else RefusedOfferWrites
@@ -348,7 +369,7 @@ class HeadlessTracker(
                 KtorMarketplaceClient(
                     httpClient = marketplaceHttp,
                     baseUrl = baseUrl,
-                    authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor),
+                    authenticator = authenticator,
                     retry = tunables.marketplaceRetry,
                     maxReportBodyBytes = tunables.http.maxReportBodyBytes ?: MAX_REPORT_BODY_BYTES,
                     onServerDate = ::heardServerDate,
@@ -360,7 +381,7 @@ class HeadlessTracker(
             deviceId = deviceIds,
             vault = steam.vault,
             clock = clock,
-            notary = NoOpNotaryProver,
+            notary = prover,
             offerCreator = creator,
             offerCanceller = canceller,
             inventoryReader = KtorSteamInventoryReader(

@@ -102,10 +102,36 @@ nothing on web. A host outside the browser replaces the ones it cannot use:
 | `notaryWebSocket()` | the global `WebSocket`; the transport's `connectNotary(url, token)` offers `tlsn.notary.v2, bearer.<token>` as subprotocols | return a `WebSocket` constructor that sends its own upgrade headers and drops the `bearer.` entry. It is passed as `connectNotary`'s `WebSocketImpl`, and asked for **before every connect**, so headers signed for one upgrade are never reused |
 | `connectTarget(serverName, port)` | the transport's `connectProxy` through `proxyBaseUrl` (`p2p-wss-proxy`), because a browser cannot open TCP | resolve an open `IoChannel` (`read()` → bytes or `null` at EOF, `write(bytes)`, idempotent `close()`) over a TCP socket. It is still dialled lazily, on the prover's first write, and `proxyBaseUrl` is then unused; the issuance trace line says `target=host` |
 
+A fifth member, `onTargetResponse(status)`, is handed the target's HTTP status once the issuance is done and before
+the presentation is built; throwing refuses the proof, so a host can decline to present an error page. `null` (the
+extension) does not read the status.
+
 This source set ships to the browser as well, so the library contains no Node code for any of these: the host
 builds the socket, the WebSocket and the compiled module and hands them in. The prover's threads are the other
 half of a Node host and are entirely its own: `pkg/`'s spawner starts browser `Worker`s, which Node does not
 have.
+
+## Proving from a headless host
+
+`HeadlessTracker` proves only when its platform supplies `HeadlessPlatform.proving`: a `ProofHost` that runs each
+proof where the prover can run (a Node host forks a process per proof), at most one at a time by default and two at
+most. The tracker's prover (`HostedNotaryProver`) hands the host:
+
+- a `HostedProofRequest`: the credential-free `NotaryProofRequest`, and beside it the Steam token the proven read
+  needs and the `sessionid` a cookie-authenticated read sends;
+- a `NotaryUpgradeSigner`. There is no DMarket session token to offer the notary: the gateway authenticates the
+  upgrade by the Trading API signature (`X-Api-Key`, `X-Sign-Date`, `X-Request-Sign` over `GET` of the notary
+  URL's path, trailing slash included, with an empty body). The host asks for headers right before its prover
+  connects, so start-up does not use up the signature's ±2 minute window, and a retried connect gets a fresh one.
+  The key itself never leaves the tracker.
+
+No proof starts on a Steam token with less than 30 minutes left. The host answers a presentation or a
+`ProofFailure`; `ProofFailures.classify` turns what it observed (the upgrade's status, the close code, Steam's
+status or dial error, the prover's message) into one, and the loop sees the failure as any prover's.
+
+The prover side is `runHostedProof(proof, config, host, now)`: the extension's wasm prover over the four seams,
+with `notaryWebSocket` required. It fills the transport's `bearer.` entry with a placeholder, which a
+header-authenticated socket drops; nothing in it reaches the notary.
 
 ## Bundling — the part that is easy to get silently wrong
 

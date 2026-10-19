@@ -3,7 +3,7 @@ package com.dmarket.p2p.tracker.notary
 import kotlin.js.Promise
 
 /**
- * Where [BundledWasmProverModule] gets its assets and its two IO channels. Every member is `null` by default,
+ * Where [BundledWasmProverModule] gets its assets and its two IO channels, and who sees the target's answer. Every member is `null` by default,
  * and `null` is exactly what the extension runs, so `WasmProverHost()` changes nothing on web.
  *
  * The seams exist for a host outside the browser, where each default is unavailable: there is no extension
@@ -26,10 +26,14 @@ import kotlin.js.Promise
  *   `IoChannel` (`read()` resolving `null` at EOF, `write(bytes)`, idempotent `close()`). Dialled lazily, on the
  *   prover's first write, exactly like the default (see [lazyTargetChannel]). `null`: the transport's
  *   `connectProxy` through `WasmProveRequest.proxyBaseUrl`, which this connector makes irrelevant.
+ * @property onTargetResponse is handed the HTTP status of the target's response once the issuance is done and
+ *   before the presentation is built; throwing refuses the proof, so a host can decline to present an error page.
+ *   `null`: the status is not looked at, and the presentation is built whatever it is.
  */
 class WasmProverHost(
     val assetUrl: ((path: String) -> String)? = null,
     val wasmModule: (suspend () -> Any)? = null,
     val notaryWebSocket: (suspend () -> Any)? = null,
     val connectTarget: ((serverName: String, port: Int) -> Promise<Any?>)? = null,
+    val onTargetResponse: ((status: Int) -> Unit)? = null,
 )

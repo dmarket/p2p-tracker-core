@@ -19,6 +19,21 @@ object TradingApiSignature {
 
     private const val SCHEME = "dmar ed25519 "
 
+    private const val REDACTED = "<redacted>"
+
+    /** A header name, its separator in a log's own spelling (`: `, `=`, `":"`), then the value up to its end. */
+    private val SIGNED_HEADER =
+        Regex("""\b(X-Api-Key|X-Sign-Date|X-Request-Sign)(["']?\s*[:=]\s*["']?)([^"',;\r\n}&]*)""", RegexOption.IGNORE_CASE)
+    private val SIGNATURE = Regex("""dmar ed25519 [0-9a-fA-F]+""")
+
+    /**
+     * [text] with the value of every signed header blanked, in the spellings a log line carries them (`Name: v`,
+     * `"Name":"v"`, `Name=v`), and any bare signature too. For text from a context that held the headers, such as
+     * a prover process's own output: a signature is good for minutes, and none may reach a log.
+     */
+    fun redact(text: String): String = SIGNED_HEADER.replace(text) { "${it.groupValues[1]}${it.groupValues[2]}$REDACTED" }
+        .replace(SIGNATURE, "dmar ed25519 $REDACTED")
+
     /** The exact string that is signed. */
     fun unsigned(method: String, pathAndQuery: String, body: String, timestamp: String): String = "$method$pathAndQuery$body$timestamp"
 
