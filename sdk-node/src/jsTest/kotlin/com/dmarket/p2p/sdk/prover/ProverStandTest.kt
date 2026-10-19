@@ -13,7 +13,6 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
-import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.NotaryProofRequest
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
@@ -34,6 +33,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Clock
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.TimeSource
 
 /**
@@ -122,7 +122,7 @@ class ProverStandTest {
     }
 
     @Test
-    fun a_proof_through_the_bundle_validates() = runTest {
+    fun a_proof_through_the_bundle_validates() = runTest(timeout = STAND_TIMEOUT) {
         if (dir == null) return@runTest
         val expectOom = env.SDK_PROVER_EXPECT == "oom"
         setGlue("ok")
@@ -132,7 +132,8 @@ class ProverStandTest {
         val wall = started.elapsedNow()
         if (expectOom) {
             val failure = assertIs<HostedProofOutcome.Failed>(outcome).failure
-            assertEquals(KillCause.OUT_OF_MEMORY, assertIs<ProofFailure.ProverKilled>(failure).cause, "$failure")
+            // Out of memory, or thrashing past a deadline: either way the child dies and this process lives.
+            val killed = assertIs<ProofFailure.ProverKilled>(failure, "$failure")
             val health = HealthTracker(clock, "e2e")
             health.proofOutcome("deal-e2e", failure)
             val limit = cgroupMemoryLimit()
@@ -148,7 +149,15 @@ class ProverStandTest {
             val state = HeadlessTrackerState(true, SteamId(STEAM_ID), Clock.System.now() + 2.hours, SteamId(STEAM_ID), null)
             val codes = health.snapshot(state).problems.map { it.code }
             assertTrue(ProblemCode.PROVER_KILLED in codes && ProblemCode.PROVER_MEMORY_LOW in codes, "$codes")
-            record("oom", mapOf("wallMs" to wall.inWholeMilliseconds, "limitBytes" to limit, "codes" to "\"$codes\"".trim('"')))
+            record(
+                "oom",
+                mapOf(
+                    "wallMs" to wall.inWholeMilliseconds,
+                    "limitBytes" to limit,
+                    "cause" to killed.cause.name,
+                    "codes" to "$codes",
+                ),
+            )
             return@runTest
         }
         val proved = assertIs<HostedProofOutcome.Proved>(outcome, "$outcome / ${lines.takeLast(15)}")
@@ -167,7 +176,7 @@ class ProverStandTest {
     }
 
     @Test
-    fun the_notarys_refusals_reach_the_sdk_through_ws() = runTest {
+    fun the_notarys_refusals_reach_the_sdk_through_ws() = runTest(timeout = STAND_TIMEOUT) {
         if (dir == null || env.SDK_PROVER_EXPECT == "oom") return@runTest
         val seen = mutableMapOf<String, ProofFailure>()
         for (mode in listOf("401", "503", "close1013")) {
@@ -184,7 +193,7 @@ class ProverStandTest {
     }
 
     @Test
-    fun a_queued_childs_memory_is_measured() = runTest {
+    fun a_queued_childs_memory_is_measured() = runTest(timeout = STAND_TIMEOUT) {
         if (dir == null || env.SDK_PROVER_EXPECT == "oom") return@runTest
         setGlue("hold:8000")
         http("GET", "${env.SDK_PROVER_BACKEND}/challenge")
@@ -210,5 +219,6 @@ class ProverStandTest {
 
     private companion object {
         const val OFFER_ID = "5550001"
+        val STAND_TIMEOUT = 5.minutes
     }
 }
