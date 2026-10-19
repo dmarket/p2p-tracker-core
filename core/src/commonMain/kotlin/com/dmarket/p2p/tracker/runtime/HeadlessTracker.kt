@@ -133,6 +133,8 @@ data class HeadlessTrackerState(
  *    host pushes a fresh one.
  *  - The account binding fails closed (`requireLinkedSteamId`), and no create starts on a token with less than
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
+ *  - A `create_offer` that never reached Steam — refused by the account or buyer-role guard, or deferred — is never
+ *    reported `FAILED`, which DMarket reads as the seller failing to deliver; its lease lapses instead.
  *  - `foreground` follows the token, not a mode: `true` only while the account is bound to the token's and the token
  *    has [MIN_WRITE_TOKEN_LIFETIME] left. DMarket counts the tracker present only then.
  *  - It does not heartbeat at all until a key and a live token are held. Once a heartbeat has bound the account, a
@@ -370,6 +372,7 @@ class HeadlessTracker(
                 foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
+                reportUnsentCreates = false,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(

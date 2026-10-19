@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.config.CadenceConfig
 import com.dmarket.p2p.tracker.config.NotaryBreakerConfig
+import com.dmarket.p2p.tracker.config.SteamWriteConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
@@ -173,6 +174,7 @@ class TradeTrackerLoopTest {
         ),
         requireLinkedSteamId: Boolean = false,
         minWriteTokenLifetime: Duration? = null,
+        reportUnsentCreates: Boolean = true,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -189,6 +191,7 @@ class TradeTrackerLoopTest {
                 tunables,
                 requireLinkedSteamId,
                 minWriteTokenLifetime,
+                reportUnsentCreates = reportUnsentCreates,
             ),
             marketplace = marketplace,
             steamReader = reader,
@@ -5542,5 +5545,65 @@ class TradeTrackerLoopTest {
         val sessionless = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60))
         loop(marketplace = sessionless, credential = false).runOnce()
         assertTrue(sessionless.heartbeatsSent.isEmpty(), "no Steam session, no heartbeat")
+    }
+
+    // ---- a create that never reached Steam, where FAILED would fault the seller ---------------------
+
+    @Test
+    fun with_unsent_creates_unreported_a_buyer_role_create_is_dropped_and_a_cancel_still_answered() = runTest {
+        val observer = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked(role = DealRole.BUYER)),
+                directives = listOf(createDirective(), cancelDirective()),
+                ttlSeconds = 60,
+            ),
+        )
+        loop(marketplace = mp, directivesEnabled = true, eventObserver = observer, reportUnsentCreates = false).runOnce()
+
+        assertEquals(listOf(DirectiveId("dir-c1")), mp.directiveOutcomes.map { it.directiveId }, "only the cancel is answered")
+        assertTrue(
+            observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().any { it.directiveId == "dir-1" },
+            "the create is dropped out loud",
+        )
+        assertTrue(
+            observer.events.filterIsInstance<LifecycleEvent.DirectiveExecuted>().none { it.kind == "create_offer" },
+            "and not as a failed execution",
+        )
+    }
+
+    @Test
+    fun with_unsent_creates_unreported_a_deferred_create_is_never_reported_even_when_throttled_writes_are() = runTest {
+        val clock = FakeClock()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked(role = DealRole.SELLER)),
+                directives = listOf(createDirective()),
+                ttlSeconds = 60,
+            ),
+        )
+        val creator = FakeSteamOfferCreator()
+        loop(
+            marketplace = mp,
+            creator = creator,
+            directivesEnabled = true,
+            clock = clock,
+            tunables = TrackerConfig(steamWrites = SteamWriteConfig(reportThrottledWrites = true)),
+            minWriteTokenLifetime = 1000.hours,
+            reportUnsentCreates = false,
+        ).runOnce()
+
+        assertTrue(creator.created.isEmpty())
+        assertTrue(mp.directiveOutcomes.isEmpty(), "deferred for the token: never FAILED")
+    }
+
+    @Test
+    fun with_unsent_creates_unreported_a_host_create_on_another_accounts_session_is_not_reported() = runTest {
+        val mp = FakeMarketplaceClient()
+        val result = loop(marketplace = mp, sessionRefresher = wrongAccountCookie(), reportUnsentCreates = false)
+            .createTrade(DirectiveId("dir-ft"), DealId("deal-ft"), draft(), linkedSteamId = matchingSteamId)
+
+        assertIs<CreateOfferResult.AccountMismatch>(result)
+        assertTrue(mp.directiveOutcomes.isEmpty(), "nothing reached Steam, so nothing is reported")
     }
 }

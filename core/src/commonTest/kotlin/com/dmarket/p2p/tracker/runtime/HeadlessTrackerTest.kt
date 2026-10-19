@@ -332,6 +332,30 @@ class HeadlessTrackerTest {
     }
 
     @Test
+    fun a_create_that_never_reached_steam_is_never_reported_failed() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"buyer"},
+                               {"dealId":"deal-2","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[
+               {"directiveId":"dir-1","action":"create_offer","dealId":"deal-1","partnerSteamId":"$OTHER_STEAM_ID",
+                "assetIds":["asset-7"],"tradeToken":"tok","contextId":2},
+               {"directiveId":"dir-2","action":"create_offer","dealId":"deal-2","partnerSteamId":"$OTHER_STEAM_ID",
+                "assetIds":["asset-8"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 20.minutes))
+        tracker.cycle()
+
+        assertTrue(requests.none { "/tradeoffer/" in it.url.encodedPath })
+        assertTrue(
+            requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") },
+            "a buyer-role create and a create held back for the token are left to lapse, not answered FAILED",
+        )
+    }
+
+    @Test
     fun a_report_batch_is_split_under_the_headless_body_cap() = runTest {
         // A hundred refused directives answer in one /trade-actions batch, well past 7 KiB on the wire.
         val directives = (1..100).joinToString(",") { """{"directiveId":"dir-$it","action":"frobnicate_offer","dealId":"deal-$it"}""" }

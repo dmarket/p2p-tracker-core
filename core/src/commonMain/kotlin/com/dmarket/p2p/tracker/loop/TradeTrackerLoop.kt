@@ -404,15 +404,19 @@ class TradeTrackerLoop(
         // Evaluated before the `||` so its own event always fires; the sticky is the extra fail-closed leg.
         val allowed = accountAllowsWrite(expected, credential.subjectSteamId, DirectiveAction.CREATE_OFFER.wireName)
         if (!allowed || linkedSteamIdMismatch) {
-            reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR))
-            emit(
-                LifecycleEvent.DirectiveExecuted(
-                    "create_offer",
-                    DirectiveStatus.FAILED.name,
-                    dealId = dealId?.value,
-                    error = ACCOUNT_MISMATCH_ERROR,
-                ),
-            )
+            if (config.reportUnsentCreates) {
+                reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR))
+                emit(
+                    LifecycleEvent.DirectiveExecuted(
+                        "create_offer",
+                        DirectiveStatus.FAILED.name,
+                        dealId = dealId?.value,
+                        error = ACCOUNT_MISMATCH_ERROR,
+                    ),
+                )
+            } else {
+                emit(LifecycleEvent.DirectiveDropped(DirectiveAction.CREATE_OFFER.wireName, directiveId.value, ACCOUNT_MISMATCH_ERROR))
+            }
             return CreateOfferResult.AccountMismatch(expected ?: credential.subjectSteamId, credential.subjectSteamId)
         }
         // Role guard. This path needs it most: the host synthesises the directive itself, so the backend's
@@ -751,8 +755,11 @@ class TradeTrackerLoop(
      */
     private suspend fun roleAllowsWrite(activeTracking: List<TrackedDeal>?, directive: Directive): Boolean {
         if (DealRoleBinding.allowsWrite(activeTracking, directive.dealId)) return true
-        reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = BUYER_ROLE_WRITE_ERROR))
+        // A create that never reached Steam is not answered FAILED where that would fault the seller.
+        val report = directive.action != DirectiveAction.CREATE_OFFER || config.reportUnsentCreates
+        if (report) reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = BUYER_ROLE_WRITE_ERROR))
         emit(LifecycleEvent.DirectiveDropped(directive.action.wireName, directive.directiveId.value, BUYER_ROLE_WRITE_ERROR))
+        if (!report) return false
         emit(
             LifecycleEvent.DirectiveExecuted(
                 directive.action.wireName,
@@ -829,7 +836,7 @@ class TradeTrackerLoop(
      */
     private suspend fun emitDeferredCreate(directive: Directive, reason: String, retryAfterSeconds: Int?) {
         emitDeferred(directive.directiveId, directive.dealId, reason, retryAfterSeconds)
-        if (!config.tunables.steamWrites.reportThrottledWrites) return
+        if (!config.tunables.steamWrites.reportThrottledWrites || !config.reportUnsentCreates) return
         reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = "$THROTTLED_WRITE_ERROR: $reason"))
     }
 
@@ -1951,6 +1958,10 @@ class TradeTrackerLoop(
         // markHandled — nothing was written, so a re-lease is simply re-blocked (safely idempotent).
         // It also ends the chain: the session is wrong for every deal, not just this one.
         if (!accountAllowsWrite(linkedSteamId, credential.subjectSteamId, directive.action.wireName)) {
+            if (!config.reportUnsentCreates) {
+                emit(LifecycleEvent.DirectiveDropped(directive.action.wireName, directive.directiveId.value, ACCOUNT_MISMATCH_ERROR))
+                return WriteAttempt(stopChain = true, reason = ACCOUNT_MISMATCH_ERROR)
+            }
             emit(
                 LifecycleEvent.DirectiveExecuted(
                     "create_offer",
