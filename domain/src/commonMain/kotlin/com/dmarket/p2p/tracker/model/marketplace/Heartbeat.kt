@@ -209,6 +209,10 @@ fun TrackedDeal.mayProveOn(source: TradeStatusSource): Boolean = watch.none { it
  * session — the browser logged into a *different* Steam account than the DMarket profile is linked to —
  * and blocks all Steam activity until they agree. `null` when the backend hasn't supplied it (older
  * backend), which is treated as "unknown", never a mismatch.
+ *
+ * [updateRequired] says this client's version is below DMarket's minimum for its platform, in force now;
+ * [updateDueTime] when a minimum it is below comes into force (`null`: none scheduled). Both are absent from a
+ * heartbeat the gateway answers without forwarding it (one for another account's Steam id).
  */
 data class HeartbeatResponse(
     val activeTracking: List<TrackedDeal> = emptyList(),
@@ -216,4 +220,6 @@ data class HeartbeatResponse(
     val serverTime: Instant? = null,
     val ttlSeconds: Int = 0,
     val linkedSteamId: SteamId? = null,
+    val updateRequired: Boolean = false,
+    val updateDueTime: Instant? = null,
 )

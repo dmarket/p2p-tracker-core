@@ -265,6 +265,25 @@ class SdkRuntimeTest {
     }
 
     @Test
+    fun below_the_minimum_version_the_sdk_is_degraded_and_keeps_serving_its_deals() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1","partnerSteamId":"$OTHER_STEAM_ID",
+               "assetIds":["asset-7"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID","updateRequired":true}
+        """.trimIndent()
+        val sdk = runtime()
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        sdk.putSteamToken(token)
+        sdk.tracker.cycle()
+
+        val health = sdk.health()
+        assertEquals(ProblemCode.SDK_UPDATE_REQUIRED, health.problems.first().code, "${health.problems}")
+        assertEquals("degraded", health.status)
+        assertTrue(requested.any { it.endsWith("/tradeoffer/new/send") }, "the create still goes out: $requested")
+    }
+
+    @Test
     fun the_log_records_every_push_and_no_secret_reaches_it_or_health() = runTest {
         val sdk = runtime()
         sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY)

@@ -172,6 +172,14 @@ class HealthTracker(
             val named = linked?.let { "DMarket links $it" } ?: "DMarket has not named the linked account yet"
             raise(ProblemCode.STEAM_WRONG_ACCOUNT, "the Steam token is for $token; $named", dealsTracked)
         }
+        // Below the minimum the SDK still finishes its deals: degraded, not down. A scheduled minimum is only news.
+        if (state.updateRequired) {
+            raise(ProblemCode.SDK_UPDATE_REQUIRED, "this SDK version ($version) is below DMarket's minimum: update it")
+        } else {
+            state.updateDueTime?.let {
+                raise(ProblemCode.SDK_UPDATE_DUE, "DMarket's minimum SDK version moves above $version at $it: update before then")
+            }
+        }
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)

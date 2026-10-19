@@ -28,6 +28,8 @@ class HealthTrackerTest {
         tracked: List<String> = emptyList(),
         clockOffset: Duration? = null,
         steamNotLinked: Boolean = false,
+        updateRequired: Boolean = false,
+        updateDueTime: Instant? = null,
     ) = HeadlessTrackerState(
         hasTradingApiKey = hasKey,
         steamTokenSteamId = tokenExpiresIn?.let { SteamId(STEAM_ID) },
@@ -37,6 +39,8 @@ class HealthTrackerTest {
         trackedDealIds = tracked.map(::DealId),
         clockOffset = clockOffset,
         steamNotLinked = steamNotLinked,
+        updateRequired = updateRequired,
+        updateDueTime = updateDueTime,
     )
 
     private fun codes(state: HeadlessTrackerState = state()) = tracker.snapshot(state).problems.map { it.code }
@@ -230,5 +234,20 @@ class HealthTrackerTest {
         assertEquals("down", health.status)
         clock.advance(10.minutes)
         assertEquals(listOf(ProblemCode.STEAM_NOT_LINKED), codes(state(steamNotLinked = true, readySince = T0)))
+    }
+
+    @Test
+    fun a_minimum_in_force_degrades_and_a_scheduled_one_is_only_news() {
+        val due = tracker.snapshot(state(updateDueTime = T0 + 72.hours))
+        val news = due.problems.single()
+        assertEquals(ProblemCode.SDK_UPDATE_DUE, news.code)
+        assertEquals("info", news.severity)
+        assertTrue((T0 + 72.hours).toString() in news.message, news.message)
+        assertEquals("ok", due.status, "info only is ok")
+
+        val required = tracker.snapshot(state(updateRequired = true, updateDueTime = T0))
+        assertEquals(listOf(ProblemCode.SDK_UPDATE_REQUIRED), required.problems.map { it.code })
+        assertEquals("degraded", required.status, "below the minimum the SDK still serves its deals")
+        assertTrue(!required.isDown)
     }
 }

@@ -112,6 +112,8 @@ class HeadlessPlatform(
  *   before a reply. Past [HeadlessTracker.MAX_CLOCK_SKEW] the gateway refuses every signature.
  * @property steamNotLinked whether the last heartbeat was refused because the DMarket account links no Steam
  *   account (`403 P2P_STEAM_NOT_LINKED`); cleared by the next heartbeat that comes back.
+ * @property updateRequired whether the last heartbeat said this version is below DMarket's minimum for the platform.
+ * @property updateDueTime when, per the last heartbeat, a minimum this version is below comes into force.
  */
 data class HeadlessTrackerState(
     val hasTradingApiKey: Boolean,
@@ -122,6 +124,8 @@ data class HeadlessTrackerState(
     val trackedDealIds: List<DealId> = emptyList(),
     val clockOffset: Duration? = null,
     val steamNotLinked: Boolean = false,
+    val updateRequired: Boolean = false,
+    val updateDueTime: Instant? = null,
 ) {
     /** Whether [clockOffset] is past what the gateway's signature check allows. */
     val clockSkewed: Boolean get() = clockOffset?.let { it.absoluteValue > HeadlessTracker.MAX_CLOCK_SKEW } ?: false
@@ -186,6 +190,8 @@ class HeadlessTracker(
     private var clockOffset: Duration? = null
     private var steamNotLinked = false
     private var rateLimitedUntil: Instant? = null
+    private var updateRequired = false
+    private var updateDueTime: Instant? = null
     private var rateLimitStreak = 0
 
     private val observer = EventObserver { event ->
@@ -355,6 +361,8 @@ class HeadlessTracker(
             trackedDealIds = loop.trackedDealIds,
             clockOffset = clockOffset,
             steamNotLinked = steamNotLinked,
+            updateRequired = updateRequired,
+            updateDueTime = updateDueTime,
         )
     }
 
@@ -374,6 +382,12 @@ class HeadlessTracker(
             watched { client.heartbeat(request) }.also { response ->
                 steamNotLinked = false
                 response.linkedSteamId?.let { storage.confirm(it) }
+                // A heartbeat for another account's Steam id is answered without being forwarded, and carries
+                // neither signal: it says nothing about this version.
+                if (response.linkedSteamId == request.steamId) {
+                    updateRequired = response.updateRequired
+                    updateDueTime = response.updateDueTime
+                }
             }
         } catch (e: MarketplaceServerErrorException) {
             steamNotLinked = e.errorCode == STEAM_NOT_LINKED_CODE

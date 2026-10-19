@@ -110,6 +110,9 @@ fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(
     serverTime = serverTime?.takeIf { it.isNotBlank() }?.let(Instant::parse),
     ttlSeconds = ttlSeconds,
     linkedSteamId = linkedSteamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
+    updateRequired = updateRequired,
+    // Fail-open like a freshness mark: a malformed or zero time is no schedule, never a failed heartbeat.
+    updateDueTime = updateDueTime.toFreshnessMark(),
 )
 
 // ---- trade-events (ReportTradeStatus) ----------------------------------------------------------

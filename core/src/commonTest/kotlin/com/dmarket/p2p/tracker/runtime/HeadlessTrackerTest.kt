@@ -736,6 +736,28 @@ class HeadlessTrackerTest {
         assertTrue(linkedDevice != probe, "the first heartbeat's id was the other account's and leased nothing")
     }
 
+    @Test
+    fun the_minimum_version_signals_are_read_from_a_forwarded_heartbeat_only() = runTest {
+        heartbeatBody = """{"ttlSeconds":100,"linkedSteamId":"$STEAM_ID","updateRequired":true,"updateDueTime":"2026-11-01T00:00:00Z"}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(true, tracker.state().updateRequired)
+        assertEquals(Instant.parse("2026-11-01T00:00:00Z"), tracker.state().updateDueTime)
+
+        heartbeatBody = """{"ttlSeconds":100,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(true, tracker.state().updateRequired, "another account's answer says nothing about this version")
+
+        heartbeatBody = """{"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(false, tracker.state().updateRequired)
+        assertNull(tracker.state().updateDueTime)
+    }
+
     // ---- 429 and jitter -----------------------------------------------------------------------------
 
     /** Every draw is 0: no jitter. */

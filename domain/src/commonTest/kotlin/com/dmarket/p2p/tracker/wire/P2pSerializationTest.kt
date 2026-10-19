@@ -149,6 +149,22 @@ class P2pSerializationTest {
     // ---- proof sites ----------------------------------------------------------------------------
 
     @Test
+    fun heartbeat_response_carries_the_minimum_version_signals() {
+        val json = """{"ttlSeconds":100,"updateRequired":true,"updateDueTime":"2026-11-01T00:00:00Z"}"""
+        val domain = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain()
+        assertEquals(true, domain.updateRequired)
+        assertEquals(Instant.parse("2026-11-01T00:00:00Z"), domain.updateDueTime)
+
+        val older = TrackerJson.decodeFromString<HeartbeatResponseDto>("""{"ttlSeconds":100}""").toDomain()
+        assertEquals(false, older.updateRequired, "absent from an older gateway")
+        assertEquals(null, older.updateDueTime)
+        for (bad in listOf("", "soon", "1970-01-01T00:00:00Z")) {
+            val dto = TrackerJson.decodeFromString<HeartbeatResponseDto>("""{"ttlSeconds":100,"updateDueTime":"$bad"}""")
+            assertEquals(null, dto.toDomain().updateDueTime, "a malformed time is no schedule, not a failed heartbeat: $bad")
+        }
+    }
+
+    @Test
     fun heartbeat_response_carries_the_enforced_proof_sites() {
         val json = """
             {

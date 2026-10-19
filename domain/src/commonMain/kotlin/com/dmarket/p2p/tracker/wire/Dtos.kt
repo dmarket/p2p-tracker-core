@@ -116,6 +116,10 @@ data class HeartbeatResponseDto(
     @SerialName("serverTime") val serverTime: String? = null,
     @SerialName("ttlSeconds") val ttlSeconds: Int = 0,
     @SerialName("linkedSteamId") val linkedSteamId: String? = null,
+    /** This client's version is below DMarket's minimum for its platform. Absent from an older gateway: `false`. */
+    @SerialName("updateRequired") val updateRequired: Boolean = false,
+    /** RFC3339: when a minimum this client's version is below comes into force. Absent or blank: none scheduled. */
+    @SerialName("updateDueTime") val updateDueTime: String? = null,
 )
 
 // ---- POST /trade-events (ReportTradeStatus — raw codes, no proof) ------------------------------
