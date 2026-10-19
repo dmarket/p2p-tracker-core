@@ -100,16 +100,20 @@ class SdkRuntimeTest {
     }
 
     @Test
-    fun health_follows_the_held_token_and_the_loops_events() = runTest {
-        heartbeatBody = """{"activeTracking":[],"ttlSeconds":100}"""
+    fun health_follows_the_held_token_and_the_tracked_deals() = runTest {
+        heartbeatBody =
+            """{"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"]}],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
         val sdk = runtime()
         sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
-        sdk.putSteamToken(token)
+        sdk.putSteamToken(steamToken(exp = T0 + 3.hours))
         sdk.tracker.cycle()
 
         val health = sdk.health()
-        assertEquals(listOf(ProblemCode.STEAM_ACCOUNT_UNKNOWN), health.problems.map { it.code }, "the loop's event reached health")
-        assertEquals((T0 + 24.hours).toString(), health.steamTokenExpiresAt)
+        val problem = health.problems.single()
+        assertEquals(ProblemCode.STEAM_TOKEN_EXPIRING, problem.code)
+        assertEquals(listOf("deal-1"), problem.affectedDeals.map { it.dealId }, "the heartbeat's deals reached health")
+        assertEquals("degraded", health.status)
+        assertEquals((T0 + 3.hours).toString(), health.steamTokenExpiresAt)
         assertEquals(T0.toString(), health.lastHeartbeatAt)
     }
 

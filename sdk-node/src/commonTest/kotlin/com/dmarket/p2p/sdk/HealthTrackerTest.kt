@@ -2,7 +2,9 @@ package com.dmarket.p2p.sdk
 
 import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.health.ProblemCode
+import com.dmarket.p2p.sdk.health.Severity
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
+import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
@@ -18,12 +20,18 @@ import kotlin.time.Instant
 class HealthTrackerTest {
     private val clock = TestClock()
     private val tracker = HealthTracker(clock, version = "1.2.3")
-    private fun state(hasKey: Boolean = true, tokenExpiresIn: Duration? = 24.hours, readySince: Instant? = null) = HeadlessTrackerState(
+    private fun state(
+        hasKey: Boolean = true,
+        tokenExpiresIn: Duration? = 24.hours,
+        readySince: Instant? = null,
+        tracked: List<String> = emptyList(),
+    ) = HeadlessTrackerState(
         hasTradingApiKey = hasKey,
         steamTokenSteamId = tokenExpiresIn?.let { SteamId(STEAM_ID) },
         steamTokenExpiresAt = tokenExpiresIn?.let { T0 + it },
         linkedSteamId = SteamId(STEAM_ID),
         readySince = readySince,
+        trackedDealIds = tracked.map(::DealId),
     )
 
     private fun codes(state: HeadlessTrackerState = state()) = tracker.snapshot(state).problems.map { it.code }
@@ -32,18 +40,64 @@ class HealthTrackerTest {
     fun a_fresh_start_reports_both_missing_secrets_and_is_down() {
         val health = tracker.snapshot(state(hasKey = false, tokenExpiresIn = null))
         assertEquals(listOf(ProblemCode.DMARKET_KEY_MISSING, ProblemCode.STEAM_TOKEN_MISSING), health.problems.map { it.code })
+        assertEquals(listOf("down", "degraded"), health.problems.map { it.severity })
         assertEquals("down", health.status)
+        assertTrue(health.isDown)
         assertEquals("1.2.3", health.version)
     }
 
     @Test
-    fun a_token_with_less_than_four_hours_left_degrades_and_an_expired_one_blocks() {
+    fun down_is_only_what_stops_the_heartbeat_and_info_is_only_a_scheduled_update() {
+        val down = ProblemCode.entries.filter { it.severity == Severity.DOWN }
+        assertEquals(
+            setOf(
+                ProblemCode.DMARKET_KEY_MISSING,
+                ProblemCode.DMARKET_AUTH_FAILED,
+                ProblemCode.CLOCK_SKEW,
+                ProblemCode.DMARKET_UNREACHABLE,
+                ProblemCode.STEAM_NOT_LINKED,
+            ),
+            down.toSet(),
+        )
+        assertEquals(listOf(ProblemCode.SDK_UPDATE_DUE), ProblemCode.entries.filter { it.severity == Severity.INFO })
+        assertEquals(Severity.DEGRADED, ProblemCode.SDK_UPDATE_REQUIRED.severity, "below the minimum the SDK still serves its deals")
+    }
+
+    @Test
+    fun status_is_the_worst_open_severity() = runTest {
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = "deal-1", error = "(26)"))
+        assertEquals("degraded", tracker.snapshot(state()).status)
+        tracker.onEvent(LifecycleEvent.MarketplaceServerError("heartbeat", 502))
+        val health = tracker.snapshot(state())
+        assertEquals("down", health.status)
+        assertEquals(listOf("down", "degraded"), health.problems.map { it.severity })
+    }
+
+    @Test
+    fun a_token_with_less_than_four_hours_left_or_expired_degrades() {
         val expiring = tracker.snapshot(state(tokenExpiresIn = 3.hours))
         assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRING), expiring.problems.map { it.code })
         assertEquals("degraded", expiring.status)
         assertEquals((T0 + 3.hours).toString(), expiring.steamTokenExpiresAt)
 
-        assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED), codes(state(tokenExpiresIn = (-1).minutes)))
+        val expired = tracker.snapshot(state(tokenExpiresIn = (-1).minutes))
+        assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED), expired.problems.map { it.code })
+        assertEquals("degraded", expired.status, "the SDK still heartbeats without a usable token")
+    }
+
+    @Test
+    fun an_expiring_token_names_the_tracked_deals_and_the_creates_held_back_for_it() = runTest {
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.SteamWriteDeferred("create_offer", "dir-9", TOKEN_EXPIRING_DEFER_REASON, dealId = "deal-9"))
+        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 2))
+        val problem = tracker.snapshot(state(tokenExpiresIn = 20.minutes, tracked = listOf("deal-1", "deal-9"))).problems.single()
+        assertEquals(ProblemCode.STEAM_TOKEN_EXPIRING, problem.code)
+        assertEquals(listOf("deal-1", "deal-9"), problem.affectedDeals.map { it.dealId })
+
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 0))
+        val later = tracker.snapshot(state(tokenExpiresIn = 20.minutes)).problems.single()
+        assertTrue(later.affectedDeals.isEmpty(), "a cycle with nothing held back and nothing tracked names no deal: $later")
     }
 
     @Test

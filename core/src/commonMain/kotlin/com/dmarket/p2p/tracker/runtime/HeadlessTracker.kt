@@ -33,6 +33,7 @@ import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
+import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
@@ -86,6 +87,7 @@ class HeadlessPlatform(
  * @property linkedSteamId the Steam account the last heartbeat named as linked to the DMarket account.
  * @property readySince since when, as of the last cycle, a key and a live token have both been held; `null` while
  *   they are not. A heartbeat is owed only from then.
+ * @property trackedDealIds the deals the last heartbeat asked this device to track.
  */
 data class HeadlessTrackerState(
     val hasTradingApiKey: Boolean,
@@ -93,6 +95,7 @@ data class HeadlessTrackerState(
     val steamTokenExpiresAt: Instant?,
     val linkedSteamId: SteamId?,
     val readySince: Instant?,
+    val trackedDealIds: List<DealId> = emptyList(),
 )
 
 /**
@@ -244,6 +247,7 @@ class HeadlessTracker(
             steamTokenExpiresAt = credential?.expiresAt,
             linkedSteamId = loop.linkedSteamId,
             readySince = readySince,
+            trackedDealIds = loop.trackedDealIds,
         )
     }
 

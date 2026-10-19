@@ -13,8 +13,11 @@ class ManagementApiTest {
     private val secret = "s".repeat(40)
     private val bearer = "Bearer $secret"
 
-    private class RecordingActions(var steamOutcome: PushOutcome = PushOutcome.Held, var keyOutcome: PushOutcome = PushOutcome.Held) :
-        ManagementActions {
+    private class RecordingActions(
+        var steamOutcome: PushOutcome = PushOutcome.Held,
+        var keyOutcome: PushOutcome = PushOutcome.Held,
+        var status: String = "ok",
+    ) : ManagementActions {
         val keys = mutableListOf<Pair<String, String>>()
         val tokens = mutableListOf<String>()
 
@@ -28,7 +31,7 @@ class ManagementApiTest {
             return steamOutcome
         }
 
-        override fun health(): Health = Health(status = "ok", problems = emptyList(), version = "1.2.3")
+        override fun health(): Health = Health(status = status, problems = emptyList(), version = "1.2.3")
     }
 
     @Test
@@ -85,6 +88,19 @@ class ManagementApiTest {
         val response = api.handle("PUT", ManagementApi.KEY_PATH, bearer, """{"publicKey":"pub","secretKey":"leaked-secret"""")
         assertEquals(400, response.status)
         assertTrue("leaked-secret" !in response.body, response.body)
+    }
+
+    @Test
+    fun health_answers_503_while_down_and_200_otherwise() = runTest {
+        val actions = RecordingActions(status = "down")
+        val api = ManagementApi(secret, actions)
+        val down = api.handle("GET", ManagementApi.HEALTH_PATH, bearer, "")
+        assertEquals(503, down.status)
+        assertTrue(""""status":"down"""" in down.body, down.body)
+        for (status in listOf("degraded", "ok")) {
+            actions.status = status
+            assertEquals(200, api.handle("GET", ManagementApi.HEALTH_PATH, bearer, "").status, status)
+        }
     }
 
     @Test

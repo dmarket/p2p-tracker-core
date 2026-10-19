@@ -38,7 +38,7 @@ interface ManagementActions {
  *   when the key's check heartbeat does not come back. The held key stays on every refusal.
  * - `PUT /v1/steam/session {accessToken}` → `204`; `400` for a token the SDK will not hold; `409
  *   STEAM_WRONG_ACCOUNT` for a token of another Steam account (the held one stays).
- * - `GET /v1/health` → `200` with [Health].
+ * - `GET /v1/health` → [Health]: `503` while it is `down` (the SDK counts as absent to DMarket), `200` otherwise.
  *
  * Every route requires `Authorization: Bearer <managementSecret>`; anything else is `401` before the body is
  * read. Both pushes are write-only: no answer, error or log line repeats what was pushed.
@@ -51,15 +51,15 @@ class ManagementApi(private val managementSecret: String, private val actions: M
         return when (route) {
             KEY_PATH -> if (method == "PUT") putKey(body) else methodNotAllowed()
             STEAM_PATH -> if (method == "PUT") putSteam(body) else methodNotAllowed()
-            HEALTH_PATH -> if (method ==
-                "GET"
-            ) {
-                ApiResponse(200, json.encodeToString(Health.serializer(), actions.health()))
-            } else {
-                methodNotAllowed()
-            }
+            HEALTH_PATH -> if (method == "GET") health() else methodNotAllowed()
             else -> error(404, "NOT_FOUND", "no such route")
         }
+    }
+
+    /** `down` answers 503, so a container health check marks the SDK unhealthy; the body is the same either way. */
+    private fun health(): ApiResponse {
+        val health = actions.health()
+        return ApiResponse(if (health.isDown) 503 else 200, json.encodeToString(Health.serializer(), health))
     }
 
     private suspend fun putKey(body: String): ApiResponse {

@@ -33,11 +33,12 @@ class HealthTracker(
     private var wrongAccount: Pair<String?, String>? = null
     private var refusedPush: Pair<String?, String>? = null
     private var refusedKey: Pair<String, String?>? = null
-    private var accountUnknown = false
     private var steamRead: Pair<ProblemCode, String>? = null
     private var readFailedThisCycle = false
     private val throttledDeals = linkedSetOf<String>()
     private var throttledThisCycle = false
+    private val tokenHeldDeals = linkedSetOf<String>()
+    private var tokenHeldThisCycle = false
     private val directiveFailures = linkedMapOf<String, String>()
     private val proofFailures = linkedMapOf<String, String>()
     private val since = mutableMapOf<ProblemCode, Instant>()
@@ -47,30 +48,35 @@ class HealthTracker(
             is LifecycleEvent.CycleStarted -> {
                 readFailedThisCycle = false
                 throttledThisCycle = false
+                tokenHeldThisCycle = false
             }
             is LifecycleEvent.HeartbeatSent -> {
                 lastHeartbeatAt = clock.now()
                 dmarketAuthFailed = false
                 dmarketUnreachable = false
                 wrongAccount = null
-                accountUnknown = false
             }
             is LifecycleEvent.ReLoginNeeded -> if (event.axis == "marketplace") dmarketAuthFailed = true
             is LifecycleEvent.MarketplaceServerError -> dmarketUnreachable = true
             is LifecycleEvent.LinkedSteamIdMismatch -> wrongAccount = event.linkedSteamId to event.tokenSteamId
-            is LifecycleEvent.LinkedSteamIdUnknown -> accountUnknown = true
             is LifecycleEvent.SteamReadFailed -> {
                 readFailedThisCycle = true
                 steamRead = classifyRead(event.reason) to "Steam ${event.axis} read failed: ${event.reason ?: "no detail"}"
             }
             // A create held back for the token's sake is STEAM_TOKEN_EXPIRING's story, not Steam's.
-            is LifecycleEvent.SteamWriteDeferred -> event.dealId?.takeIf { event.reason != TOKEN_EXPIRING_DEFER_REASON }?.let {
-                throttledThisCycle = true
-                throttledDeals += it
+            is LifecycleEvent.SteamWriteDeferred -> event.dealId?.let {
+                if (event.reason == TOKEN_EXPIRING_DEFER_REASON) {
+                    tokenHeldThisCycle = true
+                    tokenHeldDeals += it
+                } else {
+                    throttledThisCycle = true
+                    throttledDeals += it
+                }
             }
             is LifecycleEvent.CycleCompleted -> {
                 if (!readFailedThisCycle) steamRead = null
                 if (!throttledThisCycle) throttledDeals.clear()
+                if (!tokenHeldThisCycle) tokenHeldDeals.clear()
             }
             is LifecycleEvent.DirectiveExecuted -> event.dealId?.let { deal ->
                 if (event.status == FAILED) {
@@ -106,12 +112,14 @@ class HealthTracker(
     }
 
     /**
-     * The health right now, given what the tracker holds ([state]); [dealsTracked] are the deals a blocking
-     * problem holds up. While the tracker is ready to act, a heartbeat that has not come back for
-     * [heartbeatStaleAfter] is reported — the loop itself only speaks up after several failures in a row.
+     * The health right now, given what the tracker holds ([state]). A problem that stops the SDK acting for every
+     * deal names every deal the last heartbeat tracked. While the tracker is ready to act, a heartbeat that has not
+     * come back for [heartbeatStaleAfter] is reported — the loop itself only speaks up after several failures in a
+     * row.
      */
-    fun snapshot(state: HeadlessTrackerState, dealsTracked: List<String> = emptyList()): Health {
+    fun snapshot(state: HeadlessTrackerState): Health {
         val now = clock.now()
+        val dealsTracked = state.trackedDealIds.map { it.value }
         val expiresAt = state.steamTokenExpiresAt
         val open = linkedMapOf<ProblemCode, Pair<String, List<String>>>()
         fun raise(code: ProblemCode, message: String, deals: Collection<String> = emptyList()) {
@@ -139,13 +147,15 @@ class HealthTracker(
         when {
             expiresAt == null -> raise(ProblemCode.STEAM_TOKEN_MISSING, "push a Steam access token: PUT /v1/steam/session", dealsTracked)
             expiresAt <= now -> raise(ProblemCode.STEAM_TOKEN_EXPIRED, "the Steam token expired at $expiresAt", dealsTracked)
-            expiresAt - now < expiringWithin -> raise(ProblemCode.STEAM_TOKEN_EXPIRING, "the Steam token expires at $expiresAt")
+            // Every tracked deal loses its Steam side when the token lapses; the creates already held back for it
+            // are named even when their deal has left the tracking list.
+            expiresAt - now < expiringWithin ->
+                raise(ProblemCode.STEAM_TOKEN_EXPIRING, "the Steam token expires at $expiresAt", dealsTracked + tokenHeldDeals)
         }
         (wrongAccount ?: refusedPush)?.let { (linked, token) ->
             val named = linked?.let { "DMarket links $it" } ?: "DMarket has not named the linked account yet"
             raise(ProblemCode.STEAM_WRONG_ACCOUNT, "the Steam token is for $token; $named", dealsTracked)
         }
-        if (accountUnknown) raise(ProblemCode.STEAM_ACCOUNT_UNKNOWN, "DMarket names no linked Steam account", dealsTracked)
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)
@@ -156,17 +166,14 @@ class HealthTracker(
             val first = since.getOrPut(code) { now }
             Problem(
                 code = code,
-                severity = if (code.blocking) "error" else "warning",
+                severity = code.severity.wireName,
                 since = first.toString(),
                 message = detail.first,
-                affectedDeals = detail.second.map { AffectedDeal(it) },
+                affectedDeals = detail.second.distinct().map { AffectedDeal(it) },
             )
         }
-        val status = when {
-            problems.any { it.code.blocking } -> "down"
-            problems.isNotEmpty() -> "degraded"
-            else -> "ok"
-        }
+        val worst = problems.maxOfOrNull { it.code.severity.rank } ?: Severity.INFO.rank
+        val status = if (worst <= Severity.INFO.rank) Health.OK else Severity.entries.first { it.rank == worst }.wireName
         return Health(
             status = status,
             problems = problems,
