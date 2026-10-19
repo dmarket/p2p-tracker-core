@@ -100,6 +100,19 @@ data class CadenceConfig(
      * Like a ttl, the value is clamped to `[heartbeatFloor, maxActionDelayMs]`.
      */
     val fallbackHeartbeatIntervalMs: Int = 0,
+    /**
+     * [RuntimeSurface.Headless]'s poll floor. Kept at the browser's 60s: it is also how often Steam is read while a
+     * confirmation is expected (the expedited target is clamped up to it), so lowering it multiplies Steam reads.
+     */
+    val headlessPollFloorMs: Int = 60_000,
+    /** [RuntimeSurface.Headless]'s heartbeat floor: below the browser's, since a Node timer has no minute grid. */
+    val headlessHeartbeatFloorMs: Int = 30_000,
+    /**
+     * How far ahead of the advertised ttl [RuntimeSurface.Headless] aims its heartbeat. Every other surface aims one
+     * poll floor ahead, because its wake-ups fall on that grid; a Node timer fires when it is asked to, so a few
+     * seconds cover the timer and the request.
+     */
+    val headlessHeartbeatMarginMs: Int = 5_000,
 ) {
     @JsExport.Ignore val activeOfferInterval: Duration get() = activeOfferIntervalMs.milliseconds
 
@@ -116,7 +129,8 @@ data class CadenceConfig(
     /** Lowest poll interval the platform can sustain in this mode. */
     @JsExport.Ignore
     fun pollFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
-        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox, RuntimeSurface.Headless -> webPollFloorMs
+        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox -> webPollFloorMs
+        RuntimeSurface.Headless -> headlessPollFloorMs
         RuntimeSurface.IosNative -> if (mode == TrackerMode.Foreground) iosForegroundPollFloorMs else iosBackgroundPollFloorMs
         RuntimeSurface.AndroidNative ->
             if (mode == TrackerMode.Foreground) androidForegroundPollFloorMs else androidBackgroundPollFloorMs
@@ -125,12 +139,23 @@ data class CadenceConfig(
     /** Lowest heartbeat interval the platform can sustain in this mode. */
     @JsExport.Ignore
     fun heartbeatFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
-        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox, RuntimeSurface.Headless -> webHeartbeatFloorMs
+        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox -> webHeartbeatFloorMs
+        RuntimeSurface.Headless -> headlessHeartbeatFloorMs
         RuntimeSurface.IosNative ->
             if (mode == TrackerMode.Foreground) iosForegroundHeartbeatFloorMs else iosBackgroundHeartbeatFloorMs
         RuntimeSurface.AndroidNative ->
             if (mode == TrackerMode.Foreground) androidForegroundHeartbeatFloorMs else androidBackgroundHeartbeatFloorMs
     }.milliseconds
+
+    /**
+     * How far ahead of the advertised ttl the heartbeat aims: one [pollFloor] — the grid the wake-ups fall on — and
+     * [headlessHeartbeatMarginMs] for [RuntimeSurface.Headless], whose wake-ups fall on no grid.
+     */
+    @JsExport.Ignore
+    fun heartbeatMargin(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
+        RuntimeSurface.Headless -> headlessHeartbeatMarginMs.milliseconds
+        else -> pollFloor(surface, mode)
+    }
 }
 
 /** Credential-freshness skews and the session-refresh self-gate headrooms. */

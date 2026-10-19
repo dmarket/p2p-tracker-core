@@ -1548,8 +1548,7 @@ class TradeTrackerLoop(
 
     /** The delay until the next cycle: the sooner of the deal-watch poll cadence and the next heartbeat. */
     fun nextWakeDelay(): Duration {
-        val floor = cadence.pollFloor(config.surface, config.mode)
-        val untilHeartbeat = nextHeartbeatAt?.let { (it - clock.now()).coerceAtLeast(floor) }
+        val untilHeartbeat = nextHeartbeatAt?.let { cadence.heartbeatWakeDelay(it - clock.now(), config.surface, config.mode) }
         // A fresh instance with nothing to watch can only idle until the heartbeat is due — don't burn
         // poll/expedited-cadence wakes on cycles that would do nothing (a restored expedited window
         // matters only to a worker that has a tracking list to fast-poll).
@@ -1644,21 +1643,9 @@ class TradeTrackerLoop(
     }
 
     private suspend fun scheduleNextHeartbeat(ttlSeconds: Int) {
-        val at = clock.now() + jittered(cadence.nextHeartbeatDelay(ttlSeconds, config.surface, config.mode), ttlSeconds)
+        val at = clock.now() + cadence.nextHeartbeatDelay(ttlSeconds, config.surface, config.mode)
         nextHeartbeatAt = at
         loopState.setNextHeartbeatAt(at)
-    }
-
-    /**
-     * [delay] pushed later by up to [LoopConfig.heartbeatJitter] of itself, and never past the advertised [ttlSeconds]:
-     * clients behind one address that started together drift apart instead of beating in step. Later only, because a
-     * wake earlier than the platform's floor is raised back to it anyway. No draw at all without jitter.
-     */
-    private fun jittered(delay: Duration, ttlSeconds: Int): Duration {
-        if (config.heartbeatJitter <= 0.0) return delay
-        val ttl = (ttlSeconds.toLong() * 1000L).milliseconds
-        val room = if (ttlSeconds > 0) (ttl - delay).coerceAtLeast(Duration.ZERO) else delay
-        return delay + minOf(delay * config.heartbeatJitter, room) * random.nextDouble()
     }
 
     /**

@@ -876,26 +876,22 @@ class HeadlessTrackerTest {
     }
 
     @Test
-    fun the_heartbeat_lands_later_by_up_to_a_tenth_never_past_the_ttl() = runTest {
-        val steady = tracker(random = Lowest).also {
+    fun the_heartbeat_follows_the_advertised_ttl_a_few_seconds_inside_it() = runTest {
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":80,"linkedSteamId":"$STEAM_ID"}"""
+        val tracker = tracker().also {
             it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
             it.pushSteamToken(token)
             it.cycle()
         }
-        assertEquals(60.seconds, steady.loop.nextWakeDelay(), "a 100 s ttl beats on the 60 s floor")
+        assertEquals(75.seconds, tracker.loop.nextWakeDelay(), "an 80 s ttl beats at 75 s, not on a 60 s floor")
 
-        val drifted = tracker(random = Highest).also {
-            it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
-            it.pushSteamToken(token)
-            it.cycle()
-        }
-        val wake = drifted.loop.nextWakeDelay()
-        assertTrue(wake > 65.seconds && wake <= 66.seconds, "$wake")
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":95,"linkedSteamId":"$STEAM_ID"}"""
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(90.seconds, tracker.loop.nextWakeDelay())
 
-        heartbeatBody = """{"activeTracking":[],"ttlSeconds":61,"linkedSteamId":"$STEAM_ID"}"""
-        drifted.loop.forceHeartbeatNow()
-        drifted.cycle()
-        assertTrue(drifted.loop.nextWakeDelay() <= 61.seconds, "never past the ttl: ${drifted.loop.nextWakeDelay()}")
+        clock.advance(88.seconds)
+        assertEquals(5.seconds, tracker.loop.nextWakeDelay(), "a wake 2 s short of the beat still lands inside the ttl")
     }
 
     @Test

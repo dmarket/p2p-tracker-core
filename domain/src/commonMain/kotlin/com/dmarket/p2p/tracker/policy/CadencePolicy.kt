@@ -52,6 +52,9 @@ class CadencePolicy(private val cadence: CadenceConfig) {
     /** Lowest heartbeat interval the platform can sustain in this mode. */
     fun heartbeatFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = cadence.heartbeatFloor(surface, mode)
 
+    /** How far ahead of the advertised ttl the heartbeat aims; see [nextHeartbeatDelay]. */
+    fun heartbeatMargin(surface: RuntimeSurface, mode: TrackerMode): Duration = cadence.heartbeatMargin(surface, mode)
+
     /** The next poll delay for a class: the FE target, but never below the platform floor. */
     fun nextPollDelay(surface: RuntimeSurface, mode: TrackerMode, pollClass: PollClass): Duration =
         maxOf(pollFloor(surface, mode), targetInterval(pollClass))
@@ -69,7 +72,7 @@ class CadencePolicy(private val cadence: CadenceConfig) {
     val expeditedWindow: Duration get() = cadence.expeditedWindow
 
     /**
-     * The next heartbeat delay from the backend's `ttl_seconds`, less one [pollFloor] of margin and
+     * The next heartbeat delay from the backend's `ttl_seconds`, less one [heartbeatMargin] and
      * clamped to `[heartbeatFloor, maxActionDelay]`; when [ttlSeconds] is `0` (unset) the client falls
      * back to its own [CadenceConfig.fallbackHeartbeatIntervalMs] (clamped the same way, but **without**
      * the margin — that interval is our own choice, not a cadence somebody else advertised) or, when that
@@ -94,6 +97,11 @@ class CadencePolicy(private val cadence: CadenceConfig) {
      * spending one of the N on arithmetic, every single period.
      *
      * A no-op wherever the heartbeat floor already dominates: mobile background clamps to 15 min either way.
+     *
+     * [RuntimeSurface.Headless] wakes on no grid — a Node timer fires when asked — so its margin is
+     * [CadenceConfig.headlessHeartbeatMarginMs] rather than a poll floor, and [heartbeatWakeDelay] lets its wake
+     * land that close to the target. Its heartbeat then follows the ttl the backend advertises instead of the
+     * 60s floor: at the 80-95s the backend hands out, it beats every 75-90s.
      */
     fun nextHeartbeatDelay(ttlSeconds: Int, surface: RuntimeSurface, mode: TrackerMode): Duration {
         val floor = heartbeatFloor(surface, mode)
@@ -102,8 +110,17 @@ class CadencePolicy(private val cadence: CadenceConfig) {
             return cadence.fallbackHeartbeatInterval.coerceIn(floor, maxActionDelay)
         }
         val advertised = (ttlSeconds.toLong() * 1000L).milliseconds
-        return (advertised - pollFloor(surface, mode)).coerceIn(floor, maxActionDelay)
+        return (advertised - heartbeatMargin(surface, mode)).coerceIn(floor, maxActionDelay)
     }
+
+    /**
+     * The wake for a heartbeat [remaining] from now. One still ahead is not woken for sooner than one
+     * [heartbeatMargin] — the grid the target was aimed against, so the beat still lands inside the ttl. One already
+     * due (it failed, or a cycle was refused) is retried after a [pollFloor], so a failing heartbeat is not hammered.
+     * Wherever the margin is the poll floor this is the remainder raised to the poll floor, as it always was.
+     */
+    fun heartbeatWakeDelay(remaining: Duration, surface: RuntimeSurface, mode: TrackerMode): Duration =
+        if (remaining > Duration.ZERO) remaining.coerceAtLeast(heartbeatMargin(surface, mode)) else pollFloor(surface, mode)
 
     /**
      * How long to wait before honouring a push wake-up, so an inbound push can never out-pace the

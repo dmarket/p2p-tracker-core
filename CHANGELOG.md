@@ -121,9 +121,13 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     Steam (refused by the account or buyer-role guard, or deferred), which DMarket reads as the seller failing
     to deliver; the lease lapses instead. `HeadlessTracker` turns it off.
   - A 429 from DMarket quiets `HeadlessTracker` until `Retry-After` has passed and not before a backoff that
-    doubles from 30 s to 10 min, with up to a quarter more at random. `LoopConfig.heartbeatJitter` lands the
-    heartbeat up to that fraction later, never past the advertised ttl (0.1 on `HeadlessTracker`, off by
-    default). `createLoop` takes the `Random` its draws use.
+    doubles from 30 s to 10 min, with up to a quarter more at random. `createLoop` takes the `Random` its
+    draws use.
+  - `RuntimeSurface.Headless` has its own cadence: it aims its heartbeat `CadenceConfig.headlessHeartbeatMarginMs`
+    (5 s) inside the advertised ttl, not a whole poll floor, above a `headlessHeartbeatFloorMs` of 30 s, so at
+    the 80-95 s DMarket hands out it beats every 75-90 s instead of every 60 s. Its poll floor,
+    `headlessPollFloorMs`, stays 60 s, and with it how often Steam is read. `CadencePolicy.heartbeatMargin` and
+    `heartbeatWakeDelay` expose the rule. Every other surface is unchanged.
   - `HeadlessTrackerState` adds `trackedDealIds`, `clockOffset` and `clockSkewed` (DMarket's `Date` against
     the host's clock, past `HeadlessTracker.MAX_CLOCK_SKEW`), `steamNotLinked` (the heartbeat's
     `403 P2P_STEAM_NOT_LINKED`), `updateRequired` and `updateDueTime`, and `dealDeadlines` (the last

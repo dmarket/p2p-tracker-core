@@ -5,8 +5,8 @@ package com.dmarket.p2p.tracker.model
  *
  * On the wire the heartbeat collapses these to `"web" | "ios" | "android" | "sdk"` — the
  * Chrome/Firefox split is kept only on-device for cadence floors and proof-placement decisions.
- * [Headless] is a process with no browser and no UI (a trader's bot host); it keeps the browser's
- * cadence floors.
+ * [Headless] is a process with no browser and no UI (a trader's bot host); its timers fire when asked,
+ * so it has its own heartbeat floor and margin, and the browser's poll floor.
  */
 enum class RuntimeSurface {
     WebChrome,

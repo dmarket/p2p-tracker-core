@@ -205,12 +205,31 @@ class TrackerConfigTest {
     }
 
     @Test
-    fun a_headless_host_keeps_the_browser_floors_and_reports_platform_sdk() {
+    fun a_headless_host_keeps_the_browser_poll_floor_has_its_own_heartbeat_floor_and_reports_platform_sdk() {
         val c = defaults.cadence
         for (mode in TrackerMode.entries) {
             assertEquals(c.pollFloor(RuntimeSurface.WebChrome, mode), c.pollFloor(RuntimeSurface.Headless, mode))
-            assertEquals(c.heartbeatFloor(RuntimeSurface.WebChrome, mode), c.heartbeatFloor(RuntimeSurface.Headless, mode))
+            assertEquals(30.seconds, c.heartbeatFloor(RuntimeSurface.Headless, mode))
+            assertEquals(5.seconds, c.heartbeatMargin(RuntimeSurface.Headless, mode))
         }
         assertEquals("sdk", RuntimeSurface.Headless.platformWireName)
+    }
+
+    @Test
+    fun the_headless_floors_are_their_own_and_every_other_margin_is_its_poll_floor() {
+        val c =
+            CadenceConfig(
+                webPollFloorMs = 45_000,
+                webHeartbeatFloorMs = 50_000,
+                headlessPollFloorMs = 20_000,
+                headlessHeartbeatFloorMs = 25_000,
+            )
+        assertEquals(20.seconds, c.pollFloor(RuntimeSurface.Headless, TrackerMode.Background))
+        assertEquals(25.seconds, c.heartbeatFloor(RuntimeSurface.Headless, TrackerMode.Background))
+        assertEquals(45.seconds, c.pollFloor(RuntimeSurface.WebChrome, TrackerMode.Background), "the browser's own")
+        assertEquals(50.seconds, c.heartbeatFloor(RuntimeSurface.WebFirefox, TrackerMode.Foreground))
+        for (surface in RuntimeSurface.entries.filter { it != RuntimeSurface.Headless }) {
+            for (mode in TrackerMode.entries) assertEquals(c.pollFloor(surface, mode), c.heartbeatMargin(surface, mode), "$surface $mode")
+        }
     }
 }

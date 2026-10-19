@@ -177,6 +177,82 @@ class CadencePolicyTest {
         )
     }
 
+    // ---- Headless: its own margin and heartbeat floor, the browser's poll floor ------------------------
+
+    @Test
+    fun headless_beats_a_few_seconds_inside_the_ttl_the_backend_hands_out() {
+        val surface = RuntimeSurface.Headless
+        val mode = TrackerMode.Background
+        assertEquals(75.seconds, cadence.nextHeartbeatDelay(80, surface, mode))
+        assertEquals(90.seconds, cadence.nextHeartbeatDelay(95, surface, mode))
+        for (ttl in 80..95) {
+            val delay = cadence.nextHeartbeatDelay(ttl, surface, mode)
+            assertTrue(delay in 75.seconds..90.seconds && delay < ttl.seconds, "ttl ${ttl}s: $delay")
+        }
+        assertEquals(55.seconds, cadence.nextHeartbeatDelay(60, surface, mode), "the gateway's 60 s answer on a mismatch")
+        assertEquals(30.seconds, cadence.nextHeartbeatDelay(20, surface, mode), "clamped up to the 30 s floor")
+        assertEquals(60.seconds, cadence.nextPollDelay(surface, mode, PollClass.ExpeditedOffer), "Steam is read no faster than before")
+    }
+
+    /**
+     * Where a headless beat lands when deal-watch wakes keep cutting in: the loop wakes at `min(poll, until the beat)`,
+     * the latter through [CadencePolicy.heartbeatWakeDelay], until a wake reaches the beat.
+     */
+    private fun headlessBeatLandsAt(target: Duration, poll: Duration): Duration {
+        var now = Duration.ZERO
+        while (now < target) {
+            now += minOf(poll, cadence.heartbeatWakeDelay(target - now, RuntimeSurface.Headless, TrackerMode.Background))
+        }
+        return now
+    }
+
+    @Test
+    fun a_headless_beat_lands_inside_the_ttl_whatever_poll_cuts_in() {
+        val mode = TrackerMode.Background
+        for (ttl in listOf(35, 60, 61, 80, 85, 90, 95, 100, 120, 600)) {
+            val delay = cadence.nextHeartbeatDelay(ttl, RuntimeSurface.Headless, mode)
+            for (pollSeconds in listOf(60, 61, 70, 74, 79, 89, 180)) {
+                val landed = headlessBeatLandsAt(delay, pollSeconds.seconds)
+                assertTrue(landed <= ttl.seconds, "ttl ${ttl}s, poll ${pollSeconds}s: aimed $delay, landed $landed")
+            }
+        }
+    }
+
+    @Test
+    fun a_due_heartbeat_is_retried_after_a_poll_floor_on_every_surface() {
+        for (surface in RuntimeSurface.entries) {
+            for (mode in TrackerMode.entries) {
+                val floor = cadence.pollFloor(surface, mode)
+                assertEquals(floor, cadence.heartbeatWakeDelay(Duration.ZERO, surface, mode), "$surface $mode")
+                assertEquals(floor, cadence.heartbeatWakeDelay((-5).seconds, surface, mode), "$surface $mode")
+            }
+        }
+    }
+
+    @Test
+    fun outside_headless_the_heartbeat_wake_is_the_remainder_raised_to_the_poll_floor_as_before() {
+        val remainders = listOf((-90).seconds, Duration.ZERO, 1.milliseconds, 5.seconds, 59.seconds, 60.seconds, 61.seconds, 20.minutes)
+        for (surface in RuntimeSurface.entries.filter { it != RuntimeSurface.Headless }) {
+            for (mode in TrackerMode.entries) {
+                val floor = cadence.pollFloor(surface, mode)
+                for (remaining in remainders) {
+                    assertEquals(
+                        remaining.coerceAtLeast(floor),
+                        cadence.heartbeatWakeDelay(remaining, surface, mode),
+                        "$surface $mode $remaining",
+                    )
+                }
+                assertEquals(floor, cadence.heartbeatMargin(surface, mode))
+            }
+        }
+        assertEquals(
+            60.seconds,
+            cadence.nextHeartbeatDelay(100, RuntimeSurface.WebChrome, TrackerMode.Background),
+            "the browser's beat is unchanged",
+        )
+        assertEquals(60.seconds, cadence.nextHeartbeatDelay(80, RuntimeSurface.WebFirefox, TrackerMode.Background))
+    }
+
     // ---- nextHeartbeatDelay: fallback interval, used only when the backend sends no ttl -------------
 
     private fun withFallback(intervalMs: Int) = CadencePolicy(CadenceConfig(fallbackHeartbeatIntervalMs = intervalMs))

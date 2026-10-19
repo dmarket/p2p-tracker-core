@@ -167,7 +167,8 @@ data class HeadlessTrackerState(
  * @param steamWrites `false` for an account that only buys: no Steam offer is created or cancelled, whatever is
  *   leased — the writers are not even built, and the loop drops such a directive unreported, so its lease lapses to
  *   a device that writes. Reads, reports and the heartbeat are unchanged.
- * @param random the draws behind the heartbeat's jitter and the 429 backoff's.
+ * @param random the draws behind the 429 backoff's jitter and the loop's own. The heartbeat itself is not jittered:
+ *   DMarket already spreads each device's ttl by its device id.
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,
@@ -453,7 +454,6 @@ class HeadlessTracker(
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
                 reportUnsentCreates = false,
-                heartbeatJitter = HEARTBEAT_JITTER,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(
@@ -517,9 +517,6 @@ class HeadlessTracker(
          * within two minutes of its own clock; this leaves room for the reply's own transit.
          */
         val MAX_CLOCK_SKEW: Duration = 60.seconds
-
-        /** How much later than the cadence a heartbeat may land, at random: clients behind one address drift apart. */
-        const val HEARTBEAT_JITTER: Double = 0.1
 
         /** The first wait after a 429 with no longer `Retry-After`; it doubles with each 429 in a row. */
         val RATE_LIMIT_BACKOFF_BASE: Duration = 30.seconds
