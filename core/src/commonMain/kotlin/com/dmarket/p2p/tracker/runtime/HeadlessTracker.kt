@@ -35,12 +35,15 @@ import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
+import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
@@ -49,6 +52,9 @@ import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
+import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
+import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -134,12 +140,16 @@ data class HeadlessTrackerState(
  *
  * @param scope runs the driver ([start]) and the cycle a push triggers.
  * @param baseUrl the DMarket gateway.
+ * @param steamWrites `false` for an account that only buys: no Steam offer is created or cancelled, whatever is
+ *   leased — the writers are not even built, and the loop drops such a directive unreported, so its lease lapses to
+ *   a device that writes. Reads, reports and the heartbeat are unchanged.
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,
     private val scope: CoroutineScope,
     private val baseUrl: String = TrackerConfig.DEFAULT_DMARKET_BASE_URL,
     private val tunables: TrackerConfig = TrackerConfig.defaults(),
+    private val steamWrites: Boolean = true,
 ) {
     private val clock = platform.clock
     private val key = PushedTradingApiKey(platform.signerFor)
@@ -320,6 +330,8 @@ class HeadlessTracker(
         val adapter = Cs2GameAdapter(tunables.game)
         val sessionId = newSteamSessionId()
         val storage = platform.storage
+        val creator = if (steamWrites) HeaderSessionSteamOfferCreator(steamHttp, sessionId, community, adapter) else RefusedOfferWrites
+        val canceller = if (steamWrites) HeaderSessionSteamOfferCanceller(steamHttp, sessionId, community) else RefusedOfferWrites
         return TradeTrackerCore(GameRegistry.v1(tunables.game)).createLoop(
             config = LoopConfig(
                 clientVersion = TradeTrackerCore.VERSION,
@@ -330,6 +342,7 @@ class HeadlessTracker(
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 heartbeatWithoutCredential = true,
+                steamWrites = steamWrites,
             ),
             marketplace = NotLinkedWatch(
                 KtorMarketplaceClient(
@@ -348,8 +361,8 @@ class HeadlessTracker(
             vault = steam.vault,
             clock = clock,
             notary = NoOpNotaryProver,
-            offerCreator = HeaderSessionSteamOfferCreator(steamHttp, sessionId, community, adapter),
-            offerCanceller = HeaderSessionSteamOfferCanceller(steamHttp, sessionId, community),
+            offerCreator = creator,
+            offerCanceller = canceller,
             inventoryReader = KtorSteamInventoryReader(
                 httpClient = steamHttp,
                 communityBaseUrl = community,
@@ -401,6 +414,15 @@ class HeadlessTracker(
         private const val CLOCK_SKEWED = "DMarket refused its signature, and this host's clock is off DMarket's by more than a minute"
         private const val HTTP_FORBIDDEN = 403
     }
+}
+
+/** The offer writers of a tracker built without Steam writes. The loop never calls them; if it did, nothing is sent. */
+private object RefusedOfferWrites : SteamOfferCreator, SteamOfferCanceller {
+    private const val REFUSED = "offer writes are disabled on this client"
+
+    override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = CreateOfferResult.Failed(REFUSED)
+
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): Unit = throw IllegalStateException(REFUSED)
 }
 
 /**

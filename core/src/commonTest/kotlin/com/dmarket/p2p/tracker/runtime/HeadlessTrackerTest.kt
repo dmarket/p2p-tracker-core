@@ -111,10 +111,12 @@ class HeadlessTrackerTest {
     private fun tracker(
         storage: DeviceKeyValueStore = RecordingStore(),
         signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner },
+        steamWrites: Boolean = true,
     ) = HeadlessTracker(
         platform = HeadlessPlatform(storage, clock, EventObserver { events += it }, engine, signerFor),
         scope = idle,
         baseUrl = "https://gateway.test",
+        steamWrites = steamWrites,
     )
 
     private fun heartbeats() = requests.filter { it.url.encodedPath.endsWith("/p2p/ext/heartbeat") }
@@ -303,6 +305,28 @@ class HeadlessTrackerTest {
         val report = requests.single { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }
         assertTrue(""""status":"needs_confirmation"""" in report.text() && """"steamOfferId":"555"""" in report.text(), report.text())
         assertTrue(report.headers[TradingApiSignature.REQUEST_SIGN] != null, "the report is signed too")
+    }
+
+    @Test
+    fun without_steam_writes_no_offer_write_leaves_the_tracker() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","steamOfferId":"555","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[
+               {"directiveId":"dir-1","action":"create_offer","dealId":"deal-2","partnerSteamId":"$OTHER_STEAM_ID",
+                "assetIds":["asset-7"],"tradeToken":"tok","contextId":2},
+               {"directiveId":"dir-2","action":"cancel_offer","dealId":"deal-1","steamOfferId":"555"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        val tracker = tracker(steamWrites = false)
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+
+        assertTrue(requests.none { "/tradeoffer/" in it.url.encodedPath }, "no offer write: ${requests.map { it.url }}")
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }, "nothing reported: the leases lapse")
+        val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>().map { it.directiveId }
+        assertEquals(listOf("dir-1", "dir-2"), dropped)
+        assertTrue(steamRequests().isNotEmpty(), "reads go on")
     }
 
     @Test

@@ -61,6 +61,7 @@ class SdkRuntime(config: SdkConfig, platform: SdkPlatform, scope: CoroutineScope
         scope = scope,
         baseUrl = config.dmarketBaseUrl,
         tunables = tunables,
+        steamWrites = config.steamWrites,
     )
 
     /** Starts the tracker, which waits for the bot's pushes before it heartbeats. */

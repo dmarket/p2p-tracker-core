@@ -16,6 +16,8 @@ import kotlinx.serialization.json.Json
  *   Steam token, so it must not be reachable from anywhere the bot is not.
  * @property listenPort the management API's port.
  * @property dmarketBaseUrl the DMarket gateway the loop talks to.
+ * @property steamWrites `false` for a buying bot's SDK: it then creates and cancels no Steam offer, whatever DMarket
+ *   leases it.
  */
 @Serializable
 data class SdkConfig(
@@ -24,6 +26,7 @@ data class SdkConfig(
     @SerialName("listenHost") val listenHost: String = "127.0.0.1",
     @SerialName("listenPort") val listenPort: Int = DEFAULT_PORT,
     @SerialName("dmarketBaseUrl") val dmarketBaseUrl: String = TrackerConfig.DEFAULT_DMARKET_BASE_URL,
+    @SerialName("steamWrites") val steamWrites: Boolean = true,
 ) {
     init {
         require(managementSecret.length >= MIN_SECRET_LENGTH) { "managementSecret must be at least $MIN_SECRET_LENGTH characters" }
@@ -33,7 +36,7 @@ data class SdkConfig(
 
     override fun toString(): String =
         "SdkConfig(managementSecret=<redacted>, dataDir=$dataDir, listenHost=$listenHost, listenPort=$listenPort, " +
-            "dmarketBaseUrl=$dmarketBaseUrl)"
+            "dmarketBaseUrl=$dmarketBaseUrl, steamWrites=$steamWrites)"
 
     companion object {
         const val DEFAULT_PORT: Int = 8790

@@ -45,7 +45,10 @@ class SdkRuntimeTest {
     /** The `Date` every DMarket reply carries; `null` sends none. */
     private var serverDate: String? = null
 
+    private val requested = mutableListOf<String>()
+
     private val engine = MockEngine { request ->
+        requested += request.url.encodedPath
         val json = headersOf(
             *listOfNotNull(
                 HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
@@ -63,8 +66,13 @@ class SdkRuntimeTest {
 
     private val idle = CoroutineScope(StandardTestDispatcher(TestCoroutineScheduler()))
 
-    private fun runtime(signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner }) = SdkRuntime(
-        config = SdkConfig(managementSecret = "m".repeat(32), dataDir = "/unused", dmarketBaseUrl = "https://gateway.test"),
+    private fun runtime(signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner }, steamWrites: Boolean = true) = SdkRuntime(
+        config = SdkConfig(
+            managementSecret = "m".repeat(32),
+            dataDir = "/unused",
+            dmarketBaseUrl = "https://gateway.test",
+            steamWrites = steamWrites,
+        ),
         platform = SdkPlatform(InMemoryDeviceKeyValueStore(), clock, SdkLog(clock) { logLines += it }, engine, signerFor),
         scope = idle,
     )
@@ -233,6 +241,25 @@ class SdkRuntimeTest {
         assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED), health.problems.map { it.code })
         assertEquals("degraded", health.status)
         assertEquals((T0 + 2.hours).toString(), health.lastHeartbeatAt, "the heartbeat went on without a token")
+    }
+
+    @Test
+    fun steam_writes_off_in_the_config_sends_no_offer_write() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1","partnerSteamId":"$OTHER_STEAM_ID",
+               "assetIds":["asset-7"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        assertEquals(false, SdkConfig.parse("""{"managementSecret":"${"m".repeat(32)}","dataDir":"/d","steamWrites":false}""").steamWrites)
+        assertEquals(true, SdkConfig.parse("""{"managementSecret":"${"m".repeat(32)}","dataDir":"/d"}""").steamWrites, "on by default")
+
+        val sdk = runtime(steamWrites = false)
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        sdk.putSteamToken(token)
+        sdk.tracker.cycle()
+        assertTrue(requested.none { "/tradeoffer/" in it }, "$requested")
+        assertTrue(requested.any { it.endsWith("/p2p/ext/heartbeat") })
     }
 
     @Test

@@ -30,6 +30,9 @@ import kotlin.time.Duration
  *   for the Steam account the last heartbeat named as linked, with `foreground: false` — and the cycle takes no
  *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the
  *   default) keeps the browser behaviour: no Steam session, no heartbeat.
+ * @param steamWrites When `false`, the loop writes no Steam offer, whatever is leased or asked: a `create_offer` or
+ *   `cancel_offer` is dropped unreported (its lease lapses to a device that writes) and [TradeTrackerLoop.createTrade]
+ *   refuses. For a client whose account only buys. `true` by default.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -40,4 +43,5 @@ data class LoopConfig(
     val minWriteTokenLifetime: Duration? = null,
     val foregroundMinTokenLifetime: Duration? = null,
     val heartbeatWithoutCredential: Boolean = false,
+    val steamWrites: Boolean = true,
 )

@@ -136,6 +136,12 @@ private const val BUYER_ROLE_WRITE_ERROR =
  */
 private const val THROTTLED_WRITE_ERROR = "deferred: this device is backing off steam's create surface"
 
+/**
+ * Why a leased write was not run on a client built with `LoopConfig.steamWrites` off. Unreported, like a deferred
+ * create: nothing reached Steam, so its lease lapses to a device that writes.
+ */
+private const val OFFER_WRITES_DISABLED = "refused: offer writes are disabled on this client"
+
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
 
@@ -365,6 +371,10 @@ class TradeTrackerLoop(
         draft: TradeDraft,
         linkedSteamId: SteamId? = null,
     ): CreateOfferResult {
+        if (!config.steamWrites) {
+            emit(LifecycleEvent.DirectiveDropped(DirectiveAction.CREATE_OFFER.wireName, directiveId.value, OFFER_WRITES_DISABLED))
+            return CreateOfferResult.Failed(OFFER_WRITES_DISABLED)
+        }
         val credential = credentials.current()
             ?: return CreateOfferResult.Failed("no Steam credential")
                 .also {
@@ -1707,6 +1717,13 @@ class TradeTrackerLoop(
         if (plan.isEmpty) return 0
 
         var done = 0
+        if (!config.steamWrites) {
+            (plan.creates + plan.cancels).forEach {
+                emit(LifecycleEvent.DirectiveDropped(it.action.wireName, it.directiveId.value, OFFER_WRITES_DISABLED))
+            }
+            plan.inventoryScans.forEach { if (runInventory(it, credential)) done++ }
+            return done
+        }
         // This heartbeat's own tracking list backs the role guard, not the cached one: it is the freshest
         // statement of which side we are on for each deal, and it is what leased these very directives.
         val tracking = heartbeat.activeTracking
