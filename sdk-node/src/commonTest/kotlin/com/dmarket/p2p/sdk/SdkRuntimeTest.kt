@@ -13,6 +13,8 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.http.toHttpDate
+import io.ktor.util.date.GMTDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -22,6 +24,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * The SDK shell over the library's headless tracker: how pushes map to the API's answers, and what health and the
@@ -37,14 +40,23 @@ class SdkRuntimeTest {
     /** What a heartbeat signed with [OTHER_PUBLIC_KEY] gets instead of [heartbeatBody]. */
     private var otherKeyHeartbeat: String? = null
     private var otherKeyStatus = HttpStatusCode.OK
+    private var heartbeatStatus = HttpStatusCode.OK
+
+    /** The `Date` every DMarket reply carries; `null` sends none. */
+    private var serverDate: String? = null
 
     private val engine = MockEngine { request ->
-        val json = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        val json = headersOf(
+            *listOfNotNull(
+                HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
+                serverDate?.let { HttpHeaders.Date to listOf(it) },
+            ).toTypedArray(),
+        )
         val heartbeat = request.url.encodedPath.endsWith("/p2p/ext/heartbeat")
         when {
             heartbeat && request.headers[TradingApiSignature.API_KEY] == OTHER_PUBLIC_KEY ->
                 respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
-            heartbeat -> respond(heartbeatBody, headers = json)
+            heartbeat -> respond(heartbeatBody, heartbeatStatus, json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }
@@ -181,6 +193,31 @@ class SdkRuntimeTest {
         )
         assertTrue(logLines.any { "\"msg\":\"dmarket key unchecked\"" in it }, "$logLines")
         assertTrue(sdk.codes().isEmpty(), "a key that was never held raises nothing: ${sdk.codes()}")
+    }
+
+    @Test
+    fun an_account_with_no_steam_link_is_down_with_steam_not_linked() = runTest {
+        heartbeatStatus = HttpStatusCode.Forbidden
+        heartbeatBody = """{"code":"P2P_STEAM_NOT_LINKED"}"""
+        val sdk = runtime()
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        sdk.putSteamToken(token)
+        sdk.tracker.cycle()
+
+        val health = sdk.health()
+        assertEquals(listOf(ProblemCode.STEAM_NOT_LINKED), health.problems.map { it.code })
+        assertEquals("down", health.status)
+    }
+
+    @Test
+    fun a_key_refused_on_a_skewed_clock_answers_clock_skew() = runTest {
+        val sdk = boundRuntime()
+        serverDate = GMTDate((T0 + 5.minutes).toEpochMilliseconds()).toHttpDate()
+        otherKeyStatus = HttpStatusCode.Unauthorized
+
+        val answer = sdk.putDmarketKey(OTHER_PUBLIC_KEY, SECRET_SEED)
+        assertTrue(answer is PushOutcome.Unavailable && answer.error == "CLOCK_SKEW", "$answer")
+        assertEquals(listOf(ProblemCode.CLOCK_SKEW), sdk.codes())
     }
 
     @Test

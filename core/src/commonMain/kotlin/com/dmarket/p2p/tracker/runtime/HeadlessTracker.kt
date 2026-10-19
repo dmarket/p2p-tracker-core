@@ -39,12 +39,14 @@ import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
+import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import io.ktor.client.engine.HttpClientEngine
@@ -88,6 +90,10 @@ class HeadlessPlatform(
  * @property readySince since when, as of the last cycle, a key and a live token have both been held; `null` while
  *   they are not. A heartbeat is owed only from then.
  * @property trackedDealIds the deals the last heartbeat asked this device to track.
+ * @property clockOffset how far DMarket's clock (the `Date` of its last reply) is ahead of this host's; `null`
+ *   before a reply. Past [HeadlessTracker.MAX_CLOCK_SKEW] the gateway refuses every signature.
+ * @property steamNotLinked whether the last heartbeat was refused because the DMarket account links no Steam
+ *   account (`403 P2P_STEAM_NOT_LINKED`); cleared by the next heartbeat that comes back.
  */
 data class HeadlessTrackerState(
     val hasTradingApiKey: Boolean,
@@ -96,7 +102,12 @@ data class HeadlessTrackerState(
     val linkedSteamId: SteamId?,
     val readySince: Instant?,
     val trackedDealIds: List<DealId> = emptyList(),
-)
+    val clockOffset: Duration? = null,
+    val steamNotLinked: Boolean = false,
+) {
+    /** Whether [clockOffset] is past what the gateway's signature check allows. */
+    val clockSkewed: Boolean get() = clockOffset?.let { it.absoluteValue > HeadlessTracker.MAX_CLOCK_SKEW } ?: false
+}
 
 /**
  * The tracker loop composed for a host with no browser and no UI, and its driver. The host pushes the DMarket
@@ -137,6 +148,10 @@ class HeadlessTracker(
 
     // Written under cycleMutex only. No @Volatile: JS is single-threaded; JVM callers share one scope.
     private var readySince: Instant? = null
+
+    // Written by the marketplace calls, the loop's and the key check's. No @Volatile, as above.
+    private var clockOffset: Duration? = null
+    private var steamNotLinked = false
 
     private val observer = EventObserver { event ->
         if (event is LifecycleEvent.HeartbeatSent) steam.heartbeatReturned()
@@ -211,17 +226,28 @@ class HeadlessTracker(
             steamId = steamId,
             deviceId = deviceIds.current(),
         )
-        val client = KtorMarketplaceClient(marketplaceHttp, baseUrl, TradingApiAuthenticator({ candidate }, clock, platform.signerFor))
+        val client = KtorMarketplaceClient(
+            httpClient = marketplaceHttp,
+            baseUrl = baseUrl,
+            authenticator = TradingApiAuthenticator({ candidate }, clock, platform.signerFor),
+            onServerDate = ::heardServerDate,
+        )
         val unverified = { reason: String -> TradingKeyPushResult.Unverified(candidate.publicKey, reason) }
         val heartbeat = try {
             client.heartbeat(request)
         } catch (e: CancellationException) {
             throw e
         } catch (_: MarketplaceUnauthorizedException) {
+            // A refused signature says nothing about the key while the clock it was made with is off.
+            if (state().clockSkewed) return unverified(CLOCK_SKEWED)
             return TradingKeyPushResult.Invalid(KEY_REFUSED)
         } catch (e: MarketplaceServerErrorException) {
-            return when (e.statusCode) {
-                HTTP_FORBIDDEN -> TradingKeyPushResult.Invalid(KEY_REFUSED)
+            return when {
+                // The key's account links no Steam account, so it is not the account the held key is bound to.
+                e.errorCode == STEAM_NOT_LINKED_CODE -> steam.boundSteamId()
+                    ?.let { TradingKeyPushResult.AccountChanged(candidate.publicKey, held.publicKey, it, null) }
+                    ?: TradingKeyPushResult.Invalid(KEY_ACCOUNT_NOT_LINKED)
+                e.statusCode == HTTP_FORBIDDEN -> TradingKeyPushResult.Invalid(KEY_REFUSED)
                 else -> unverified("its heartbeat failed: HTTP ${e.statusCode}")
             }
         } catch (_: RateLimitedException) {
@@ -248,10 +274,29 @@ class HeadlessTracker(
             linkedSteamId = loop.linkedSteamId,
             readySince = readySince,
             trackedDealIds = loop.trackedDealIds,
+            clockOffset = clockOffset,
+            steamNotLinked = steamNotLinked,
         )
     }
 
     private fun ready(): Boolean = key.key != null && steam.ready()
+
+    private fun heardServerDate(serverNow: Instant) {
+        clockOffset = serverNow - clock.now()
+    }
+
+    /**
+     * The loop's marketplace client, watched for the one heartbeat refusal the account's owner has to fix on DMarket:
+     * an account with no Steam account linked. The loop itself reads it as any other refused heartbeat.
+     */
+    private inner class NotLinkedWatch(private val client: MarketplaceClient) : MarketplaceClient by client {
+        override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse = try {
+            client.heartbeat(request).also { steamNotLinked = false }
+        } catch (e: MarketplaceServerErrorException) {
+            steamNotLinked = e.errorCode == STEAM_NOT_LINKED_CODE
+            throw e
+        }
+    }
 
     /** A push changed what the tracker can do: heartbeat now instead of at the next scheduled wake. */
     private fun nudge() {
@@ -278,12 +323,15 @@ class HeadlessTracker(
                 requireLinkedSteamId = true,
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
             ),
-            marketplace = KtorMarketplaceClient(
-                httpClient = marketplaceHttp,
-                baseUrl = baseUrl,
-                authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor),
-                retry = tunables.marketplaceRetry,
-                maxReportBodyBytes = tunables.http.maxReportBodyBytes ?: MAX_REPORT_BODY_BYTES,
+            marketplace = NotLinkedWatch(
+                KtorMarketplaceClient(
+                    httpClient = marketplaceHttp,
+                    baseUrl = baseUrl,
+                    authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor),
+                    retry = tunables.marketplaceRetry,
+                    maxReportBodyBytes = tunables.http.maxReportBodyBytes ?: MAX_REPORT_BODY_BYTES,
+                    onServerDate = ::heardServerDate,
+                ),
             ),
             steamReader = KtorSteamReadClient(steamHttp, tunables.steamEndpoints),
             scraper = steam.scraper,
@@ -328,7 +376,18 @@ class HeadlessTracker(
         /** How often a tracker that may not act yet re-checks, besides every push. */
         val IDLE_RECHECK: Duration = 30.seconds
 
+        /**
+         * How far this host's clock may be off DMarket's before it is reported. The gateway accepts a signature made
+         * within two minutes of its own clock; this leaves room for the reply's own transit.
+         */
+        val MAX_CLOCK_SKEW: Duration = 60.seconds
+
+        /** The gateway's refusal of a heartbeat for an account that links no Steam account. */
+        const val STEAM_NOT_LINKED_CODE: String = "P2P_STEAM_NOT_LINKED"
+
         private const val KEY_REFUSED = "DMarket refused the key"
+        private const val KEY_ACCOUNT_NOT_LINKED = "the key's DMarket account has no Steam account linked"
+        private const val CLOCK_SKEWED = "DMarket refused its signature, and this host's clock is off DMarket's by more than a minute"
         private const val HTTP_FORBIDDEN = 403
     }
 }

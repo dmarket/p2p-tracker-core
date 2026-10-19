@@ -15,6 +15,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class HealthTrackerTest {
@@ -25,6 +26,8 @@ class HealthTrackerTest {
         tokenExpiresIn: Duration? = 24.hours,
         readySince: Instant? = null,
         tracked: List<String> = emptyList(),
+        clockOffset: Duration? = null,
+        steamNotLinked: Boolean = false,
     ) = HeadlessTrackerState(
         hasTradingApiKey = hasKey,
         steamTokenSteamId = tokenExpiresIn?.let { SteamId(STEAM_ID) },
@@ -32,6 +35,8 @@ class HealthTrackerTest {
         linkedSteamId = SteamId(STEAM_ID),
         readySince = readySince,
         trackedDealIds = tracked.map(::DealId),
+        clockOffset = clockOffset,
+        steamNotLinked = steamNotLinked,
     )
 
     private fun codes(state: HeadlessTrackerState = state()) = tracker.snapshot(state).problems.map { it.code }
@@ -201,5 +206,29 @@ class HealthTrackerTest {
         assertEquals(listOf(ProblemCode.DMARKET_UNREACHABLE), codes(ready), "nor may a later one stop for long")
 
         assertTrue(codes(state(readySince = null)).isEmpty(), "an SDK that may not act owes no heartbeat")
+    }
+
+    @Test
+    fun a_skewed_clock_is_reported_instead_of_a_refused_key() = runTest {
+        tracker.onEvent(LifecycleEvent.ReLoginNeeded("marketplace"))
+        assertEquals(listOf(ProblemCode.DMARKET_AUTH_FAILED), codes(state(clockOffset = 59.seconds)))
+
+        val health = tracker.snapshot(state(clockOffset = (-3).minutes, readySince = T0))
+        assertEquals(listOf(ProblemCode.CLOCK_SKEW), health.problems.map { it.code })
+        assertTrue("180s" in health.problems.single().message, health.problems.single().message)
+        assertEquals("down", health.status)
+        clock.advance(10.minutes)
+        assertEquals(listOf(ProblemCode.CLOCK_SKEW), codes(state(clockOffset = 3.minutes, readySince = T0)), "nor read as unreachable")
+    }
+
+    @Test
+    fun an_unlinked_account_is_reported_instead_of_an_unreachable_dmarket() = runTest {
+        tracker.onEvent(LifecycleEvent.MarketplaceServerError("heartbeat", 403))
+        val health = tracker.snapshot(state(steamNotLinked = true, tracked = listOf("deal-1")))
+        assertEquals(listOf(ProblemCode.STEAM_NOT_LINKED), health.problems.map { it.code })
+        assertEquals(listOf("deal-1"), health.problems.single().affectedDeals.map { it.dealId })
+        assertEquals("down", health.status)
+        clock.advance(10.minutes)
+        assertEquals(listOf(ProblemCode.STEAM_NOT_LINKED), codes(state(steamNotLinked = true, readySince = T0)))
     }
 }

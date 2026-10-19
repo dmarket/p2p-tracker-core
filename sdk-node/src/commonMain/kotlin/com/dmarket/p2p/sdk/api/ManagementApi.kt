@@ -35,7 +35,8 @@ interface ManagementActions {
  *
  * - `PUT /v1/dmarket/key {publicKey, secretKey}` → `204`; `400 INVALID_KEY` for a malformed pair or one DMarket
  *   refuses; `409 DMARKET_KEY_ACCOUNT_CHANGED` for a key of another DMarket account; `503 DMARKET_UNREACHABLE`
- *   when the key's check heartbeat does not come back. The held key stays on every refusal.
+ *   when the key's check heartbeat does not come back, `503 CLOCK_SKEW` when it was refused while this host's
+ *   clock is off DMarket's. The held key stays on every refusal.
  * - `PUT /v1/steam/session {accessToken}` → `204`; `400` for a token the SDK will not hold; `409
  *   STEAM_WRONG_ACCOUNT` for a token of another Steam account (the held one stays).
  * - `GET /v1/health` → [Health]: `503` while it is `down` (the SDK counts as absent to DMarket), `200` otherwise.

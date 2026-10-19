@@ -494,4 +494,72 @@ class KtorMarketplaceClientTest {
 
         assertEquals<List<String?>>(listOf("sig-1", "sig-2"), signatures, "a signature is never reused across attempts")
     }
+
+    // ---- the reply's Date and the gateway's machine code ---------------------------------------------
+
+    @Test
+    fun every_reply_date_is_heard_a_refusal_included() = runTest {
+        val dates = mutableListOf<Instant>()
+        var status = HttpStatusCode.OK
+        val engine = MockEngine {
+            val headers = headersOf(
+                HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
+                HttpHeaders.Date to listOf("Tue, 16 Jun 2026 12:02:00 GMT"),
+            )
+            respond("{}", status, headers)
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator, onServerDate = { dates += it })
+
+        client.heartbeat(aHeartbeat())
+        status = HttpStatusCode.Unauthorized
+        assertFailsWith<MarketplaceUnauthorizedException> {
+            KtorMarketplaceClient(
+                createHttpClient(engine),
+                baseUrl,
+                FakeMarketplaceAuthenticator(token = "t", refreshResult = false),
+                onServerDate = { dates += it },
+            ).heartbeat(aHeartbeat())
+        }
+        assertEquals(List(2) { Instant.parse("2026-06-16T12:02:00Z") }, dates)
+    }
+
+    @Test
+    fun a_malformed_or_missing_date_is_skipped() = runTest {
+        val dates = mutableListOf<Instant>()
+        var date: String? = "yesterday-ish"
+        val engine = MockEngine {
+            val headers = listOfNotNull(
+                HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
+                date?.let { HttpHeaders.Date to listOf(it) },
+            )
+            respond("{}", HttpStatusCode.OK, headersOf(*headers.toTypedArray()))
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator, onServerDate = { dates += it })
+        client.heartbeat(aHeartbeat())
+        date = null
+        client.heartbeat(aHeartbeat())
+        assertTrue(dates.isEmpty(), "$dates")
+    }
+
+    @Test
+    fun a_refused_heartbeat_carries_the_gateways_code() = runTest {
+        val engine = MockEngine {
+            respond("""{"code":"P2P_STEAM_NOT_LINKED","message":"steam account is not linked"}""", HttpStatusCode.Forbidden, jsonHeaders())
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        val refused = assertFailsWith<MarketplaceServerErrorException> { client.heartbeat(aHeartbeat()) }
+        assertEquals(403, refused.statusCode)
+        assertEquals("P2P_STEAM_NOT_LINKED", refused.errorCode)
+        assertTrue("P2P" !in refused.message.orEmpty(), "the message still carries no body: ${refused.message}")
+
+        val report = assertFailsWith<MarketplaceServerErrorException> { client.reportDirectives(listOf(aDirectiveOutcome())) }
+        assertNull(report.errorCode, "only the heartbeat reads a refusal's body")
+    }
+
+    @Test
+    fun a_gateway_code_is_found_in_any_envelope() {
+        assertEquals("P2P_STEAM_NOT_LINKED", gatewayErrorCode("""{"error":{"code":"P2P_STEAM_NOT_LINKED"}}"""))
+        assertEquals("P2P_INVALID_TRANSITION", gatewayErrorCode("409: P2P_INVALID_TRANSITION"))
+        assertNull(gatewayErrorCode("""{"code":"Forbidden"}"""))
+    }
 }

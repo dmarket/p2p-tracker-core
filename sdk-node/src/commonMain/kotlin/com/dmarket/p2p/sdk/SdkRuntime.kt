@@ -99,7 +99,8 @@ class SdkRuntime(config: SdkConfig, platform: SdkPlatform, scope: CoroutineScope
             }
             is TradingKeyPushResult.Unverified -> {
                 log.warn("dmarket key unchecked", "publicKey" to push.publicKey, "reason" to push.reason)
-                PushOutcome.Unavailable("DMARKET_UNREACHABLE", "the key could not be checked: ${push.reason}; the held key stays")
+                val error = if (tracker.state().clockSkewed) "CLOCK_SKEW" else "DMARKET_UNREACHABLE"
+                PushOutcome.Unavailable(error, "the key could not be checked: ${push.reason}; the held key stays")
             }
         }
 

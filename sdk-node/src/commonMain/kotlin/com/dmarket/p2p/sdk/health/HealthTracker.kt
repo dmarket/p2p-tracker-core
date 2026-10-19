@@ -134,13 +134,29 @@ class HealthTracker(
                 "a key for another account was refused: its account $named, not $linked; switching accounts takes a restart",
             )
         }
-        if (dmarketAuthFailed) raise(ProblemCode.DMARKET_AUTH_FAILED, "DMarket refused the Trading API key", dealsTracked)
-        if (dmarketUnreachable) {
+        // A skewed clock is why every signature is refused: the key itself may be fine, so it is not blamed.
+        state.clockOffset?.takeIf { state.clockSkewed }?.let { offset ->
+            raise(
+                ProblemCode.CLOCK_SKEW,
+                "this host's clock is ${offset.absoluteValue.inWholeSeconds}s off DMarket's: sync it",
+                dealsTracked,
+            )
+        }
+        if (dmarketAuthFailed &&
+            !state.clockSkewed
+        ) {
+            raise(ProblemCode.DMARKET_AUTH_FAILED, "DMarket refused the Trading API key", dealsTracked)
+        }
+        // A heartbeat refused for the account's missing Steam link is answered: DMarket is reachable.
+        if (state.steamNotLinked) {
+            raise(ProblemCode.STEAM_NOT_LINKED, "the DMarket account has no Steam account linked: link one on DMarket", dealsTracked)
+        } else if (dmarketUnreachable) {
             raise(ProblemCode.DMARKET_UNREACHABLE, "DMarket answers with errors or not at all", dealsTracked)
         } else {
             val since = state.readySince
             val last = listOfNotNull(lastHeartbeatAt, since).maxOrNull()
-            if (since != null && last != null && !dmarketAuthFailed && now - last > heartbeatStaleAfter) {
+            val explained = dmarketAuthFailed || state.clockSkewed
+            if (since != null && last != null && !explained && now - last > heartbeatStaleAfter) {
                 raise(ProblemCode.DMARKET_UNREACHABLE, "no heartbeat has come back since $last", dealsTracked)
             }
         }

@@ -80,10 +80,12 @@ class MarketplaceUnauthorizedException : RuntimeException("DMarket request unaut
  * returns for a bad/absent route (e.g. 404, or 400/403/409) or a 5xx server error. Distinct from both
  * [MarketplaceUnauthorizedException] (a login problem the user can fix by re-authenticating) and a
  * transient transport/timeout failure, so the loop can surface a "DMarket is unreachable" state rather
- * than the misleading "you were logged out" prompt. [statusCode] is the HTTP status. Lives here (not
+ * than the misleading "you were logged out" prompt. [statusCode] is the HTTP status; [errorCode] the gateway's
+ * machine code (`P2P_…`) when the call read one from the reply's body, `null` otherwise. Lives here (not
  * with the Ktor client) because the loop must **catch** it, keeping the loop → domain direction intact.
  */
-class MarketplaceServerErrorException(val statusCode: Int) : RuntimeException("DMarket request failed: HTTP $statusCode")
+class MarketplaceServerErrorException(val statusCode: Int, val errorCode: String? = null) :
+    RuntimeException("DMarket request failed: HTTP $statusCode")
 
 /**
  * Thrown by [MarketplaceClient.reportTradeStatus] when a batch sent as several requests (a body-size cap split

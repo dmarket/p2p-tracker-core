@@ -32,7 +32,7 @@ sealed class HttpCallFailureException(message: String) : RuntimeException(messag
 /**
  * A non-2xx reply. [redactedUrl] has been through [NetworkRedaction.redactUrl]; the message never carries
  * a body. [errorBody] is `null` unless the request opted in via [captureErrorBody], and is redacted and
- * capped when present.
+ * capped when present. [serverDate] is the reply's `Date` header, as sent.
  */
 class HttpStatusException internal constructor(
     val statusCode: Int,
@@ -40,6 +40,7 @@ class HttpStatusException internal constructor(
     val redactedUrl: String,
     val retryAfterSeconds: Long?,
     val errorBody: String?,
+    val serverDate: String? = null,
 ) : HttpCallFailureException("HTTP $statusCode on $method $redactedUrl")
 
 /**
@@ -104,6 +105,7 @@ fun HttpClientConfig<*>.sanitizeHttpFailures(secretParamNames: Set<String> = Net
                         maxLen,
                     )
                 },
+                serverDate = response.headers[HttpHeaders.Date],
             )
         }
         handleResponseExceptionWithRequest { cause, request ->
@@ -122,6 +124,7 @@ fun HttpClientConfig<*>.sanitizeHttpFailures(secretParamNames: Set<String> = Net
                     redactedUrl = redactedUrl(),
                     retryAfterSeconds = cause.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull(),
                     errorBody = null,
+                    serverDate = cause.response.headers[HttpHeaders.Date],
                 )
                 else -> return@handleResponseExceptionWithRequest
             }

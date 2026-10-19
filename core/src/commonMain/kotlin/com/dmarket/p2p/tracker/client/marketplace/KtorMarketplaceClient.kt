@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.client.marketplace
 
 import com.dmarket.p2p.tracker.client.HttpStatusException
+import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.model.DealId
@@ -43,14 +44,17 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPath
+import io.ktor.http.fromHttpToGmtDate
 import kotlinx.coroutines.delay
 import kotlinx.serialization.encodeToString
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
+import kotlin.time.Instant
 
 /** Thrown on HTTP 429; [retryAfterSeconds] carries the `Retry-After` header when present. */
 class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rate limited (Retry-After=$retryAfterSeconds)")
@@ -71,6 +75,13 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * batch goes out as several requests, in order, stopping at the first that fails. See
  * [com.dmarket.p2p.tracker.config.HttpConfig.maxReportBodyBytes] for why.
  *
+ * [onServerDate] hears the `Date` of every reply that carries one, a refusal included, so a host whose requests
+ * are signed over its own clock can tell a skewed clock from a refused key. `null` (the default) reads none.
+ *
+ * A failed heartbeat's body is read for the gateway's machine code (`P2P_…`, at most [ERROR_BODY_CHARS], redacted)
+ * and carried as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's to fix,
+ * not the gateway's.
+ *
  * Audit boundary: no method here accepts a Steam credential — by construction the Steam JWT can never
  * be sent to the marketplace. The client also uses a DMarket-only [HttpClient], physically separate
  * from the Steam reader's transport.
@@ -82,6 +93,7 @@ class KtorMarketplaceClient(
     private val retry: MarketplaceRetryConfig = MarketplaceRetryConfig(),
     private val random: Random = Random.Default,
     private val maxReportBodyBytes: Int = 0,
+    private val onServerDate: ((Instant) -> Unit)? = null,
 ) : MarketplaceClient {
 
     /** C2 deal reads the host may proxy (`accept`/`getDeal`). */
@@ -91,7 +103,7 @@ class KtorMarketplaceClient(
     private val extPath = "$p2pPath/ext"
 
     override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse {
-        val text = postJson("$baseUrl$extPath/heartbeat", TrackerJson.encodeToString(request.toDto()))
+        val text = postJson("$baseUrl$extPath/heartbeat", TrackerJson.encodeToString(request.toDto()), readErrorCode = true)
         return TrackerJson.decodeFromString<HeartbeatResponseDto>(text).toDomain()
     }
 
@@ -181,21 +193,30 @@ class KtorMarketplaceClient(
      * other non-2xx (a deterministic 4xx like 404, or a 5xx) surfaces as [MarketplaceServerErrorException]
      * carrying the status, so the loop can tell a DMarket-side error apart from a transient transport blip.
      */
-    private suspend fun postJson(url: String, body: String): String = try {
-        send(url, body)
+    private suspend fun postJson(url: String, body: String, readErrorCode: Boolean = false): String = try {
+        send(url, body, readErrorCode)
     } catch (e: HttpStatusException) {
-        mapStatus(e) { retryOrUnauthorized { send(url, body) } }
+        mapStatus(e) { retryOrUnauthorized { send(url, body, readErrorCode) } }
     } catch (e: ResponseException) {
         // Only reachable if this client was built without sanitizeHttpFailures (the mobile host-supplied
         // path). Degrade to the same domain error rather than letting Ktor's URL+body message escape.
         throw MarketplaceServerErrorException(e.response.status.value)
     }
 
-    private suspend fun send(url: String, body: String): String {
+    private suspend fun send(url: String, body: String, readErrorCode: Boolean = false): String {
         val response: HttpResponse = httpClient.post(url) {
+            if (readErrorCode) captureErrorBody(ERROR_BODY_CHARS)
             authorizeAndSet(body)
         }
+        heardDate(response.headers[HttpHeaders.Date])
         return response.bodyAsText()
+    }
+
+    /** Hands [onServerDate] the instant a reply's `Date` names; a missing or malformed one is skipped. */
+    private fun heardDate(header: String?) {
+        val listener = onServerDate ?: return
+        val millis = header?.let { runCatching { it.fromHttpToGmtDate().timestamp }.getOrNull() } ?: return
+        listener(Instant.fromEpochMilliseconds(millis))
     }
 
     /** GET [url] with bearer auth; same 401-refresh-and-retry / 429 / server-error handling as POST. */
@@ -222,11 +243,14 @@ class KtorMarketplaceClient(
      *   gateway redirect stays a transient blip rather than becoming an immediate sticky error. Safe to
      *   rethrow now that the message carries no URL or body.
      */
-    private suspend fun mapStatus(e: HttpStatusException, onUnauthorized: suspend () -> String): String = when (e.statusCode) {
-        HttpStatusCode.Unauthorized.value -> onUnauthorized()
-        HttpStatusCode.TooManyRequests.value -> throw RateLimitedException(e.retryAfterSeconds)
-        in 400..599 -> throw MarketplaceServerErrorException(e.statusCode)
-        else -> throw e
+    private suspend fun mapStatus(e: HttpStatusException, onUnauthorized: suspend () -> String): String {
+        heardDate(e.serverDate)
+        return when (e.statusCode) {
+            HttpStatusCode.Unauthorized.value -> onUnauthorized()
+            HttpStatusCode.TooManyRequests.value -> throw RateLimitedException(e.retryAfterSeconds)
+            in 400..599 -> throw MarketplaceServerErrorException(e.statusCode, e.errorBody?.let(::gatewayErrorCode))
+            else -> throw e
+        }
     }
 
     /**
@@ -269,6 +293,7 @@ class KtorMarketplaceClient(
             block()
             authorize(HttpMethod.Get, body = "")
         }
+        heardDate(response.headers[HttpHeaders.Date])
         return response.bodyAsText()
     }
 
@@ -292,4 +317,14 @@ class KtorMarketplaceClient(
         val request = MarketplaceRequest(method.value, url.build().encodedPathAndQuery, body)
         authenticator.headersFor(request).forEach { (name, value) -> header(name, value) }
     }
+
+    private companion object {
+        /** Enough of a refusal's body for its machine code; the rest is never read. */
+        const val ERROR_BODY_CHARS = 512
+    }
 }
+
+/** The gateway's machine code in a refusal's body (`P2P_STEAM_NOT_LINKED`, …), whatever envelope carries it. */
+internal fun gatewayErrorCode(body: String): String? = GATEWAY_ERROR_CODE.find(body)?.value
+
+private val GATEWAY_ERROR_CODE = Regex("\\bP2P_[A-Z0-9_]+\\b")

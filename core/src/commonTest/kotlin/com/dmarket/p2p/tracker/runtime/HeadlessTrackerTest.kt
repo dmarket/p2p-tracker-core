@@ -21,6 +21,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.OutgoingContent
 import io.ktor.http.headersOf
+import io.ktor.http.toHttpDate
+import io.ktor.util.date.GMTDate
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.job
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -37,6 +39,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /**
  * The composed headless tracker against a scripted gateway and Steam. Cycles are driven by hand: the tracker's own
@@ -53,6 +57,10 @@ class HeadlessTrackerTest {
     private var otherKeyHeartbeat: String? = null
     private var otherKeyStatus = HttpStatusCode.OK
     private var otherKeyUnreachable = false
+    private var heartbeatStatus = HttpStatusCode.OK
+
+    /** The `Date` every DMarket reply carries; `null` sends none. */
+    private var serverDate: String? = null
 
     private class RecordingStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
@@ -68,7 +76,12 @@ class HeadlessTrackerTest {
         }
     }
 
-    private val json = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+    private val json get() = headersOf(
+        *listOfNotNull(
+            HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
+            serverDate?.let { HttpHeaders.Date to listOf(it) },
+        ).toTypedArray(),
+    )
 
     private val engine = MockEngine { request ->
         requests += request
@@ -78,7 +91,7 @@ class HeadlessTrackerTest {
                 if (otherKeyUnreachable) throw IllegalStateException("connection refused")
                 respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
             }
-            path.endsWith("/p2p/ext/heartbeat") -> respond(heartbeatBody, headers = json)
+            path.endsWith("/p2p/ext/heartbeat") -> respond(heartbeatBody, heartbeatStatus, json)
             path.endsWith("/p2p/ext/trade-actions") -> respond("""{"results":[{"directiveId":"dir-1","accepted":true}]}""", headers = json)
             path.endsWith("/p2p/ext/trade-events") -> respond("""{"results":[]}""", headers = json)
             path.endsWith("/tradeoffer/new/send") -> respond("""{"tradeofferid":"555","needs_mobile_confirmation":true}""", headers = json)
@@ -457,6 +470,90 @@ class HeadlessTrackerTest {
         restarted.cycle()
         assertEquals(deviceId, heartbeats().last().deviceId(), "the directive lease key survives the restart")
     }
+
+    // ---- what a refused heartbeat says --------------------------------------------------------------
+
+    @Test
+    fun a_heartbeat_refused_for_an_unlinked_account_says_so_until_one_comes_back() = runTest {
+        heartbeatStatus = HttpStatusCode.Forbidden
+        heartbeatBody = """{"code":"P2P_STEAM_NOT_LINKED","message":"no steam account linked"}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+
+        assertTrue(tracker.state().steamNotLinked)
+        assertTrue(steamRequests().isEmpty(), "no Steam action without a linked account")
+        assertTrue(
+            events.any { it is LifecycleEvent.MarketplaceServerError && it.statusCode == 403 },
+            "the loop reads it as any refused heartbeat: $events",
+        )
+
+        heartbeatStatus = HttpStatusCode.OK
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(false, tracker.state().steamNotLinked)
+    }
+
+    @Test
+    fun another_403_is_not_an_unlinked_account() = runTest {
+        heartbeatStatus = HttpStatusCode.Forbidden
+        heartbeatBody = """{"code":"Forbidden"}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(false, tracker.state().steamNotLinked)
+    }
+
+    @Test
+    fun dmarkets_date_measures_this_hosts_clock() = runTest {
+        val tracker = tracker()
+        assertNull(tracker.state().clockOffset, "nothing heard before a reply")
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+
+        serverDate = httpDate(clock.now() + 30.seconds)
+        tracker.cycle()
+        assertEquals(30.seconds, tracker.state().clockOffset)
+        assertEquals(false, tracker.state().clockSkewed, "within a minute")
+
+        serverDate = httpDate(clock.now() - 3.minutes)
+        heartbeatStatus = HttpStatusCode.Unauthorized
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals((-3).minutes, tracker.state().clockOffset, "a refusal's Date counts too")
+        assertTrue(tracker.state().clockSkewed)
+    }
+
+    @Test
+    fun a_key_refused_while_the_clock_is_off_is_unchecked_rather_than_invalid() = runTest {
+        val tracker = boundTracker()
+        serverDate = httpDate(clock.now() + 5.minutes)
+        otherKeyStatus = HttpStatusCode.Unauthorized
+
+        val refused = assertIs<TradingKeyPushResult.Unverified>(tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED))
+        assertTrue("clock" in refused.reason, refused.reason)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(PUBLIC_KEY, heartbeats().last().apiKey(), "the held key stays")
+    }
+
+    @Test
+    fun a_key_whose_account_links_no_steam_account_is_another_account() = runTest {
+        val tracker = boundTracker()
+        otherKeyStatus = HttpStatusCode.Forbidden
+        otherKeyHeartbeat = """{"code":"P2P_STEAM_NOT_LINKED"}"""
+
+        assertEquals(
+            TradingKeyPushResult.AccountChanged(OTHER_PUBLIC_KEY, PUBLIC_KEY, SteamId(STEAM_ID), null),
+            tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
+        )
+        assertEquals(false, tracker.state().steamNotLinked, "the probe does not speak for the held key's account")
+    }
+
+    private fun httpDate(at: Instant): String = GMTDate(at.toEpochMilliseconds()).toHttpDate()
 
     @Test
     fun a_session_id_is_twelve_random_bytes_in_hex() {
