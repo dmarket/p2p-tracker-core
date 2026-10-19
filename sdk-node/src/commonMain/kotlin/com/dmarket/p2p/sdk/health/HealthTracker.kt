@@ -1,8 +1,12 @@
 package com.dmarket.p2p.sdk.health
 
+import com.dmarket.p2p.sdk.prover.ProofProblems
+import com.dmarket.p2p.sdk.prover.ProverOutput
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.notary.PROOF_TOKEN_EXPIRING_REASON
+import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
@@ -41,6 +45,9 @@ class HealthTracker(
     private var tokenHeldThisCycle = false
     private val directiveFailures = linkedMapOf<String, String>()
     private val proofFailures = linkedMapOf<String, String>()
+    private val proverFailures = linkedMapOf<String, ProofFailure>()
+    private val classifiedProofs = mutableSetOf<String>()
+    private var proverMemory: String? = null
     private val since = mutableMapOf<ProblemCode, Instant>()
 
     override suspend fun onEvent(event: LifecycleEvent) {
@@ -85,10 +92,43 @@ class HealthTracker(
                     directiveFailures.remove(deal)
                 }
             }
-            is LifecycleEvent.ProofFailed -> proofFailures[event.dealId] = "proof failed: ${event.reason ?: "no detail"}"
+            is LifecycleEvent.ProofFailed -> when {
+                // The prover's host already said how it ended ([proofOutcome]).
+                classifiedProofs.remove(event.dealId) -> Unit
+                // Held back for the token's sake: STEAM_TOKEN_EXPIRING's story, like a held create.
+                event.reason?.contains(PROOF_TOKEN_EXPIRING_REASON) == true -> {
+                    tokenHeldThisCycle = true
+                    tokenHeldDeals += event.dealId
+                }
+                else -> proofFailures[event.dealId] = "proof failed: ${event.reason ?: "no detail"}"
+            }
             is LifecycleEvent.ProofSubmitted -> if (event.verified) proofFailures.remove(event.dealId)
             else -> Unit
         }
+    }
+
+    /**
+     * How a proof the prover's host ran for [dealId] ended; `null`: it proved, so the notary and the prover work and
+     * their problems clear. A failure the SDK held back without starting a prover changes nothing.
+     */
+    fun proofOutcome(dealId: String, failure: ProofFailure?) {
+        if (failure == null) {
+            proverFailures.clear()
+            proofFailures.remove(dealId)
+            return
+        }
+        classifiedProofs += dealId
+        when (ProofProblems.problemFor(failure)) {
+            null -> Unit
+            ProblemCode.PROOF_FAILED -> proofFailures[dealId] = "proof failed: ${ProverOutput.redact(failure.summary)}"
+            else -> proverFailures[dealId] = failure
+        }
+    }
+
+    /** At start: the memory limit ([limitBytes]) leaves less than one proof's peak ([peakBytes]) beside [usedBytes]. */
+    fun proverMemoryLow(limitBytes: Long, usedBytes: Long, peakBytes: Long) {
+        proverMemory = "the memory limit is ${limitBytes / MIB} MiB and the SDK uses ${usedBytes / MIB} MiB: " +
+            "one proof needs up to ${peakBytes / MIB} MiB beside it"
     }
 
     /** A pushed token was refused for naming [tokenSteamId] rather than [linkedSteamId]. */
@@ -183,6 +223,18 @@ class HealthTracker(
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)
+        // A refused proof can name a problem a heartbeat already raised (a refused key, a skewed clock): its deals join.
+        proverFailures.entries.groupBy { ProofProblems.problemFor(it.value, state.clockSkewed) }.forEach { (code, entries) ->
+            if (code == null) return@forEach
+            val deals = entries.map { it.key }
+            val held = open[code]
+            if (held != null) {
+                open[code] = held.first to (held.second + deals)
+            } else {
+                raise(code, "proof: ${ProverOutput.redact(entries.last().value.summary)}", deals)
+            }
+        }
+        proverMemory?.let { raise(ProblemCode.PROVER_MEMORY_LOW, it) }
         if (directiveFailures.isNotEmpty()) raise(ProblemCode.DIRECTIVE_FAILED, directiveFailures.values.first(), directiveFailures.keys)
 
         since.keys.retainAll(open.keys)
@@ -215,6 +267,7 @@ class HealthTracker(
 
     private companion object {
         const val FAILED = "FAILED"
+        const val MIB = 1024L * 1024L
         val HTTP_STATUS = Regex("HTTP (\\d{3})")
     }
 }

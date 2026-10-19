@@ -68,8 +68,17 @@ enum class ProblemCode(val severity: Severity) {
     /** DMarket has scheduled a minimum SDK version this one is below. */
     SDK_UPDATE_DUE(Severity.INFO),
 
-    /** The notary cannot be reached, so no proof can be made. */
+    /** The notary cannot be reached, or is busy (a 503 before the upgrade, a close 1013 after it): proofs back off. */
     NOTARY_UNAVAILABLE(Severity.DEGRADED),
+
+    /** The notary did not admit the session (a 403, or a close 4029 at the account's cap): proofs wait a minute. */
+    NOTARY_NOT_ADMITTED(Severity.DEGRADED),
+
+    /** A prover process was killed: out of memory, or past its deadline. The SDK lives and proves again later. */
+    PROVER_KILLED(Severity.DEGRADED),
+
+    /** The container's memory limit leaves less than one proof's peak beside the SDK. */
+    PROVER_MEMORY_LOW(Severity.DEGRADED),
 
     /** A proof for a deal could not be produced or delivered. */
     PROOF_FAILED(Severity.DEGRADED),

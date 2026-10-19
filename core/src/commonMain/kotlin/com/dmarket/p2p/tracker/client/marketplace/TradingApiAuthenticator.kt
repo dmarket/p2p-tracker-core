@@ -21,9 +21,12 @@ object TradingApiSignature {
 
     private const val REDACTED = "<redacted>"
 
-    /** A header name, its separator in a log's own spelling (`: `, `=`, `":"`), then the value up to its end. */
+    /** A header name, its separator in a log's own spelling (`: `, `=`, `":"`), then the value: a signature, or one word. */
     private val SIGNED_HEADER =
-        Regex("""\b(X-Api-Key|X-Sign-Date|X-Request-Sign)(["']?\s*[:=]\s*["']?)([^"',;\r\n}&]*)""", RegexOption.IGNORE_CASE)
+        Regex(
+            """\b(X-Api-Key|X-Sign-Date|X-Request-Sign)(["']?\s*[:=]\s*["']?)(dmar ed25519 [0-9a-fA-F]*|[^\s"',;}&]*)""",
+            RegexOption.IGNORE_CASE,
+        )
     private val SIGNATURE = Regex("""dmar ed25519 [0-9a-fA-F]+""")
 
     /**

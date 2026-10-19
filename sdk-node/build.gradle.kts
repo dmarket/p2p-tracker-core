@@ -16,7 +16,10 @@ plugins {
 
 kotlin {
     js {
-        nodejs()
+        nodejs {
+            // A prover-process test forks a child and waits on its deadlines; mocha's 2 s default is shorter.
+            testTask { useMocha { timeout = "30s" } }
+        }
         binaries.executable()
     }
 
