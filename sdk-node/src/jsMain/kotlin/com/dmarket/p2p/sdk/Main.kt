@@ -1,7 +1,7 @@
 package com.dmarket.p2p.sdk
 
 import com.dmarket.p2p.sdk.api.ManagementApi
-import com.dmarket.p2p.sdk.node.FileKeyValueStore
+import com.dmarket.p2p.sdk.node.AccountDirectories
 import com.dmarket.p2p.sdk.node.NodeManagementServer
 import com.dmarket.p2p.sdk.node.NodeModules
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
@@ -34,10 +34,10 @@ fun main() {
             NodeModules.process.exit(2)
             return@launch
         }
-        val storage = FileKeyValueStore(config.dataDir).also { it.init() }
+        val accounts = AccountDirectories(config.dataDir)
         val runtime = SdkRuntime(
             config = config,
-            platform = SdkPlatform(storage, clock, log),
+            platform = SdkPlatform({ steamId -> accounts.storeFor(steamId.value) }, clock, log),
             scope = scope,
         )
         val server = NodeManagementServer(ManagementApi(config.managementSecret, runtime), scope, log)

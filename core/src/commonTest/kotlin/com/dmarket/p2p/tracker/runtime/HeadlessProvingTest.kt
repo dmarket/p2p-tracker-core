@@ -63,7 +63,7 @@ class HeadlessProvingTest {
     }
 
     private fun tracker(proving: HeadlessProving?, notaryUrl: String = DEV_NOTARY) = HeadlessTracker(
-        platform = HeadlessPlatform(NoStore, clock, httpEngine = engine, signerFor = { echoSigner }, proving = proving),
+        platform = HeadlessPlatform({ NoStore }, clock, httpEngine = engine, signerFor = { echoSigner }, proving = proving),
         scope = idle,
         baseUrl = "https://gateway.test",
         tunables = TrackerConfig(notary = NotaryConfig(notaryUrl = notaryUrl)),

@@ -64,6 +64,8 @@ class SdkRuntimeTest {
         }
     }
 
+    private val store = InMemoryDeviceKeyValueStore()
+
     private val idle = CoroutineScope(StandardTestDispatcher(TestCoroutineScheduler()))
 
     private fun runtime(signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner }, steamWrites: Boolean = true) = SdkRuntime(
@@ -73,7 +75,7 @@ class SdkRuntimeTest {
             dmarketBaseUrl = "https://gateway.test",
             steamWrites = steamWrites,
         ),
-        platform = SdkPlatform(InMemoryDeviceKeyValueStore(), clock, SdkLog(clock) { logLines += it }, engine, signerFor),
+        platform = SdkPlatform({ store }, clock, SdkLog(clock) { logLines += it }, engine, signerFor),
         scope = idle,
     )
 

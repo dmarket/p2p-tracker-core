@@ -109,11 +109,13 @@ class HeadlessTrackerTest {
     private val echoSigner = Ed25519Signer { message -> message }
 
     private fun tracker(
-        storage: DeviceKeyValueStore = RecordingStore(),
+        stores: MutableMap<String, RecordingStore> = mutableMapOf(),
         signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner },
         steamWrites: Boolean = true,
     ) = HeadlessTracker(
-        platform = HeadlessPlatform(storage, clock, EventObserver { events += it }, engine, signerFor),
+        platform = HeadlessPlatform({
+            stores.getOrPut(it.value) { RecordingStore() }
+        }, clock, EventObserver { events += it }, engine, signerFor),
         scope = idle,
         baseUrl = "https://gateway.test",
         steamWrites = steamWrites,
@@ -496,8 +498,8 @@ class HeadlessTrackerTest {
 
     @Test
     fun no_secret_reaches_storage_or_the_events() = runTest {
-        val storage = RecordingStore()
-        val tracker = tracker(storage)
+        val stores = mutableMapOf<String, RecordingStore>()
+        val tracker = tracker(stores)
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED + PUBLIC_KEY)
         tracker.pushSteamToken(token)
         tracker.cycle()
@@ -513,26 +515,26 @@ class HeadlessTrackerTest {
         val sentToDmarket = requests.filter { "gateway" in it.url.host }.map { it.headers.entries().toString() + it.text() }
 
         val payload = token.substringAfter('.').substringBefore('.')
-        val everything = storage.entries.values + events.map { it.toString() } + tracker.state().toString() +
+        val everything = stores.values.flatMap { it.entries.values } + events.map { it.toString() } + tracker.state().toString() +
             checks.map { it.toString() } + sentToDmarket
         for (text in everything) {
             assertTrue(SECRET_SEED !in text, "the secret key leaked: $text")
             assertTrue(payload !in text, "the Steam token leaked: $text")
         }
-        assertTrue(storage.entries.isNotEmpty(), "the loop's own state is persisted")
+        assertTrue(stores.getValue(STEAM_ID).entries.isNotEmpty(), "the loop's own state is persisted")
         assertTrue(events.any { it is LifecycleEvent.HeartbeatSent }, "the events were observed: $events")
     }
 
     @Test
     fun a_restart_holds_neither_secret_and_keeps_the_device_id() = runTest {
-        val storage = RecordingStore()
-        val first = tracker(storage)
+        val stores = mutableMapOf<String, RecordingStore>()
+        val first = tracker(stores)
         first.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
         first.pushSteamToken(token)
         first.cycle()
         val deviceId = heartbeats().single().deviceId()
 
-        val restarted = tracker(storage)
+        val restarted = tracker(stores)
         restarted.cycle()
         assertEquals(1, heartbeats().size, "a restarted tracker does not heartbeat before the pushes")
         val state = restarted.state()
@@ -629,6 +631,60 @@ class HeadlessTrackerTest {
     }
 
     private fun httpDate(at: Instant): String = GMTDate(at.toEpochMilliseconds()).toHttpDate()
+
+    // ---- state per account --------------------------------------------------------------------------
+
+    @Test
+    fun the_state_is_kept_under_the_linked_account_and_a_kept_device_id_rides_the_first_heartbeat() = runTest {
+        val stores = mutableMapOf(STEAM_ID to RecordingStore().apply { entries["device_id"] = "device-kept" })
+        stores[OTHER_STEAM_ID] = RecordingStore().apply { entries["device_id"] = "device-of-another-account" }
+        val tracker = tracker(stores)
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+
+        assertEquals("device-kept", heartbeats().single().deviceId(), "the account's own device id, from the first heartbeat")
+        assertTrue(stores.getValue(STEAM_ID).entries.size > 1, "the loop writes under the linked account: ${stores.keys}")
+        assertEquals(mapOf("device_id" to "device-of-another-account"), stores.getValue(OTHER_STEAM_ID).entries, "untouched")
+    }
+
+    @Test
+    fun a_first_device_id_is_written_only_once_the_heartbeat_names_the_tokens_account() = runTest {
+        val stores = mutableMapOf<String, RecordingStore>()
+        val tracker = tracker(stores)
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        heartbeatStatus = HttpStatusCode.BadGateway
+        tracker.cycle()
+        assertTrue(stores.values.all { it.entries.isEmpty() }, "nothing is written before an account is named: $stores")
+
+        heartbeatStatus = HttpStatusCode.OK
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        val sent = heartbeats().map { it.deviceId() }
+        assertEquals(1, sent.toSet().size, "one device id throughout: $sent")
+        assertEquals(sent.first(), stores.getValue(STEAM_ID).entries["device_id"])
+    }
+
+    @Test
+    fun a_token_for_another_account_leaves_its_state_alone_and_the_linked_accounts_is_used() = runTest {
+        val stores = mutableMapOf<String, RecordingStore>()
+        val tracker = tracker(stores)
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(OTHER_STEAM_ID, clock.now() + 24.hours))
+        tracker.cycle()
+
+        assertTrue(stores[OTHER_STEAM_ID]?.entries.isNullOrEmpty(), "the token's account is not written: $stores")
+        assertTrue(steamRequests().isEmpty(), "a token for another account takes no Steam action")
+        val probe = heartbeats().single().deviceId()
+
+        assertIs<SteamPushResult.Held>(tracker.pushSteamToken(token))
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        val linkedDevice = stores.getValue(STEAM_ID).entries.getValue("device_id")
+        assertEquals(linkedDevice, heartbeats().last().deviceId(), "the linked account's own device id")
+        assertTrue(linkedDevice != probe, "the first heartbeat's id was the other account's and leased nothing")
+    }
 
     @Test
     fun a_session_id_is_twelve_random_bytes_in_hex() {

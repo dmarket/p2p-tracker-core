@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
 import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
@@ -23,14 +24,14 @@ import kotlinx.coroutines.CoroutineScope
 /**
  * What the SDK needs from the platform it runs on.
  *
- * @property storage where the loop's progress, claims, throttles and device id persist. No secret is ever
- *   written to it.
+ * @property storageFor where one Steam account's loop state persists — progress, claims, throttles, the device id —
+ *   for the account DMarket links to the pushed key's. No secret is ever written to it.
  * @property httpEngine the HTTP engine for both DMarket and Steam; `null` takes the platform's default.
  * @property signerFor builds the Ed25519 signer for a pushed key; throws when the key cannot sign. The platform's
  *   own by default.
  */
 class SdkPlatform(
-    val storage: DeviceKeyValueStore,
+    val storageFor: (SteamId) -> DeviceKeyValueStore,
     val clock: Clock,
     val log: SdkLog,
     val httpEngine: HttpClientEngine? = null,
@@ -49,7 +50,7 @@ class SdkRuntime(config: SdkConfig, platform: SdkPlatform, scope: CoroutineScope
 
     internal val tracker = HeadlessTracker(
         platform = HeadlessPlatform(
-            storage = platform.storage,
+            storageFor = platform.storageFor,
             clock = platform.clock,
             eventObserver = EventObserver { event ->
                 health.onEvent(event)

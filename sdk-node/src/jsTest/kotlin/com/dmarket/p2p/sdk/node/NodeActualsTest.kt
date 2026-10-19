@@ -26,6 +26,7 @@ import kotlin.js.Promise
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
@@ -40,12 +41,18 @@ class NodeActualsTest {
         return NodeModules.fs.mkdtemp(prefix).unsafeCast<Promise<String>>().await()
     }
 
+    private suspend fun exists(path: String): Boolean =
+        runCatching { NodeModules.fs.stat(path).unsafeCast<Promise<dynamic>>().await() }.isSuccess
+
     @Test
     fun the_file_store_round_trips_and_writes_owner_only_files() = runTest {
         val dir = tempDir()
-        val store = FileKeyValueStore(NodeModules.path.join(dir, "data") as String).also { it.init() }
+        val store = FileKeyValueStore(NodeModules.path.join(dir, "data") as String)
         assertNull(store.get("device_id"))
+        assertFalse(exists(NodeModules.path.join(dir, "data") as String), "a read creates nothing")
         store.set("device_id", "abc")
+        val dirStat: dynamic = NodeModules.fs.stat(NodeModules.path.join(dir, "data")).unsafeCast<Promise<dynamic>>().await()
+        assertEquals(448, (dirStat.mode as Int) and 511, "0700")
         store.set("device_id", "def")
         assertEquals("def", store.get("device_id"))
 
@@ -55,6 +62,21 @@ class NodeActualsTest {
         store.remove("device_id")
         store.remove("device_id")
         assertNull(store.get("device_id"))
+    }
+
+    @Test
+    fun each_account_keeps_its_state_in_its_own_directory() = runTest {
+        val dir = tempDir()
+        val accounts = AccountDirectories(dir)
+        accounts.storeFor("76561198000000001").set("device_id", "first")
+        accounts.storeFor("76561198000000099").set("device_id", "second")
+        assertEquals("first", accounts.storeFor("76561198000000001").get("device_id"))
+        val onDisk = NodeModules.fs.readFile(NodeModules.path.join(dir, "76561198000000099", "device_id"), "utf8")
+            .unsafeCast<Promise<String>>().await()
+        assertEquals("second", onDisk)
+        for (id in listOf("../etc", "", "7656119800000000a", "1/2")) {
+            assertFailsWith<IllegalArgumentException>(id) { accounts.storeFor(id) }
+        }
     }
 
     @Test

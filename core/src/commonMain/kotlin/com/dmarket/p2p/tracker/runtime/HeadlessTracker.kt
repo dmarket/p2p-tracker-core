@@ -74,8 +74,10 @@ import kotlin.uuid.Uuid
 /**
  * What a headless host supplies from its platform. Nothing secret passes through it.
  *
- * @property storage where the loop's progress, claims, throttles and device id persist. No secret is ever
- *   written to it.
+ * @property storageFor where one Steam account's loop state persists — progress, claims, throttles, the device id —
+ *   for the account DMarket links to the pushed key's ([AccountScopedStorage]): one location per account, so a
+ *   process started with another account's key never reads the first one's state. Called with steamid64s only, and
+ *   before anything is written. No secret is ever written to it.
  * @property eventObserver every lifecycle event the loop emits, after the tracker's own handling.
  * @property httpEngine the HTTP engine for both DMarket and Steam; `null` takes the platform's default.
  * @property signerFor builds the Ed25519 signer for a pushed key; throws when the key cannot sign. The platform's
@@ -83,7 +85,7 @@ import kotlin.uuid.Uuid
  * @property proving how proofs are made; `null` makes none (the no-op prover), as before.
  */
 class HeadlessPlatform(
-    val storage: DeviceKeyValueStore,
+    val storageFor: (SteamId) -> DeviceKeyValueStore,
     val clock: Clock = SystemClock(),
     val eventObserver: EventObserver = NoOpEventObserver,
     val httpEngine: HttpClientEngine? = null,
@@ -162,7 +164,8 @@ class HeadlessTracker(
     internal val steam = PushedSteamSession(clock) { loop.linkedSteamId }
     private val scheduler = CoroutineScheduler(scope)
     private val cycleMutex = Mutex()
-    private val deviceIds = PersistedDeviceIdStore(platform.storage)
+    private val storage = AccountScopedStorage(platform.storageFor) { steam.credential?.subjectSteamId }
+    private val deviceIds = PersistedDeviceIdStore(storage)
     private val requestTimeoutMs = tunables.http.requestTimeoutMs.toLong()
     private val marketplaceHttp = platform.httpEngine?.let { createMarketplaceHttpClient(it, requestTimeoutMs) }
         ?: createMarketplaceHttpClient(requestTimeoutMs = requestTimeoutMs)
@@ -323,12 +326,16 @@ class HeadlessTracker(
     }
 
     /**
-     * The loop's marketplace client, watched for the one heartbeat refusal the account's owner has to fix on DMarket:
-     * an account with no Steam account linked. The loop itself reads it as any other refused heartbeat.
+     * The loop's marketplace client, watched for what only the heartbeat says about the account: the linked Steam
+     * account its state is kept under ([AccountScopedStorage.confirm]), and the one refusal the account's owner has to
+     * fix on DMarket — no Steam account linked, which the loop itself reads as any other refused heartbeat.
      */
-    private inner class NotLinkedWatch(private val client: MarketplaceClient) : MarketplaceClient by client {
+    private inner class AccountWatch(private val client: MarketplaceClient) : MarketplaceClient by client {
         override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse = try {
-            client.heartbeat(request).also { steamNotLinked = false }
+            client.heartbeat(request).also { response ->
+                steamNotLinked = false
+                response.linkedSteamId?.let { storage.confirm(it) }
+            }
         } catch (e: MarketplaceServerErrorException) {
             steamNotLinked = e.errorCode == STEAM_NOT_LINKED_CODE
             throw e
@@ -350,7 +357,6 @@ class HeadlessTracker(
         val community = tunables.steamEndpoints.communityBaseUrl
         val adapter = Cs2GameAdapter(tunables.game)
         val sessionId = steamSessionId
-        val storage = platform.storage
         val creator = if (steamWrites) HeaderSessionSteamOfferCreator(steamHttp, sessionId, community, adapter) else RefusedOfferWrites
         val canceller = if (steamWrites) HeaderSessionSteamOfferCanceller(steamHttp, sessionId, community) else RefusedOfferWrites
         return TradeTrackerCore(GameRegistry.v1(tunables.game)).createLoop(
@@ -365,7 +371,7 @@ class HeadlessTracker(
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
             ),
-            marketplace = NotLinkedWatch(
+            marketplace = AccountWatch(
                 KtorMarketplaceClient(
                     httpClient = marketplaceHttp,
                     baseUrl = baseUrl,

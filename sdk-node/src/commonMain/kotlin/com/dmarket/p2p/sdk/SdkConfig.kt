@@ -10,8 +10,8 @@ import kotlinx.serialization.json.Json
  * management API requires; the DMarket key and the Steam token are never configured, only pushed.
  *
  * @property managementSecret the bearer every management request must carry. At least 32 characters.
- * @property dataDir where the loop's progress, claims and device id are kept across restarts. No secret is
- *   ever written there.
+ * @property dataDir where the loop's progress, claims and device id are kept across restarts, one directory per
+ *   account: `<dataDir>/<linkedSteamId>/`. No secret is ever written there.
  * @property listenHost the management API's address. Loopback by default: the API accepts a trading key and a
  *   Steam token, so it must not be reachable from anywhere the bot is not.
  * @property listenPort the management API's port.
