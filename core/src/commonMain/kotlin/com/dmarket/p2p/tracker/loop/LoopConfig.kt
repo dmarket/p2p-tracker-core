@@ -38,6 +38,8 @@ import kotlin.time.Duration
  *   `SteamWriteConfig.reportThrottledWrites` on). The backend reads `FAILED` as the seller failing to deliver, and
  *   nothing was tried; unanswered, the lease lapses to a device that can. `true` (the default) keeps the browser's
  *   reporting.
+ * @param heartbeatJitter Up to this fraction of the heartbeat delay is added to it at random, never past the ttl the
+ *   backend advertised, so clients behind one address do not beat in step. `0.0` (the default) adds none.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -50,4 +52,5 @@ data class LoopConfig(
     val heartbeatWithoutCredential: Boolean = false,
     val steamWrites: Boolean = true,
     val reportUnsentCreates: Boolean = true,
+    val heartbeatJitter: Double = 0.0,
 )

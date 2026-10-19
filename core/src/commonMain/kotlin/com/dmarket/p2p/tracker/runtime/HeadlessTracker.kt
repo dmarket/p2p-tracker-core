@@ -40,8 +40,12 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
+import com.dmarket.p2p.tracker.model.marketplace.InventoryReport
+import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
+import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
@@ -64,6 +68,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -153,6 +158,7 @@ data class HeadlessTrackerState(
  * @param steamWrites `false` for an account that only buys: no Steam offer is created or cancelled, whatever is
  *   leased — the writers are not even built, and the loop drops such a directive unreported, so its lease lapses to
  *   a device that writes. Reads, reports and the heartbeat are unchanged.
+ * @param random the draws behind the heartbeat's jitter and the 429 backoff's.
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,
@@ -160,6 +166,7 @@ class HeadlessTracker(
     private val baseUrl: String = TrackerConfig.DEFAULT_DMARKET_BASE_URL,
     private val tunables: TrackerConfig = TrackerConfig.defaults(),
     private val steamWrites: Boolean = true,
+    private val random: Random = Random.Default,
 ) {
     private val clock = platform.clock
     private val key = PushedTradingApiKey(platform.signerFor)
@@ -178,6 +185,8 @@ class HeadlessTracker(
     // Written by the marketplace calls, the loop's and the key check's. No @Volatile, as above.
     private var clockOffset: Duration? = null
     private var steamNotLinked = false
+    private var rateLimitedUntil: Instant? = null
+    private var rateLimitStreak = 0
 
     private val observer = EventObserver { event ->
         if (event is LifecycleEvent.HeartbeatSent) steam.heartbeatReturned()
@@ -220,9 +229,32 @@ class HeadlessTracker(
                 return
             }
             if (readySince == null) readySince = clock.now()
+            // DMarket asked for quiet: no call at all until then, a push's nudge included.
+            rateLimitWait()?.let {
+                scheduler.schedule(it)
+                return
+            }
             loop.runOnceReporting()
-            scheduler.schedule(loop.nextWakeDelay())
+            scheduler.schedule(maxOf(loop.nextWakeDelay(), rateLimitWait() ?: Duration.ZERO))
         }
+    }
+
+    private fun rateLimitWait(): Duration? = rateLimitedUntil?.let { it - clock.now() }?.takeIf { it > Duration.ZERO }
+
+    /**
+     * DMarket answered 429: nothing more goes to it until [Retry-After][retryAfterSeconds] has passed, nor before a
+     * backoff that doubles with each 429 in a row from [RATE_LIMIT_BACKOFF_BASE] to [RATE_LIMIT_BACKOFF_MAX], whichever
+     * is later — plus up to a quarter more at random, so SDKs behind one address do not all come back at once.
+     */
+    private fun rateLimited(retryAfterSeconds: Long?) {
+        rateLimitStreak += 1
+        val ladder = RATE_LIMIT_BACKOFF_BASE * (1 shl (rateLimitStreak - 1).coerceAtMost(RATE_LIMIT_MAX_DOUBLINGS))
+        val wait = maxOf(retryAfterSeconds?.coerceAtLeast(0)?.seconds ?: Duration.ZERO, ladder.coerceAtMost(RATE_LIMIT_BACKOFF_MAX))
+        rateLimitedUntil = clock.now() + wait + wait * (random.nextDouble() * RATE_LIMIT_JITTER)
+    }
+
+    private fun answered() {
+        rateLimitStreak = 0
     }
 
     /**
@@ -292,7 +324,8 @@ class HeadlessTracker(
                 e.statusCode == HTTP_FORBIDDEN -> TradingKeyPushResult.Invalid(KEY_REFUSED)
                 else -> unverified("its heartbeat failed: HTTP ${e.statusCode}")
             }
-        } catch (_: RateLimitedException) {
+        } catch (e: RateLimitedException) {
+            rateLimited(e.retryAfterSeconds)
             return unverified("its heartbeat was rate-limited")
         } catch (_: Throwable) {
             return unverified("its heartbeat did not come back")
@@ -332,14 +365,34 @@ class HeadlessTracker(
      * account its state is kept under ([AccountScopedStorage.confirm]), and the one refusal the account's owner has to
      * fix on DMarket — no Steam account linked, which the loop itself reads as any other refused heartbeat.
      */
-    private inner class AccountWatch(private val client: MarketplaceClient) : MarketplaceClient by client {
+    private inner class AccountWatch(private val client: MarketplaceClient) : MarketplaceClient {
         override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse = try {
-            client.heartbeat(request).also { response ->
+            watched { client.heartbeat(request) }.also { response ->
                 steamNotLinked = false
                 response.linkedSteamId?.let { storage.confirm(it) }
             }
         } catch (e: MarketplaceServerErrorException) {
             steamNotLinked = e.errorCode == STEAM_NOT_LINKED_CODE
+            throw e
+        }
+
+        override suspend fun reportTradeStatus(reports: List<TradeStatusReport>) = watched { client.reportTradeStatus(reports) }
+
+        override suspend fun submitProof(proof: ProofSubmission) = watched { client.submitProof(proof) }
+
+        override suspend fun reportDirectives(outcomes: List<DirectiveOutcome>) = watched { client.reportDirectives(outcomes) }
+
+        override suspend fun reportInventory(report: InventoryReport) = watched { client.reportInventory(report) }
+
+        override suspend fun acceptDeal(id: DealId) = watched { client.acceptDeal(id) }
+
+        override suspend fun getDeal(id: DealId) = watched { client.getDeal(id) }
+
+        /** Every call, for the 429s that quiet the tracker ([rateLimited]) and the answers that end a streak. */
+        private suspend fun <T> watched(call: suspend () -> T): T = try {
+            call().also { answered() }
+        } catch (e: RateLimitedException) {
+            rateLimited(e.retryAfterSeconds)
             throw e
         }
     }
@@ -373,6 +426,7 @@ class HeadlessTracker(
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
                 reportUnsentCreates = false,
+                heartbeatJitter = HEARTBEAT_JITTER,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(
@@ -410,6 +464,7 @@ class HeadlessTracker(
             directivesEnabled = true,
             eventObserver = observer,
             notifications = KtorSteamNotificationReader(steamHttp, tunables.steamEndpoints),
+            random = random,
         )
     }
 
@@ -435,6 +490,18 @@ class HeadlessTracker(
          * within two minutes of its own clock; this leaves room for the reply's own transit.
          */
         val MAX_CLOCK_SKEW: Duration = 60.seconds
+
+        /** How much later than the cadence a heartbeat may land, at random: clients behind one address drift apart. */
+        const val HEARTBEAT_JITTER: Double = 0.1
+
+        /** The first wait after a 429 with no longer `Retry-After`; it doubles with each 429 in a row. */
+        val RATE_LIMIT_BACKOFF_BASE: Duration = 30.seconds
+
+        /** The longest wait a run of 429s grows to: as long as the gateway's own ban on an address. */
+        val RATE_LIMIT_BACKOFF_MAX: Duration = 10.minutes
+
+        private const val RATE_LIMIT_MAX_DOUBLINGS = 5
+        private const val RATE_LIMIT_JITTER = 0.25
 
         /** The gateway's refusal of a heartbeat for an account that links no Steam account. */
         const val STEAM_NOT_LINKED_CODE: String = "P2P_STEAM_NOT_LINKED"

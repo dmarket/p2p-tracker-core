@@ -1639,9 +1639,21 @@ class TradeTrackerLoop(
     }
 
     private suspend fun scheduleNextHeartbeat(ttlSeconds: Int) {
-        val at = clock.now() + cadence.nextHeartbeatDelay(ttlSeconds, config.surface, config.mode)
+        val at = clock.now() + jittered(cadence.nextHeartbeatDelay(ttlSeconds, config.surface, config.mode), ttlSeconds)
         nextHeartbeatAt = at
         loopState.setNextHeartbeatAt(at)
+    }
+
+    /**
+     * [delay] pushed later by up to [LoopConfig.heartbeatJitter] of itself, and never past the advertised [ttlSeconds]:
+     * clients behind one address that started together drift apart instead of beating in step. Later only, because a
+     * wake earlier than the platform's floor is raised back to it anyway. No draw at all without jitter.
+     */
+    private fun jittered(delay: Duration, ttlSeconds: Int): Duration {
+        if (config.heartbeatJitter <= 0.0) return delay
+        val ttl = (ttlSeconds.toLong() * 1000L).milliseconds
+        val room = if (ttlSeconds > 0) (ttl - delay).coerceAtLeast(Duration.ZERO) else delay
+        return delay + minOf(delay * config.heartbeatJitter, room) * random.nextDouble()
     }
 
     /**

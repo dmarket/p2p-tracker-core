@@ -32,6 +32,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -62,6 +63,9 @@ class HeadlessTrackerTest {
     /** The `Date` every DMarket reply carries; `null` sends none. */
     private var serverDate: String? = null
 
+    /** The `Retry-After` every DMarket reply carries; `null` sends none. */
+    private var retryAfter: String? = null
+
     private class RecordingStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
 
@@ -80,6 +84,7 @@ class HeadlessTrackerTest {
         *listOfNotNull(
             HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
             serverDate?.let { HttpHeaders.Date to listOf(it) },
+            retryAfter?.let { HttpHeaders.RetryAfter to listOf(it) },
         ).toTypedArray(),
     )
 
@@ -112,6 +117,7 @@ class HeadlessTrackerTest {
         stores: MutableMap<String, RecordingStore> = mutableMapOf(),
         signerFor: suspend (TradingApiKey) -> Ed25519Signer = { echoSigner },
         steamWrites: Boolean = true,
+        random: Random = Random(7),
     ) = HeadlessTracker(
         platform = HeadlessPlatform({
             stores.getOrPut(it.value) { RecordingStore() }
@@ -119,6 +125,7 @@ class HeadlessTrackerTest {
         scope = idle,
         baseUrl = "https://gateway.test",
         steamWrites = steamWrites,
+        random = random,
     )
 
     private fun heartbeats() = requests.filter { it.url.encodedPath.endsWith("/p2p/ext/heartbeat") }
@@ -476,6 +483,7 @@ class HeadlessTrackerTest {
             tracker.pushTradingApiKey(OTHER_PUBLIC_KEY, SECRET_SEED),
         )
 
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE * 2) // the check's 429 quieted DMarket calls
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
         assertEquals(PUBLIC_KEY, heartbeats().last().apiKey(), "the held key still signs")
@@ -708,6 +716,99 @@ class HeadlessTrackerTest {
         val linkedDevice = stores.getValue(STEAM_ID).entries.getValue("device_id")
         assertEquals(linkedDevice, heartbeats().last().deviceId(), "the linked account's own device id")
         assertTrue(linkedDevice != probe, "the first heartbeat's id was the other account's and leased nothing")
+    }
+
+    // ---- 429 and jitter -----------------------------------------------------------------------------
+
+    /** Every draw is 0: no jitter. */
+    private object Lowest : Random() {
+        override fun nextBits(bitCount: Int): Int = 0
+    }
+
+    /** Every draw is just under 1: the most jitter. */
+    private object Highest : Random() {
+        override fun nextBits(bitCount: Int): Int = -1 ushr (32 - bitCount)
+    }
+
+    private suspend fun rateLimitedTracker(random: Random = Lowest): HeadlessTracker = tracker(random = random).also {
+        it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        it.pushSteamToken(token)
+        heartbeatStatus = HttpStatusCode.TooManyRequests
+    }
+
+    @Test
+    fun a_429_quiets_every_call_until_its_retry_after_has_passed() = runTest {
+        retryAfter = "120"
+        val tracker = rateLimitedTracker()
+        tracker.cycle()
+        assertEquals(1, requests.size)
+
+        heartbeatStatus = HttpStatusCode.OK
+        retryAfter = null
+        clock.advance(119.seconds)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(1, requests.size, "nothing goes out before Retry-After, a push's nudge included")
+
+        clock.advance(1.seconds)
+        tracker.cycle()
+        assertEquals(2, heartbeats().size, "once it has passed, the heartbeat goes out")
+    }
+
+    @Test
+    fun without_retry_after_429s_back_off_doubling_with_jitter() = runTest {
+        val tracker = rateLimitedTracker(Highest)
+        tracker.cycle()
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE)
+        tracker.cycle()
+        assertEquals(1, heartbeats().size, "the first wait is the base, plus jitter")
+
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE / 4)
+        tracker.cycle()
+        assertEquals(2, heartbeats().size)
+
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE * 2)
+        tracker.cycle()
+        assertEquals(2, heartbeats().size, "the second doubles")
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE / 2)
+        tracker.cycle()
+        assertEquals(3, heartbeats().size)
+    }
+
+    @Test
+    fun a_retry_after_shorter_than_the_backoff_does_not_shorten_it() = runTest {
+        retryAfter = "1"
+        val tracker = rateLimitedTracker()
+        tracker.cycle()
+        clock.advance(2.seconds)
+        tracker.cycle()
+        assertEquals(1, heartbeats().size)
+        clock.advance(HeadlessTracker.RATE_LIMIT_BACKOFF_BASE)
+        tracker.cycle()
+        assertEquals(2, heartbeats().size)
+    }
+
+    @Test
+    fun the_heartbeat_lands_later_by_up_to_a_tenth_never_past_the_ttl() = runTest {
+        val steady = tracker(random = Lowest).also {
+            it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+            it.pushSteamToken(token)
+            it.cycle()
+        }
+        assertEquals(60.seconds, steady.loop.nextWakeDelay(), "a 100 s ttl beats on the 60 s floor")
+
+        val drifted = tracker(random = Highest).also {
+            it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+            it.pushSteamToken(token)
+            it.cycle()
+        }
+        val wake = drifted.loop.nextWakeDelay()
+        assertTrue(wake > 65.seconds && wake <= 66.seconds, "$wake")
+
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":61,"linkedSteamId":"$STEAM_ID"}"""
+        drifted.loop.forceHeartbeatNow()
+        drifted.cycle()
+        assertTrue(drifted.loop.nextWakeDelay() <= 61.seconds, "never past the ttl: ${drifted.loop.nextWakeDelay()}")
     }
 
     @Test

@@ -44,6 +44,7 @@ import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
+import kotlin.random.Random
 
 /**
  * Composition root for the trade-tracker core. [createLoop] wires all ports into a [TradeTrackerLoop]
@@ -118,6 +119,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         directivesEnabled: Boolean = false,
         eventObserver: EventObserver = NoOpEventObserver,
         notifications: SteamNotificationReader = NoOpSteamNotificationReader,
+        random: Random = Random.Default,
     ): TradeTrackerLoop {
         val provider = SteamCredentialProvider(
             vault = vault,
@@ -150,6 +152,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             directivesEnabled = directivesEnabled,
             eventObserver = eventObserver,
             notifications = notifications,
+            random = random,
         )
     }
 
