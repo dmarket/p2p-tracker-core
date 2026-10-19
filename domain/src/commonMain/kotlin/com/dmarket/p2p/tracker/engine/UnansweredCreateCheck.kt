@@ -31,17 +31,12 @@ object UnansweredCreateCheck {
     val CLOCK_TOLERANCE: Duration = 5.minutes
 
     /**
-     * When the check stops: the claim's [ttl] (after which the claim no longer guards the deal) or the create's
-     * deadline, whichever comes first. Past it nothing is concluded, so nothing is reported against the seller.
+     * Whether the check for [claim] is over at [now]: past the claim's [ttl] (after which the claim no longer guards
+     * the deal) or the create's deadline, whichever comes first. Past it nothing is concluded, so nothing is reported
+     * against the seller.
      */
-    fun closesAt(claim: DealWriteClaim, unanswered: UnansweredCreate, ttl: Duration): Instant {
-        val expiry = claim.claimedAt + ttl
-        return unanswered.deadline?.let { minOf(it, expiry) } ?: expiry
-    }
-
-    /** Whether the check for [claim] is over at [now]; see [closesAt]. */
     fun isClosed(claim: DealWriteClaim, unanswered: UnansweredCreate, now: Instant, ttl: Duration): Boolean =
-        now >= closesAt(claim, unanswered, ttl)
+        now >= claim.claimedAt + ttl || unanswered.deadline?.let { now >= it } == true
 
     /**
      * The verdict of one read of [sentOffers] at [now]. An absence counts only once [grace] has passed since the

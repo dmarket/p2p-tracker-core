@@ -170,8 +170,7 @@ data class HeadlessTrackerState(
  * @param steamWrites `false` for an account that only buys: no Steam offer is created or cancelled, whatever is
  *   leased — the writers are not even built, and the loop drops such a directive unreported, so its lease lapses to
  *   a device that writes. Reads, reports and the heartbeat are unchanged.
- * @param random the draws behind the 429 backoff's jitter and the loop's own. The heartbeat itself is not jittered:
- *   DMarket already spreads each device's ttl by its device id.
+ * @param random the draws behind the 429 backoff's jitter and the loop's own.
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,

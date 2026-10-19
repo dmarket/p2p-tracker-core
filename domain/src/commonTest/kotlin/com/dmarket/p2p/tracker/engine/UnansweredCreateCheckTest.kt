@@ -15,6 +15,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -77,13 +78,14 @@ class UnansweredCreateCheckTest {
     @Test
     fun the_check_closes_at_the_claims_ttl_or_the_create_deadline_whichever_is_first() {
         val ttl = 15.minutes
-        assertEquals(t0 + 15.minutes, UnansweredCreateCheck.closesAt(claim, unanswered, ttl))
+        fun closed(unanswered: UnansweredCreate, at: Duration) = UnansweredCreateCheck.isClosed(claim, unanswered, t0 + at, ttl)
+        assertFalse(closed(unanswered, 14.minutes))
+        assertTrue(closed(unanswered, 15.minutes), "no deadline: the claim's TTL")
         val tight = unanswered.copy(deadline = t0 + 4.minutes)
-        assertEquals(t0 + 4.minutes, UnansweredCreateCheck.closesAt(claim, tight, ttl))
-        assertEquals(t0 + 15.minutes, UnansweredCreateCheck.closesAt(claim, unanswered.copy(deadline = t0 + 1.hours()), ttl))
-        assertFalse(UnansweredCreateCheck.isClosed(claim, tight, t0 + 3.minutes, ttl))
-        assertTrue(UnansweredCreateCheck.isClosed(claim, tight, t0 + 4.minutes, ttl))
+        assertFalse(closed(tight, 3.minutes))
+        assertTrue(closed(tight, 4.minutes), "the deadline first")
+        val loose = unanswered.copy(deadline = t0 + 1.hours)
+        assertFalse(closed(loose, 14.minutes))
+        assertTrue(closed(loose, 15.minutes), "the TTL first")
     }
-
-    private fun Int.hours(): Duration = (this * 60).minutes
 }

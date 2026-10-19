@@ -191,7 +191,7 @@ class DealWriteClaimStoreTest {
         val unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"), AssetId("a2")), t0 + 10.minutes)
         PersistedDealWriteClaimStore(storage).apply {
             claim(claim(), t0, ttl)
-            hold(key, unanswered)
+            assertTrue(replace(claim(), claim().copy(unanswered = unanswered)))
         }
         val respawned = PersistedDealWriteClaimStore(storage)
         val held = respawned.all().single()
@@ -200,43 +200,22 @@ class DealWriteClaimStoreTest {
     }
 
     @Test
-    fun a_held_create_settles_into_a_completed_claim_or_none() = runTest {
+    fun a_claim_is_replaced_or_dropped_only_while_it_is_still_the_one_expected() = runTest {
         val store = PersistedDealWriteClaimStore()
         store.claim(claim(), t0, ttl)
-        store.hold(key, UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"))))
-        val held = store.all().single()
+        val held = claim().copy(unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"))))
+        assertTrue(store.replace(claim(), held))
 
-        assertTrue(store.settle(held, outcome()))
-        val completed = store.all().single()
-        assertEquals(ClaimPhase.COMPLETED, completed.phase)
-        assertEquals(null, completed.unanswered)
-        assertEquals(false, store.settle(held, null), "settled once, so the old claim is not there any more")
+        val completed = held.copy(phase = ClaimPhase.COMPLETED, outcome = outcome(), unanswered = null)
+        assertTrue(store.replace(held, completed))
+        assertEquals(completed, store.all().single())
+        assertEquals(false, store.replace(held, null), "replaced once, so the old claim is not there any more")
+        assertEquals(completed, store.all().single())
 
-        store.release(setOf(key))
-        store.claim(claim(), t0, ttl)
-        store.hold(key, UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"))))
-        assertTrue(store.settle(store.all().single(), null))
-        assertTrue(store.all().isEmpty(), "absent: released")
-    }
-
-    @Test
-    fun holding_needs_a_claim_in_flight_and_null_lets_the_check_go() = runTest {
-        val store = PersistedDealWriteClaimStore()
-        val unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1")))
-        store.hold(key, unanswered)
-        assertTrue(store.all().isEmpty(), "nothing to hold")
-
-        store.claim(claim(), t0, ttl)
-        store.complete(key, outcome())
-        store.hold(key, unanswered)
-        assertEquals(null, store.all().single().unanswered, "a completed claim is not held")
-
-        store.release(setOf(key))
-        store.claim(claim(), t0, ttl)
-        store.hold(key, unanswered)
-        store.hold(key, null)
-        val claim = store.all().single()
-        assertEquals(ClaimPhase.IN_FLIGHT to null, claim.phase to claim.unanswered)
+        assertTrue(store.replace(completed, null))
+        assertTrue(store.all().isEmpty(), "dropped")
+        assertEquals(false, store.replace(claim(), held), "nothing stands to replace")
+        assertTrue(store.all().isEmpty())
     }
 
     @Test

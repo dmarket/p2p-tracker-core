@@ -41,13 +41,13 @@ internal object SteamReadResponses {
      * to a DMarket deal are discarded here and never looked at.
      */
     fun bulkOfferSnapshots(body: String): Map<OfferId, SteamOfferSnapshot> {
-        val response = json.decodeFromString<GetTradeOffersWrapper>(body).response ?: return emptyMap()
+        val response = tradeOffers(body) ?: return emptyMap()
         return (response.sent + response.received).associate { OfferId(it.tradeOfferId) to it.toSnapshot() }
     }
 
     /** `GetTradeOffers` asked for sent offers only: each with its partner, state, given assets and creation time. */
     fun sentOffers(body: String): List<SteamSentOffer> {
-        val response = json.decodeFromString<GetTradeOffersWrapper>(body).response ?: return emptyList()
+        val response = tradeOffers(body) ?: return emptyList()
         return response.sent.map {
             SteamSentOffer(
                 offerId = OfferId(it.tradeOfferId),
@@ -58,6 +58,8 @@ internal object SteamReadResponses {
             )
         }
     }
+
+    private fun tradeOffers(body: String): GetTradeOffersResponse? = json.decodeFromString<GetTradeOffersWrapper>(body).response
 
     /**
      * The offer axis of one offer: its raw state plus the `tradeid` Steam attaches on acceptance — the id of

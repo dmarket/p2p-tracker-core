@@ -162,7 +162,7 @@ private const val UNANSWERED_CREATE_ABSENT = "no answer from steam, and no such 
  * read could settle it. Nothing is known against the seller, so nothing is reported; the claim keeps guarding the deal
  * until its TTL.
  */
-const val UNANSWERED_CREATE_UNSETTLED = "unanswered: steam could not be read before the create's window closed"
+internal const val UNANSWERED_CREATE_UNSETTLED = "unanswered: steam could not be read before the create's window closed"
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
@@ -408,22 +408,6 @@ class TradeTrackerLoop(
         draft: TradeDraft,
         linkedSteamId: SteamId? = null,
     ): CreateOfferResult {
-        if (!config.steamWrites) {
-            emit(
-                LifecycleEvent.DirectiveDropped(
-                    DirectiveAction.CREATE_OFFER.wireName,
-                    directiveId.value,
-                    OFFER_WRITES_DISABLED,
-                    dealId?.value,
-                ),
-            )
-            return CreateOfferResult.Failed(OFFER_WRITES_DISABLED)
-        }
-        val credential = credentials.current()
-            ?: return CreateOfferResult.Failed("no Steam credential")
-                .also {
-                    emit(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = dealId?.value, error = "no Steam credential"))
-                }
         // The FE handed us the backend's create_offer directive_id out-of-band (no heartbeat wait), so the
         // extension itself registers the outcome (steam_offer_id + status) with the backend on /trade-actions.
         val directive = Directive(
@@ -434,6 +418,15 @@ class TradeTrackerLoop(
             assetIds = draft.assetsToGive,
             tradeToken = draft.tradeToken,
         )
+        if (!config.steamWrites) {
+            emitDropped(directive, OFFER_WRITES_DISABLED)
+            return CreateOfferResult.Failed(OFFER_WRITES_DISABLED)
+        }
+        val credential = credentials.current()
+            ?: return CreateOfferResult.Failed("no Steam credential")
+                .also {
+                    emit(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = dealId?.value, error = "no Steam credential"))
+                }
         // Wrong-account guard: the FE tells us which Steam id the DMarket account is linked to. If it
         // disagrees with the token we hold — or the browser session the write would ride belongs to
         // another account ([accountAllowsWrite] axis 2) — never write to Steam: notify, report FAILED to
@@ -488,31 +481,12 @@ class TradeTrackerLoop(
             val result = runCatching { offerCreator.createOffer(credential, draft) }
                 .getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }
                 .diagnosed()
-            unansweredCreate(result, dealId, draft.partner, draft.assetsToGive, deadline = null)?.let { unanswered ->
-                recordCreateResult(draft.partner, result)
-                emitUnanswered(dealId, directiveId, result)
-                return@withDealClaim result to ClaimEnd.Held(unanswered)
-            }
-            val wroteToSteam = result is CreateOfferResult.NeedsConfirmation || result is CreateOfferResult.Created
-            val outcome = when (result) {
-                is CreateOfferResult.NeedsConfirmation -> directive.outcome(
-                    DirectiveStatus.NEEDS_CONFIRMATION,
-                    steamOfferId = result.offerId.value,
-                )
-                is CreateOfferResult.Created -> directive.outcome(DirectiveStatus.SUCCESS, steamOfferId = result.offerId.value)
-                is CreateOfferResult.Failed -> directive.outcome(DirectiveStatus.FAILED, error = result.error)
-                // offerCreator never returns AccountMismatch or either duplicate verdict (the guards
-                // above short-circuit first); handled defensively as FAILED to keep the path exhaustive.
-                is CreateOfferResult.AccountMismatch -> directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR)
-                is CreateOfferResult.AlreadyCreated, is CreateOfferResult.CreateInFlight ->
-                    directive.outcome(DirectiveStatus.FAILED, error = DUPLICATE_WRITE_ERROR)
-                // Unreachable: the gate above already answered a throttled create, and a SteamOfferCreator
-                // never throttles itself. Defensive, to keep this `when` exhaustive.
-                is CreateOfferResult.Throttled -> directive.outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
-            }
             // Feed the surface's own verdict back before anything else: a Steam refusal here is the same
             // signal as one on the directive path, and the next caller (either path) must see the cooldown.
             recordCreateResult(draft.partner, result)
+            holdIfUnanswered(result, directive)?.let { return@withDealClaim result to ClaimEnd.Held(it) }
+            val wroteToSteam = result is CreateOfferResult.NeedsConfirmation || result is CreateOfferResult.Created
+            val outcome = directive.createOutcome(result)
             // Mark handled the moment the Steam write succeeds so a later heartbeat re-lease of this
             // directive_id can never re-execute the create (duplicate live Steam offer); the persisted
             // outcome lets the heartbeat path re-send the report if the one below fails.
@@ -527,15 +501,7 @@ class TradeTrackerLoop(
             }
             val accepted = reportOutcome(outcome)
             if (wroteToSteam && accepted) pruneOutcome(directiveId)
-            emit(
-                LifecycleEvent.DirectiveExecuted(
-                    "create_offer",
-                    outcome.status.name,
-                    outcome.steamOfferId?.value,
-                    outcome.dealId?.value,
-                    outcome.error,
-                ),
-            )
+            emitExecuted(outcome)
             // Only a real Steam write completes the claim; a FAILED create wrote nothing, so releasing it
             // leaves a genuine retry (a re-lease, or the user pressing the button again) free to proceed.
             result to outcome.takeIf { wroteToSteam }.claimEnd()
@@ -708,7 +674,7 @@ class TradeTrackerLoop(
         when (end) {
             is ClaimEnd.Completed -> claims.complete(key, end.outcome)
             ClaimEnd.Released -> claims.release(setOf(key))
-            is ClaimEnd.Held -> claims.hold(key, end.unanswered)
+            is ClaimEnd.Held -> claims.replace(pending, pending.copy(unanswered = end.unanswered))
         }
         return result
     }
@@ -879,26 +845,47 @@ class TradeTrackerLoop(
     }
 
     /**
-     * What to hold a deal's create claim with when [result] got no answer from Steam
-     * ([SteamCreateFailureCause.TRANSPORT]) and [LoopConfig.unansweredCreateGrace] is set; `null` otherwise, and for a
-     * deal-less create, which has no claim to hold.
+     * What to hold this create's deal claim with, when [result] got no answer from Steam
+     * ([SteamCreateFailureCause.TRANSPORT]) and [LoopConfig.unansweredCreateGrace] is set — said with a
+     * [LifecycleEvent.CreateUnanswered]; `null` otherwise, and for a deal-less create, which has no claim to hold.
      */
-    private fun unansweredCreate(
-        result: CreateOfferResult,
-        dealId: DealId?,
-        partner: SteamId,
-        assets: List<AssetId>,
-        deadline: Instant?,
-    ): UnansweredCreate? {
-        if (config.unansweredCreateGrace == null || dealId == null) return null
-        if (result !is CreateOfferResult.Failed || result.cause != SteamCreateFailureCause.TRANSPORT) return null
-        return UnansweredCreate(partner, assets.toSet(), deadline)
+    private suspend fun holdIfUnanswered(result: CreateOfferResult, directive: Directive): UnansweredCreate? {
+        if (config.unansweredCreateGrace == null) return null
+        val failed = result as? CreateOfferResult.Failed ?: return null
+        if (failed.cause != SteamCreateFailureCause.TRANSPORT) return null
+        val dealId = directive.dealId ?: return null
+        val partner = directive.partnerSteamId ?: return null
+        emit(LifecycleEvent.CreateUnanswered(dealId.value, directive.directiveId.value, failed.error))
+        return UnansweredCreate(partner, directive.assetIds.toSet(), directive.deadline)
     }
 
-    private suspend fun emitUnanswered(dealId: DealId?, directiveId: DirectiveId, result: CreateOfferResult) {
-        val deal = dealId ?: return
-        emit(LifecycleEvent.CreateUnanswered(deal.value, directiveId.value, (result as? CreateOfferResult.Failed)?.error))
+    /** This create's outcome, from the [CreateOfferResult] its Steam write produced. */
+    private fun Directive.createOutcome(result: CreateOfferResult): DirectiveOutcome = when (result) {
+        is CreateOfferResult.NeedsConfirmation -> outcome(DirectiveStatus.NEEDS_CONFIRMATION, steamOfferId = result.offerId.value)
+        is CreateOfferResult.Created -> outcome(DirectiveStatus.SUCCESS, steamOfferId = result.offerId.value)
+        is CreateOfferResult.Failed -> outcome(DirectiveStatus.FAILED, error = result.error)
+        // A SteamOfferCreator never returns AccountMismatch or either duplicate verdict (the guards in front of every
+        // write short-circuit first); handled defensively as a FAILED outcome to keep the write path exhaustive and safe.
+        is CreateOfferResult.AccountMismatch -> outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR)
+        is CreateOfferResult.AlreadyCreated, is CreateOfferResult.CreateInFlight ->
+            outcome(DirectiveStatus.FAILED, error = DUPLICATE_WRITE_ERROR)
+        // Unreachable: a throttled create is answered before any write, and a creator never throttles itself.
+        is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
     }
+
+    private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
+        LifecycleEvent.DirectiveExecuted(
+            outcome.action.wireName,
+            outcome.status.name,
+            outcome.steamOfferId?.value,
+            outcome.dealId?.value,
+            outcome.error,
+        ),
+    )
+
+    /** A leased offer write this client does not run, told with its deal. */
+    private suspend fun emitDropped(directive: Directive, reason: String) =
+        emit(LifecycleEvent.DirectiveDropped(directive.action.wireName, directive.directiveId.value, reason, directive.dealId?.value))
 
     /**
      * Says out loud that a leased `create_offer` was not attempted, and why.
@@ -1376,7 +1363,7 @@ class TradeTrackerLoop(
                 return@withLock TickOutcome.EMPTY
             }
             val tracking = checkNotNull(cached) // WATCH_ONLY is only decided on a non-null list
-            if (directivesEnabled) reconcileUnansweredCreates(credential)
+            reconcileUnansweredCreates(credential)
             val (reportsSent, proofsSubmitted) = watchAndReport(tracking, credential)
             val outcome = TickOutcome(reportsSent = reportsSent, proofsSubmitted = proofsSubmitted, watching = tracking.size)
             emit(LifecycleEvent.CycleCompleted(0, reportsSent, proofsSubmitted, outcome.watching))
@@ -1417,7 +1404,7 @@ class TradeTrackerLoop(
             return@withLock TickOutcome.EMPTY
         }
 
-        if (directivesEnabled) reconcileUnansweredCreates(credential)
+        reconcileUnansweredCreates(credential)
         val directivesExecuted = if (directivesEnabled) executeDirectives(heartbeat, credential) else announceDirectiveGate(heartbeat)
         val (reportsSent, proofsSubmitted) = watchAndReport(heartbeat.activeTracking, credential)
         val outcome = TickOutcome(
@@ -1537,9 +1524,7 @@ class TradeTrackerLoop(
             val plan = DirectivePlanner.plan(heartbeat, progress.loadHandledDirectives())
             resendHandledOutcomes(plan.alreadyHandled)
             val reason = if (config.steamWrites) STEAM_SESSION_MISSING_DROP_REASON else OFFER_WRITES_DISABLED
-            (plan.creates + plan.cancels).forEach {
-                emit(LifecycleEvent.DirectiveDropped(it.action.wireName, it.directiveId.value, reason, it.dealId?.value))
-            }
+            (plan.creates + plan.cancels).forEach { emitDropped(it, reason) }
         }
         return TickOutcome(watching = heartbeat.activeTracking.size)
     }
@@ -1553,10 +1538,10 @@ class TradeTrackerLoop(
      */
     private fun foregroundFor(credential: SteamCredential): Boolean {
         val minimum = config.foregroundMinTokenLifetime ?: return config.mode == TrackerMode.Foreground
-        val linked = lastLinkedSteamId
-        if (linked != null && linked != credential.subjectSteamId) return false
-        if (mismatchTokenSteamId == credential.subjectSteamId) return false
-        return credential.expiresAt - clock.now() >= minimum
+        val subject = credential.subjectSteamId
+        val anotherAccount = AccountBinding.evaluate(lastLinkedSteamId, subject) == AccountBindingStatus.MISMATCH ||
+            mismatchTokenSteamId == subject
+        return !anotherAccount && credential.expiresAt - clock.now() >= minimum
     }
 
     /**
@@ -1814,9 +1799,7 @@ class TradeTrackerLoop(
 
         var done = 0
         if (!config.steamWrites) {
-            (plan.creates + plan.cancels).forEach {
-                emit(LifecycleEvent.DirectiveDropped(it.action.wireName, it.directiveId.value, OFFER_WRITES_DISABLED, it.dealId?.value))
-            }
+            (plan.creates + plan.cancels).forEach { emitDropped(it, OFFER_WRITES_DISABLED) }
             plan.inventoryScans.forEach { if (runInventory(it, credential)) done++ }
             return done
         }
@@ -1846,7 +1829,7 @@ class TradeTrackerLoop(
      * while nothing is held.
      */
     private suspend fun reconcileUnansweredCreates(credential: SteamCredential) {
-        val grace = config.unansweredCreateGrace ?: return
+        val grace = config.unansweredCreateGrace?.takeIf { directivesEnabled } ?: return
         val ttl = config.tunables.writeClaims.claimTtl
         val now = clock.now()
         val held = claims.all().mapNotNull { claim ->
@@ -1855,69 +1838,46 @@ class TradeTrackerLoop(
         if (held.isEmpty()) return
         val (closed, open) = held.partition { (claim, unanswered) -> UnansweredCreateCheck.isClosed(claim, unanswered, now, ttl) }
         closed.forEach { (claim, _) ->
-            claims.hold(claim.key, null)
-            emit(
-                LifecycleEvent.DirectiveDropped(
-                    DirectiveAction.CREATE_OFFER.wireName,
-                    claim.directiveId.value,
-                    UNANSWERED_CREATE_UNSETTLED,
-                    claim.dealId.value,
-                ),
-            )
+            claims.replace(claim, claim.copy(unanswered = null))
+            emitDropped(Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId), UNANSWERED_CREATE_UNSETTLED)
         }
         if (open.isEmpty()) return
         val sent = runCatching { steamReader.sentOffers(credential) }.getOrElse {
             emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
             return
         }
-        val settled = mutableListOf<DirectiveOutcome>()
+        val attempts = mutableListOf<WriteAttempt>()
         for ((claim, unanswered) in open) {
-            val outcome = when (val verdict = UnansweredCreateCheck.evaluate(claim, unanswered, sent, now, grace)) {
+            // The answer the create never got, as Steam's offer list gives it.
+            val result = when (val verdict = UnansweredCreateCheck.evaluate(claim, unanswered, sent, now, grace)) {
                 UnansweredCreateVerdict.NotYet -> continue
-                UnansweredCreateVerdict.Absent -> claim.createOutcome(DirectiveStatus.FAILED, error = UNANSWERED_CREATE_ABSENT)
-                is UnansweredCreateVerdict.Found -> {
-                    val confirming = verdict.offer.state == STEAM_OFFER_NEEDS_CONFIRMATION
-                    val status = if (confirming) DirectiveStatus.NEEDS_CONFIRMATION else DirectiveStatus.SUCCESS
-                    claim.createOutcome(status, steamOfferId = verdict.offer.offerId)
+                UnansweredCreateVerdict.Absent -> CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
+                is UnansweredCreateVerdict.Found -> with(verdict.offer) {
+                    if (state ==
+                        STEAM_OFFER_NEEDS_CONFIRMATION
+                    ) {
+                        CreateOfferResult.NeedsConfirmation(offerId)
+                    } else {
+                        CreateOfferResult.Created(offerId)
+                    }
                 }
             }
-            val found = outcome.status != DirectiveStatus.FAILED
+            val outcome = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId).createOutcome(result)
+            val found = result !is CreateOfferResult.Failed
             // Settled only if the claim is still this one: one that lapsed and was taken again is another create's.
-            if (!claims.settle(claim, outcome.takeIf { found })) continue
+            val settled = claim.copy(phase = ClaimPhase.COMPLETED, outcome = outcome, unanswered = null).takeIf { found }
+            if (!claims.replace(claim, settled)) continue
             if (found) {
                 // The offer exists: the directive must never reach Steam again, exactly as after an answered create.
                 markHandled(outcome)
-                recordCreateResult(unanswered.partner, CreateOfferResult.NeedsConfirmation(checkNotNull(outcome.steamOfferId)))
-                if (outcome.status == DirectiveStatus.NEEDS_CONFIRMATION) armExpedited()
+                recordCreateResult(unanswered.partner, result)
+                if (result is CreateOfferResult.NeedsConfirmation) armExpedited()
             }
-            settled += outcome
-            emit(
-                LifecycleEvent.DirectiveExecuted(
-                    "create_offer",
-                    outcome.status.name,
-                    outcome.steamOfferId?.value,
-                    outcome.dealId?.value,
-                    outcome.error,
-                ),
-            )
+            emitExecuted(outcome)
+            attempts += WriteAttempt(outcome = outcome, wroteToSteam = found)
         }
-        val accepted = reportOutcomes(settled)
-        pruneOutcomes(
-            settled.mapNotNullTo(mutableSetOf()) {
-                it.directiveId.takeIf { id -> it.steamOfferId != null && accepted[id] == true }
-            },
-        )
+        flushWriteOutcomes(attempts)
     }
-
-    private fun DealWriteClaim.createOutcome(status: DirectiveStatus, steamOfferId: OfferId? = null, error: String? = null) =
-        DirectiveOutcome(
-            directiveId = directiveId,
-            action = DirectiveAction.CREATE_OFFER,
-            status = status,
-            dealId = dealId,
-            steamOfferId = steamOfferId,
-            error = error,
-        )
 
     /**
      * Reports every Steam write this cycle performed in **one** `/trade-actions` call, then prunes the stored
@@ -2176,36 +2136,17 @@ class TradeTrackerLoop(
             val result = runCatching {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
-            // No answer from Steam: held, not reported, and the chain stops as on any failed create.
-            unansweredCreate(result, directive.dealId, partner, directive.assetIds, directive.deadline)?.let { unanswered ->
-                recordCreateResult(partner, result)
-                emitUnanswered(directive.dealId, directive.directiveId, result)
-                val error = (result as CreateOfferResult.Failed).error
-                return@withDealClaim WriteAttempt(stopChain = true, reason = error) to ClaimEnd.Held(unanswered)
-            }
-            val wroteToSteam = result is CreateOfferResult.NeedsConfirmation || result is CreateOfferResult.Created
-            val outcome = when (result) {
-                is CreateOfferResult.NeedsConfirmation ->
-                    directive.outcome(DirectiveStatus.NEEDS_CONFIRMATION, steamOfferId = result.offerId.value)
-                is CreateOfferResult.Created ->
-                    directive.outcome(DirectiveStatus.SUCCESS, steamOfferId = result.offerId.value)
-                is CreateOfferResult.Failed ->
-                    directive.outcome(DirectiveStatus.FAILED, error = result.error)
-                // A SteamOfferCreator never returns AccountMismatch or either duplicate verdict (the
-                // guards above short-circuit first); handled defensively as a FAILED outcome to keep
-                // the write path exhaustive and safe.
-                is CreateOfferResult.AccountMismatch ->
-                    directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR)
-                is CreateOfferResult.AlreadyCreated, is CreateOfferResult.CreateInFlight ->
-                    directive.outcome(DirectiveStatus.FAILED, error = DUPLICATE_WRITE_ERROR)
-                // Unreachable: the chain gates a throttled create before calling this, and a creator never
-                // throttles itself. Defensive, to keep this `when` exhaustive.
-                is CreateOfferResult.Throttled -> directive.outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
-            }
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
             // concurrently and re-gate on every step, so the sooner a refusal lands in the throttle the fewer
             // doomed creates they attempt.
             recordCreateResult(partner, result)
+            // No answer from Steam: held, not reported, and the chain stops as on any failed create.
+            holdIfUnanswered(result, directive)?.let {
+                val error = (result as CreateOfferResult.Failed).error
+                return@withDealClaim WriteAttempt(stopChain = true, reason = error) to ClaimEnd.Held(it)
+            }
+            val wroteToSteam = result is CreateOfferResult.NeedsConfirmation || result is CreateOfferResult.Created
+            val outcome = directive.createOutcome(result)
             // Marked handled the moment the write succeeds, BEFORE its report leaves — which is exactly what
             // makes deferring the report to the end of the cycle safe: a worker that dies in between cannot
             // re-execute the write, it re-sends the stored outcome on the backend's next re-lease.
@@ -2218,15 +2159,7 @@ class TradeTrackerLoop(
             // Expedite the deal-watch while the new offer awaits the seller's mobile confirmation (state
             // 9). This runs inside the cycle, so runCycle()'s trailing reschedule picks up the window.
             if (result is CreateOfferResult.NeedsConfirmation) armExpedited()
-            emit(
-                LifecycleEvent.DirectiveExecuted(
-                    "create_offer",
-                    outcome.status.name,
-                    outcome.steamOfferId?.value,
-                    outcome.dealId?.value,
-                    outcome.error,
-                ),
-            )
+            emitExecuted(outcome)
             val attempt = WriteAttempt(
                 outcome = outcome,
                 wroteToSteam = wroteToSteam,
@@ -2310,15 +2243,7 @@ class TradeTrackerLoop(
             // a re-create is now the expected next step. Release it causally rather than making the deal wait
             // out the TTL: this, not the tracking heuristic, is what unblocks a legitimate cancel-then-recreate.
             if (cancelled) directive.dealId?.let { claims.release(setOf(DealWriteKey(it, DirectiveAction.CREATE_OFFER))) }
-            emit(
-                LifecycleEvent.DirectiveExecuted(
-                    "cancel_offer",
-                    outcome.status.name,
-                    outcome.steamOfferId?.value,
-                    outcome.dealId?.value,
-                    outcome.error,
-                ),
-            )
+            emitExecuted(outcome)
             WriteAttempt(outcome = outcome, wroteToSteam = cancelled) to outcome.takeIf { cancelled }.claimEnd()
         }
     }

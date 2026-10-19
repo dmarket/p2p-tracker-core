@@ -26,7 +26,7 @@ data class SteamNotification(val type: Int, val actorAccountId: Long, val timest
     }
 
     /** This notification's actor as a full steamid64. */
-    val actorSteamId: SteamId get() = SteamId((actorAccountId + ACCOUNT_ID_OFFSET).toString())
+    val actorSteamId: SteamId get() = steamIdOfAccount(actorAccountId)
 }
 
 /**

@@ -217,15 +217,14 @@ class TrackerConfigTest {
     }
 
     @Test
-    fun the_headless_floors_are_their_own_and_every_other_margin_is_its_poll_floor() {
+    fun the_headless_heartbeat_floor_is_its_own_and_every_other_margin_is_its_poll_floor() {
         val c =
             CadenceConfig(
                 webPollFloorMs = 45_000,
                 webHeartbeatFloorMs = 50_000,
-                headlessPollFloorMs = 20_000,
                 headlessHeartbeatFloorMs = 25_000,
             )
-        assertEquals(20.seconds, c.pollFloor(RuntimeSurface.Headless, TrackerMode.Background))
+        assertEquals(45.seconds, c.pollFloor(RuntimeSurface.Headless, TrackerMode.Background), "the browser's poll floor")
         assertEquals(25.seconds, c.heartbeatFloor(RuntimeSurface.Headless, TrackerMode.Background))
         assertEquals(45.seconds, c.pollFloor(RuntimeSurface.WebChrome, TrackerMode.Background), "the browser's own")
         assertEquals(50.seconds, c.heartbeatFloor(RuntimeSurface.WebFirefox, TrackerMode.Foreground))

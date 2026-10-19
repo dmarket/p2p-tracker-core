@@ -10,6 +10,7 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradingApiKey
+import com.dmarket.p2p.tracker.model.steam.toAccountId
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.Ed25519Signer
@@ -412,7 +413,7 @@ class HeadlessTrackerTest {
         assertTrue(requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }, "no FAILED for an unanswered create")
         assertTrue(events.any { it is LifecycleEvent.CreateUnanswered }, "$events")
 
-        val partnerAccountId = OTHER_STEAM_ID.toLong() - 76561197960265728L
+        val partnerAccountId = SteamId(OTHER_STEAM_ID).toAccountId()
         sentOffersBody = """{"response":{"trade_offers_sent":[{"tradeofferid":"556","accountid_other":$partnerAccountId,
             "trade_offer_state":9,"time_created":${clock.now().epochSeconds},"time_updated":${clock.now().epochSeconds},
             "items_to_give":[{"appid":730,"contextid":"2","assetid":"asset-7"}]}]}}"""

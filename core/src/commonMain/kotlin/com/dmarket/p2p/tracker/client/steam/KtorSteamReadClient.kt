@@ -71,28 +71,22 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
      * tick, indefinitely). One list covers both sides for the same single request, and `get_descriptions=0`
      * keeps it to offer stubs rather than item metadata.
      */
-    private suspend fun allBulkOfferSnapshots(credential: SteamCredential): Map<OfferId, SteamOfferSnapshot> {
-        val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
-            parameter(endpoints.paramAccessToken, credential.token)
-            parameter(endpoints.paramGetSentOffers, 1)
-            parameter(endpoints.paramGetReceivedOffers, 1)
-            parameter(endpoints.paramActiveOnly, 0)
-            parameter(endpoints.paramGetDescriptions, 0)
-        }.bodyAsText()
-        return SteamReadResponses.bulkOfferSnapshots(responseText)
-    }
+    private suspend fun allBulkOfferSnapshots(credential: SteamCredential): Map<OfferId, SteamOfferSnapshot> =
+        SteamReadResponses.bulkOfferSnapshots(tradeOffers(credential, received = true))
 
     /** `GetTradeOffers`, sent offers only and in any state, without item descriptions. */
-    override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> {
-        val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
+    override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
+        SteamReadResponses.sentOffers(tradeOffers(credential, received = false))
+
+    /** The `GetTradeOffers` body: sent offers, [received] ones too when asked, in any state, without descriptions. */
+    private suspend fun tradeOffers(credential: SteamCredential, received: Boolean): String =
+        httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
             parameter(endpoints.paramAccessToken, credential.token)
             parameter(endpoints.paramGetSentOffers, 1)
-            parameter(endpoints.paramGetReceivedOffers, 0)
+            parameter(endpoints.paramGetReceivedOffers, if (received) 1 else 0)
             parameter(endpoints.paramActiveOnly, 0)
             parameter(endpoints.paramGetDescriptions, 0)
         }.bodyAsText()
-        return SteamReadResponses.sentOffers(responseText)
-    }
 
     override suspend fun recentTransfers(credential: SteamCredential, maxTrades: Int): List<SteamTransfer> {
         val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeHistoryPath}") {

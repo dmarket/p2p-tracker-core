@@ -67,18 +67,11 @@ interface DealWriteClaimStore {
     suspend fun all(): Collection<DealWriteClaim>
 
     /**
-     * Keeps the in-flight claim for [key] standing with [unanswered] attached — the create got no answer from Steam,
-     * so it is neither completed nor released — or, with `null`, detaches it and leaves the claim to its TTL. A no-op
-     * unless an in-flight claim stands for [key].
+     * Stores [replacement] for [expected]'s key, or drops the claim when [replacement] is `null` — only while the
+     * claim stored there is still [expected], so one that lapsed and was taken again meanwhile is left alone. Returns
+     * whether it was replaced. How a create Steam did not answer is held ([DealWriteClaim.unanswered]) and settled.
      */
-    suspend fun hold(key: DealWriteKey, unanswered: UnansweredCreate?)
-
-    /**
-     * Settles a held create: completes [claim] with [outcome], or releases it when [outcome] is `null`. Only when the
-     * claim stored for its key is still [claim] — one that lapsed and was taken again meanwhile is left alone.
-     * Returns whether it was settled.
-     */
-    suspend fun settle(claim: DealWriteClaim, outcome: DirectiveOutcome?): Boolean
+    suspend fun replace(expected: DealWriteClaim, replacement: DealWriteClaim?): Boolean
 }
 
 /** JSON surrogate for [DealWriteClaim] (the domain types stay non-`@Serializable`, keeping `:domain` pure). */
@@ -176,7 +169,7 @@ class PersistedDealWriteClaimStore(
         restore()
         val verdict = DealWriteGuard.evaluate(claims[claim.key], now, ttl)
         if (verdict is ClaimVerdict.Proceed) {
-            claims[claim.key] = claim.copy(phase = ClaimPhase.IN_FLIGHT, outcome = null, unanswered = null)
+            claims[claim.key] = claim.copy(phase = ClaimPhase.IN_FLIGHT, outcome = null)
             persist()
         }
         verdict
@@ -185,26 +178,15 @@ class PersistedDealWriteClaimStore(
     override suspend fun complete(key: DealWriteKey, outcome: DirectiveOutcome) = mutex.withLock {
         restore()
         val existing = claims[key] ?: return@withLock
-        claims[key] = existing.copy(phase = ClaimPhase.COMPLETED, outcome = outcome, unanswered = null)
+        claims[key] = existing.copy(phase = ClaimPhase.COMPLETED, outcome = outcome)
         persist()
     }
 
-    override suspend fun hold(key: DealWriteKey, unanswered: UnansweredCreate?) = mutex.withLock {
+    override suspend fun replace(expected: DealWriteClaim, replacement: DealWriteClaim?): Boolean = mutex.withLock {
         restore()
-        val existing = claims[key]?.takeIf { it.phase == ClaimPhase.IN_FLIGHT } ?: return@withLock
-        if (existing.unanswered == unanswered) return@withLock
-        claims[key] = existing.copy(unanswered = unanswered)
-        persist()
-    }
-
-    override suspend fun settle(claim: DealWriteClaim, outcome: DirectiveOutcome?): Boolean = mutex.withLock {
-        restore()
-        if (claims[claim.key] != claim) return@withLock false
-        if (outcome != null) {
-            claims[claim.key] = claim.copy(phase = ClaimPhase.COMPLETED, outcome = outcome, unanswered = null)
-        } else {
-            claims.remove(claim.key)
-        }
+        if (claims[expected.key] != expected) return@withLock false
+        if (replacement == expected) return@withLock true
+        if (replacement != null) claims[expected.key] = replacement else claims.remove(expected.key)
         persist()
         true
     }

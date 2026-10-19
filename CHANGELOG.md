@@ -129,8 +129,8 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     draws use.
   - `RuntimeSurface.Headless` has its own cadence: it aims its heartbeat `CadenceConfig.headlessHeartbeatMarginMs`
     (5 s) inside the advertised ttl, not a whole poll floor, above a `headlessHeartbeatFloorMs` of 30 s, so at
-    the 80-95 s DMarket hands out it beats every 75-90 s instead of every 60 s. Its poll floor,
-    `headlessPollFloorMs`, stays 60 s, and with it how often Steam is read. `CadencePolicy.heartbeatMargin` and
+    the 80-95 s DMarket hands out it beats every 75-90 s instead of every 60 s. Its poll floor stays the
+    browser's `webPollFloorMs` (60 s), and with it how often Steam is read. `CadencePolicy.heartbeatMargin` and
     `heartbeatWakeDelay` expose the rule. Every other surface is unchanged.
   - `HeadlessTrackerState` adds `trackedDealIds`, `clockOffset` and `clockSkewed` (DMarket's `Date` against
     the host's clock, past `HeadlessTracker.MAX_CLOCK_SKEW`), `steamNotLinked` (the heartbeat's
@@ -153,8 +153,8 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   id; none once the grace has passed since the attempt is reported `failed`; a failed read waits. The check
   ends with the claim's TTL or the create's deadline (`UnansweredCreateCheck`), reporting nothing, told as
   `DirectiveDropped` with `UNANSWERED_CREATE_UNSETTLED`. `LifecycleEvent.CreateUnanswered` says a create is
-  held. `DealWriteClaim.unanswered` (`UnansweredCreate`) and `DealWriteClaimStore.hold`/`settle` carry it;
-  an implementation of `DealWriteClaimStore` outside this library must add the two. `SteamReadClient.sentOffers`
+  held. `DealWriteClaim.unanswered` (`UnansweredCreate`) and `DealWriteClaimStore.replace` (a compare-and-set)
+  carry it; an implementation of `DealWriteClaimStore` outside this library must add it. `SteamReadClient.sentOffers`
   has a default that throws, so such a create is then never settled by a read. `HeadlessTracker` turns it on
   with a two-minute grace.
 - `DirectiveDropped.dealId` names the deal of an offer write dropped because `LoopConfig.steamWrites` is off

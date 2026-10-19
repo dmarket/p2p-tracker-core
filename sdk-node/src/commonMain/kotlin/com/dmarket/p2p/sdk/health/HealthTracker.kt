@@ -246,7 +246,8 @@ class HealthTracker(
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
         // A waiting cancel stands while its deal is still in the heartbeat: tracked, or its cancel still leased.
-        cancelsAwaitingToken.retainAll { it in dealsTracked || it in cancelsLeased }
+        val cancelsStillLeased = cancelsLeased.deals
+        cancelsAwaitingToken.retainAll { it in dealsTracked || it in cancelsStillLeased }
         if (cancelsAwaitingToken.isNotEmpty()) {
             raise(
                 ProblemCode.STEAM_CANCEL_PENDING,
@@ -255,11 +256,12 @@ class HealthTracker(
                 cancelsAwaitingToken,
             )
         }
-        writesLeasedWhileDisabled.deals.takeIf { it.isNotEmpty() }?.let {
+        val writesNotRun = writesLeasedWhileDisabled.deals
+        if (writesNotRun.isNotEmpty()) {
             raise(
                 ProblemCode.STEAM_WRITES_DISABLED,
                 "DMarket leases Steam offer writes to this SDK, which runs with steamWrites: false; they lapse to another device",
-                it,
+                writesNotRun,
             )
         }
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)
@@ -315,8 +317,6 @@ class HealthTracker(
         private var previous = linkedSetOf<String>()
 
         val deals: Set<String> get() = previous + current
-
-        operator fun contains(deal: String): Boolean = deal in current || deal in previous
 
         operator fun plusAssign(deal: String) {
             current += deal

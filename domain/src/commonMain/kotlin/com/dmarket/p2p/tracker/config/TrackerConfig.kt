@@ -100,11 +100,6 @@ data class CadenceConfig(
      * Like a ttl, the value is clamped to `[heartbeatFloor, maxActionDelayMs]`.
      */
     val fallbackHeartbeatIntervalMs: Int = 0,
-    /**
-     * [RuntimeSurface.Headless]'s poll floor. Kept at the browser's 60s: it is also how often Steam is read while a
-     * confirmation is expected (the expedited target is clamped up to it), so lowering it multiplies Steam reads.
-     */
-    val headlessPollFloorMs: Int = 60_000,
     /** [RuntimeSurface.Headless]'s heartbeat floor: below the browser's, since a Node timer has no minute grid. */
     val headlessHeartbeatFloorMs: Int = 30_000,
     /**
@@ -129,8 +124,8 @@ data class CadenceConfig(
     /** Lowest poll interval the platform can sustain in this mode. */
     @JsExport.Ignore
     fun pollFloor(surface: RuntimeSurface, mode: TrackerMode): Duration = when (surface) {
-        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox -> webPollFloorMs
-        RuntimeSurface.Headless -> headlessPollFloorMs
+        // Headless keeps the browser's: it is also how often Steam is read while a confirmation is expected.
+        RuntimeSurface.WebChrome, RuntimeSurface.WebFirefox, RuntimeSurface.Headless -> webPollFloorMs
         RuntimeSurface.IosNative -> if (mode == TrackerMode.Foreground) iosForegroundPollFloorMs else iosBackgroundPollFloorMs
         RuntimeSurface.AndroidNative ->
             if (mode == TrackerMode.Foreground) androidForegroundPollFloorMs else androidBackgroundPollFloorMs
