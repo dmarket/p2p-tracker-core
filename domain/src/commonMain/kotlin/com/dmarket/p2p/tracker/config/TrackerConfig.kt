@@ -1187,6 +1187,9 @@ data class SteamWriteConfig(
      */
     val transportFailureMarkers: List<String> = listOf(
         "failed to fetch",
+        // Ktor's JS engine wraps a rejected fetch as `Error: Fail to fetch`, in the browser and in Node alike, and
+        // every create goes through it — so without this one a create that never reached Steam reads as OTHER.
+        "fail to fetch",
         "networkerror",
         "timeout",
         "timed out",

@@ -4776,6 +4776,10 @@ class TradeTrackerLoopTest {
         val threw = loop(creator = FakeSteamOfferCreator(throwable = IllegalStateException("Failed to fetch")))
             .createTrade(DirectiveId("dir-3"), DealId("deal-ft3"), draft())
         assertEquals(SteamCreateFailureCause.TRANSPORT, assertIs<CreateOfferResult.Failed>(threw).cause)
+        // And as the browser's create really fails: Ktor's JS engine wraps the rejected fetch.
+        val ktor = loop(creator = FakeSteamOfferCreator(throwable = IllegalStateException("Fail to fetch")))
+            .createTrade(DirectiveId("dir-5"), DealId("deal-ft5"), draft())
+        assertEquals(SteamCreateFailureCause.TRANSPORT, assertIs<CreateOfferResult.Failed>(ktor).cause)
 
         // Unrecognised stays unrecognised: a guessed cause is worse on screen than an honest "it failed".
         val other = loop(creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed("steam said no")))

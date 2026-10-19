@@ -450,7 +450,7 @@ class HeadlessTracker(
                 clientVersion = TradeTrackerCore.VERSION,
                 surface = RuntimeSurface.Headless,
                 mode = TrackerMode.Background,
-                tunables = tunables.withNodeTransportMarker(),
+                tunables = tunables,
                 requireLinkedSteamId = true,
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
                 foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
@@ -558,19 +558,6 @@ private object RefusedOfferWrites : SteamOfferCreator, SteamOfferCanceller {
 
     override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): Unit = throw IllegalStateException(REFUSED)
 }
-
-/**
- * [this] with Ktor's JS-engine fetch failure (`Error: Fail to fetch`, in Node as in the browser) among the transport
- * markers, so a create whose request never reached Steam reads as unanswered here. Added for this tracker only: the
- * browser's defaults are left as they are.
- */
-private fun TrackerConfig.withNodeTransportMarker(): TrackerConfig {
-    val markers = steamWrites.transportFailureMarkers
-    if (markers.any { it.equals(KTOR_JS_FETCH_FAILURE, ignoreCase = true) }) return this
-    return copy(steamWrites = steamWrites.copy(transportFailureMarkers = markers + KTOR_JS_FETCH_FAILURE))
-}
-
-private const val KTOR_JS_FETCH_FAILURE = "fail to fetch"
 
 /**
  * A fresh Steam `sessionid`: 12 random bytes, hex, the size Steam's own clients generate. Steam only checks that

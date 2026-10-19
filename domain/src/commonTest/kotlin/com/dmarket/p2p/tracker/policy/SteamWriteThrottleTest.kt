@@ -41,6 +41,8 @@ class SteamWriteThrottleTest {
             // this user to cancel offers is advice that cannot help them.
             "Steam create returned HTTP 429" to SteamCreateFailureCause.REQUEST_RATE_LIMITED,
             "Failed to fetch" to SteamCreateFailureCause.TRANSPORT,
+            // What a create actually carries when its fetch is rejected: Ktor's JS engine wraps the browser's error.
+            "Error: Fail to fetch" to SteamCreateFailureCause.TRANSPORT,
             "TypeError: NetworkError when attempting to fetch resource" to SteamCreateFailureCause.TRANSPORT,
             "request timed out" to SteamCreateFailureCause.TRANSPORT,
             "no Steam session cookie" to SteamCreateFailureCause.OTHER,

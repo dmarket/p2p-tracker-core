@@ -13,6 +13,10 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Fixed
 
+- A create whose request Ktor's JS engine rejected (`Error: Fail to fetch`, which is how every create's network
+  failure reads, in the browser too) is a transport failure (`SteamCreateFailureCause.TRANSPORT`) rather than an
+  unrecognised one: `SteamWriteConfig.transportFailureMarkers` gains `fail to fetch`. Such failures now count
+  towards the create surface's breaker (`globalBreakerThreshold`) and carry the transport cause.
 - `trackerCoreVersion()` and the heartbeat's fallback `clientVersion` report the real library version.
   Both returned a hand-written `0.1.0-SNAPSHOT` through every release up to 1.0.3-beta; the value is now
   generated from `VERSION_NAME` at build time.
@@ -152,7 +156,7 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   held. `DealWriteClaim.unanswered` (`UnansweredCreate`) and `DealWriteClaimStore.hold`/`settle` carry it;
   an implementation of `DealWriteClaimStore` outside this library must add the two. `SteamReadClient.sentOffers`
   has a default that throws, so such a create is then never settled by a read. `HeadlessTracker` turns it on
-  with a two-minute grace and reads Ktor's JS `Fail to fetch` as a transport failure.
+  with a two-minute grace.
 - `DirectiveDropped.dealId` names the deal of an offer write dropped because `LoopConfig.steamWrites` is off
   (reason `OFFER_WRITES_DISABLED`, now public). Appended last with a `null` default; the event's JSON carries
   `dealId` only when it is set, so the browser's events are unchanged.

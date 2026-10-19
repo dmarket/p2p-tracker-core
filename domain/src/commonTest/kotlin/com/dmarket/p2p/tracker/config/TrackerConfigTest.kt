@@ -155,6 +155,7 @@ class TrackerConfigTest {
         val steamWrites = defaults.steamWrites
         assertTrue(steamWrites.rateLimitMarkers.any { "too many outstanding trade offers".contains(it) })
         assertTrue(steamWrites.transportFailureMarkers.any { "failed to fetch".contains(it) })
+        assertTrue(steamWrites.transportFailureMarkers.any { "error: fail to fetch".contains(it) }, "Ktor's JS engine")
         // The verbatim refusal Steam sends for a per-counterparty cap must contain the discriminator, or the
         // split between the two offer limits collapses and one partner's cap parks the whole surface.
         assertTrue(
