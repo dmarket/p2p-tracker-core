@@ -144,6 +144,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 - `DirectiveDropped.dealId` names the deal of an offer write dropped because `LoopConfig.steamWrites` is off
   (reason `OFFER_WRITES_DISABLED`, now public). Appended last with a `null` default; the event's JSON carries
   `dealId` only when it is set, so the browser's events are unchanged.
+- A heartbeat sent with no Steam session (`LoopConfig.heartbeatWithoutCredential`) tells each leased
+  `create_offer` and `cancel_offer` it does not run as a `DirectiveDropped` with its deal and
+  `STEAM_SESSION_MISSING_DROP_REASON`. They stay unreported, as before.
 
 ### Changed
 

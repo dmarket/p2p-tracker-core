@@ -142,6 +142,12 @@ private const val THROTTLED_WRITE_ERROR = "deferred: this device is backing off 
  */
 const val OFFER_WRITES_DISABLED = "refused: offer writes are disabled on this client"
 
+/**
+ * Why a leased write was not run by a heartbeat sent with no usable Steam session (`LoopConfig.heartbeatWithoutCredential`).
+ * Unreported: nothing reached Steam, so its lease lapses and the backend re-leases it.
+ */
+const val STEAM_SESSION_MISSING_DROP_REASON = "not run: no usable Steam session on this client"
+
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
 
@@ -1453,7 +1459,8 @@ class TradeTrackerLoop(
      * The heartbeat of a host with no Steam session ([LoopConfig.heartbeatWithoutCredential]), for the Steam account
      * the last heartbeat named as linked, with `foreground: false`. It keeps the device known and the binding and the
      * tracking list current, and re-sends the outcomes the device already holds; it reads nothing on Steam and runs
-     * no directive, so their leases lapse to a device that can.
+     * no directive, so their leases lapse to a device that can. Each leased write it does not run is told as a
+     * [LifecycleEvent.DirectiveDropped] with its deal: a `cancel_offer` waiting here leaves its offer open on Steam.
      */
     private suspend fun heartbeatWithoutCredential(linked: SteamId): TickOutcome {
         val heartbeat = heartbeatOrNull(linked, foreground = false) ?: return TickOutcome.EMPTY
@@ -1462,7 +1469,14 @@ class TradeTrackerLoop(
         lastActiveTracking = heartbeat.activeTracking
         releaseStaleClaims(heartbeat)
         emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
-        if (directivesEnabled) resendHandledOutcomes(DirectivePlanner.plan(heartbeat, progress.loadHandledDirectives()).alreadyHandled)
+        if (directivesEnabled) {
+            val plan = DirectivePlanner.plan(heartbeat, progress.loadHandledDirectives())
+            resendHandledOutcomes(plan.alreadyHandled)
+            val reason = if (config.steamWrites) STEAM_SESSION_MISSING_DROP_REASON else OFFER_WRITES_DISABLED
+            (plan.creates + plan.cancels).forEach {
+                emit(LifecycleEvent.DirectiveDropped(it.action.wireName, it.directiveId.value, reason, it.dealId?.value))
+            }
+        }
         return TickOutcome(watching = heartbeat.activeTracking.size)
     }
 

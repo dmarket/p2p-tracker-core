@@ -268,6 +268,32 @@ class SdkRuntimeTest {
     }
 
     @Test
+    fun a_cancel_leased_after_the_token_lapsed_waits_by_deal_and_no_secret_reaches_health() = runTest {
+        val sdk = runtime()
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        val lapsing = steamToken(exp = T0 + 1.hours)
+        sdk.putSteamToken(lapsing)
+        sdk.tracker.cycle()
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","steamOfferId":"555","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-2","action":"cancel_offer","dealId":"deal-1","steamOfferId":"555"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        clock.advance(2.hours)
+        sdk.tracker.cycle()
+
+        assertTrue(requested.none { "/tradeoffer/" in it }, "$requested")
+        val health = sdk.health()
+        assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED, ProblemCode.STEAM_CANCEL_PENDING), health.problems.map { it.code })
+        assertEquals(listOf("deal-1"), health.problems.last().affectedDeals.map { it.dealId })
+        val payload = lapsing.substringAfter('.').substringBefore('.')
+        for (text in logLines + Json.encodeToString(Health.serializer(), health)) {
+            assertTrue(payload !in text, "the Steam token leaked: $text")
+            assertTrue(SECRET_SEED !in text, "the secret key leaked: $text")
+        }
+    }
+
+    @Test
     fun below_the_minimum_version_the_sdk_is_degraded_and_keeps_serving_its_deals() = runTest {
         heartbeatBody = """
             {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],

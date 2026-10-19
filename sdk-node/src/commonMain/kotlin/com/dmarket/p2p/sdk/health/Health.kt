@@ -88,6 +88,12 @@ enum class ProblemCode(val severity: Severity) {
 
     /** DMarket leases offer writes to this SDK, which runs with `steamWrites: false`: they lapse to another device. */
     STEAM_WRITES_DISABLED(Severity.DEGRADED),
+
+    /**
+     * DMarket leased a `cancel_offer` and there is no usable Steam token to run it: the offer stays open on Steam,
+     * where the seller could still confirm it, until a token is pushed.
+     */
+    STEAM_CANCEL_PENDING(Severity.DEGRADED),
 }
 
 /** A deal a problem holds up. [deadline] is the time it lapses, when the SDK knows it. */

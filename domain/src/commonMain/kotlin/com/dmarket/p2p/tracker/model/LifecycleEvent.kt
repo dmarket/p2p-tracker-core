@@ -75,7 +75,7 @@ sealed interface LifecycleEvent {
      *
      * [kind] is the action's wire name — for an unrecognised action, the string the **backend** sent,
      * not this client's `unknown` placeholder. [dealId] is the deal a dropped offer write was for, set where a host
-     * reports by deal: a write refused because offer writes are off.
+     * reports by deal: a write refused because offer writes are off, or not run for want of a Steam session.
      */
     data class DirectiveDropped(val kind: String, val directiveId: String, val reason: String, val dealId: String? = null) : LifecycleEvent
 

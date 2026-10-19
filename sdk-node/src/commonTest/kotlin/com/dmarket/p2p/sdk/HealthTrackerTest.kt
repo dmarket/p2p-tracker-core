@@ -4,6 +4,7 @@ import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.health.ProblemCode
 import com.dmarket.p2p.sdk.health.Severity
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
+import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
@@ -12,6 +13,8 @@ import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -265,6 +268,66 @@ class HealthTrackerTest {
     }
 
     // ---- leased writes this SDK does not run -------------------------------------------------------
+
+    private suspend fun heartbeatWithoutToken(vararg cancels: String) {
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 0, cancels.size))
+        cancels.forEach {
+            tracker.onEvent(LifecycleEvent.DirectiveDropped("cancel_offer", "dir-$it", STEAM_SESSION_MISSING_DROP_REASON, it))
+        }
+    }
+
+    private fun cancelPending(state: HeadlessTrackerState) = tracker.snapshot(state).problems.singleOrNull {
+        it.code ==
+            ProblemCode.STEAM_CANCEL_PENDING
+    }
+
+    @Test
+    fun a_cancel_leased_with_no_usable_token_is_reported_by_deal() = runTest {
+        heartbeatWithoutToken("deal-1", "deal-2")
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-3", STEAM_SESSION_MISSING_DROP_REASON, "deal-3"))
+
+        val problem = assertNotNull(cancelPending(state(tokenExpiresIn = (-1).hours)))
+        assertEquals("degraded", problem.severity)
+        assertEquals(listOf("deal-1", "deal-2"), problem.affectedDeals.map { it.dealId }, "a create held back is not a waiting cancel")
+        assertTrue("PUT /v1/steam/session" in problem.message, problem.message)
+    }
+
+    @Test
+    fun a_waiting_cancel_clears_once_it_runs() = runTest {
+        heartbeatWithoutToken("deal-1", "deal-2")
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "SUCCESS", dealId = "deal-1"))
+        assertEquals(listOf("deal-2"), cancelPending(state(tracked = listOf("deal-1", "deal-2")))?.affectedDeals?.map { it.dealId })
+
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "FAILED", dealId = "deal-2", error = "(16)"))
+        val codes = codes(state(tracked = listOf("deal-1", "deal-2")))
+        assertTrue(ProblemCode.STEAM_CANCEL_PENDING !in codes, "a cancel that ran and failed is DIRECTIVE_FAILED's: $codes")
+        assertTrue(ProblemCode.DIRECTIVE_FAILED in codes)
+    }
+
+    @Test
+    fun a_heartbeat_cycle_with_a_usable_token_clears_every_waiting_cancel_and_a_watch_cycle_does_not() = runTest {
+        heartbeatWithoutToken("deal-1")
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 1))
+        assertNotNull(cancelPending(state(tracked = listOf("deal-1"))), "a watch-only cycle ran no directive")
+
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
+        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 1))
+        assertNull(cancelPending(state(tracked = listOf("deal-1"))))
+    }
+
+    @Test
+    fun a_waiting_cancel_stands_while_its_deal_is_in_the_heartbeat_and_clears_once_it_is_gone() = runTest {
+        heartbeatWithoutToken("deal-1")
+        heartbeatWithoutToken() // the drops of this one have not arrived yet: the one before still counts
+        assertNotNull(cancelPending(state()), "not tracked, but a heartbeat ago it was leased")
+        heartbeatWithoutToken()
+        assertNotNull(cancelPending(state(tracked = listOf("deal-1"))), "still tracked, though no longer leased")
+        assertNull(cancelPending(state()), "neither tracked nor leased for a whole heartbeat")
+        assertNull(cancelPending(state(tracked = listOf("deal-1"))), "and once gone it does not come back")
+    }
 
     @Test
     fun writes_leased_to_an_sdk_without_steam_writes_are_their_own_problem_until_no_longer_leased() = runTest {

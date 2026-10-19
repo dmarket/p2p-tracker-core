@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
 import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
+import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
@@ -290,6 +291,30 @@ class HeadlessTrackerTest {
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
         assertEquals(true, heartbeats().last().foreground(), "a fresh token makes it present again")
+    }
+
+    @Test
+    fun a_cancel_leased_after_the_token_lapsed_is_told_by_deal_and_left_to_lapse() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 20.minutes))
+        tracker.cycle()
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","steamOfferId":"555","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-2","action":"cancel_offer","dealId":"deal-1","steamOfferId":"555"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        clock.advance(21.minutes)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+
+        assertTrue(requests.none { "/tradeoffer/" in it.url.encodedPath }, "no cancel without a token")
+        assertTrue(requests.none { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }, "and nothing answered: the lease lapses")
+        val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>().single()
+        assertEquals(
+            Triple("cancel_offer", "deal-1", STEAM_SESSION_MISSING_DROP_REASON),
+            Triple(dropped.kind, dropped.dealId, dropped.reason),
+        )
     }
 
     @Test

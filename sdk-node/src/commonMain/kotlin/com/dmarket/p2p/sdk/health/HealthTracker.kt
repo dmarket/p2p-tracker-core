@@ -3,9 +3,11 @@ package com.dmarket.p2p.sdk.health
 import com.dmarket.p2p.sdk.prover.ProofProblems
 import com.dmarket.p2p.sdk.prover.ProverOutput
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
+import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.notary.PROOF_TOKEN_EXPIRING_REASON
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -44,7 +46,10 @@ class HealthTracker(
     private var throttledThisCycle = false
     private val tokenHeldDeals = linkedSetOf<String>()
     private var tokenHeldThisCycle = false
+    private val cancelsAwaitingToken = linkedSetOf<String>()
+    private val cancelsLeased = LeasedDeals()
     private val writesLeasedWhileDisabled = LeasedDeals()
+    private var heartbeatThisCycle = false
     private val directiveFailures = linkedMapOf<String, String>()
     private val proofFailures = linkedMapOf<String, String>()
     private val proverFailures = linkedMapOf<String, ProofFailure>()
@@ -58,16 +63,25 @@ class HealthTracker(
                 readFailedThisCycle = false
                 throttledThisCycle = false
                 tokenHeldThisCycle = false
+                heartbeatThisCycle = false
             }
             is LifecycleEvent.HeartbeatSent -> {
                 lastHeartbeatAt = clock.now()
                 dmarketAuthFailed = false
                 dmarketUnreachable = false
                 wrongAccount = null
+                heartbeatThisCycle = true
+                cancelsLeased.heartbeat()
                 writesLeasedWhileDisabled.heartbeat()
             }
             is LifecycleEvent.DirectiveDropped -> event.dealId?.let { deal ->
-                if (event.reason == OFFER_WRITES_DISABLED) writesLeasedWhileDisabled += deal
+                when (event.reason) {
+                    OFFER_WRITES_DISABLED -> writesLeasedWhileDisabled += deal
+                    STEAM_SESSION_MISSING_DROP_REASON -> if (event.kind == DirectiveAction.CANCEL_OFFER.wireName) {
+                        cancelsAwaitingToken += deal
+                        cancelsLeased += deal
+                    }
+                }
             }
             is LifecycleEvent.ReLoginNeeded -> if (event.axis == "marketplace") dmarketAuthFailed = true
             is LifecycleEvent.MarketplaceServerError -> dmarketUnreachable = true
@@ -90,8 +104,11 @@ class HealthTracker(
                 if (!readFailedThisCycle) steamRead = null
                 if (!throttledThisCycle) throttledDeals.clear()
                 if (!tokenHeldThisCycle) tokenHeldDeals.clear()
+                // A heartbeat with a usable token ran every cancel it leased; one it no longer leases waits for no token.
+                if (heartbeatThisCycle) cancelsAwaitingToken.clear()
             }
             is LifecycleEvent.DirectiveExecuted -> event.dealId?.let { deal ->
+                if (event.kind == DirectiveAction.CANCEL_OFFER.wireName) cancelsAwaitingToken -= deal
                 if (event.status == FAILED) {
                     directiveFailures[deal] = "${event.kind} failed: ${event.error ?: "no detail"}"
                 } else {
@@ -228,6 +245,16 @@ class HealthTracker(
         }
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
+        // A waiting cancel stands while its deal is still in the heartbeat: tracked, or its cancel still leased.
+        cancelsAwaitingToken.retainAll { it in dealsTracked || it in cancelsLeased }
+        if (cancelsAwaitingToken.isNotEmpty()) {
+            raise(
+                ProblemCode.STEAM_CANCEL_PENDING,
+                "DMarket asks to cancel a Steam offer and there is no usable Steam token: the offer stays open until one " +
+                    "is pushed (PUT /v1/steam/session)",
+                cancelsAwaitingToken,
+            )
+        }
         writesLeasedWhileDisabled.deals.takeIf { it.isNotEmpty() }?.let {
             raise(
                 ProblemCode.STEAM_WRITES_DISABLED,
