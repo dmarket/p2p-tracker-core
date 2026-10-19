@@ -28,6 +28,11 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 - A tracked deal's `proofSites`: the places the backend enforces a proof at on that deal. A decisive code
   whose site is not listed is reported at once, without a proof. An empty list, or a site name this build
   does not know, proves the full decisive set as before.
+- `TrackedDeal.deadline` (when the phase its watch serves times out) and `Directive.deadline` (a
+  `create_offer`'s create deadline) read the heartbeat's `deadlineTime`; `HeartbeatResponse.dealDeadlines()`
+  gives each deal the earlier of the two. Absent, blank, malformed or zero is `null`, never a failed
+  heartbeat. Informational: the loop does not act on them.
+- `TrackedDeal.assetId` reads the heartbeat's `assetId`, in the deal snapshot's form; blank is `null`.
 - A host that runs without a browser can compose the loop itself:
   - `MarketplaceAuthenticator.headersFor` lets an authenticator sign each DMarket request (method, path
     with query, exact body) instead of attaching a token. The default is unchanged.
@@ -120,8 +125,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     default). `createLoop` takes the `Random` its draws use.
   - `HeadlessTrackerState` adds `trackedDealIds`, `clockOffset` and `clockSkewed` (DMarket's `Date` against
     the host's clock, past `HeadlessTracker.MAX_CLOCK_SKEW`), `steamNotLinked` (the heartbeat's
-    `403 P2P_STEAM_NOT_LINKED`), and `updateRequired` and `updateDueTime`. A key refused while the clock is off
-    is `Unverified`, not `Invalid`. `TradeTrackerLoop.trackedDealIds` lists the last heartbeat's deals.
+    `403 P2P_STEAM_NOT_LINKED`), `updateRequired` and `updateDueTime`, and `dealDeadlines` (the last
+    heartbeat's, by deal). A key refused while the clock is off is `Unverified`, not `Invalid`.
+    `TradeTrackerLoop.trackedDealIds` lists the last heartbeat's deals.
   - `HeartbeatResponse.updateRequired` and `updateDueTime` read the backend's minimum-version signals; absent,
     they are `false` and `null`, and a malformed time is no schedule.
   - `KtorMarketplaceClient(onServerDate = …)` hears the `Date` of every DMarket reply, a refusal included, and
@@ -131,6 +137,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Changed
 
+- The history axis joins a deal with no trade id by the heartbeat's `assetId` and reads no
+  `GET /exchange/v1/p2p/deals/{id}` for it; a ref that matches nothing waits for the next heartbeat rather
+  than a deal read. From a backend that does not send the field, the lookup works as before.
 - The browser facade persists loop progress, loop state and the device id through the common persisted
   stores over `chrome.storage.local`. Storage keys and value formats are unchanged.
 - The TLSN prover moves to steam-provenance commit `ac583a4` (1.0.3-beta shipped `99e090a`), and is now
