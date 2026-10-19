@@ -557,9 +557,51 @@ class KtorMarketplaceClientTest {
     }
 
     @Test
-    fun a_gateway_code_is_found_in_any_envelope() {
+    fun the_gateways_code_field_is_read_as_sent_prefix_or_not() {
+        assertEquals(
+            "P2P_STEAM_NOT_LINKED",
+            gatewayErrorCode("""{"code":"P2P_STEAM_NOT_LINKED","message":"steam account is not linked"}"""),
+        )
+        assertEquals("P2P_INTERNAL", gatewayErrorCode("""{"code":"P2P_INTERNAL","message":"internal error"}"""))
+        assertEquals("Not Found", gatewayErrorCode("""{"code":"Not Found","message":"deal not found"}"""))
+        assertEquals("Too Many Requests", gatewayErrorCode("""{"message":"slow down","code":"  Too Many Requests "}"""))
+        assertEquals(
+            "P2P_STEAM_NOT_LINKED",
+            gatewayErrorCode("""{"code":"P2P_STEAM_NOT_LINKED","message":"was P2P_OTHER"}"""),
+            "the field wins",
+        )
+    }
+
+    @Test
+    fun without_a_code_field_a_p2p_token_anywhere_is_the_fallback() {
         assertEquals("P2P_STEAM_NOT_LINKED", gatewayErrorCode("""{"error":{"code":"P2P_STEAM_NOT_LINKED"}}"""))
         assertEquals("P2P_INVALID_TRANSITION", gatewayErrorCode("409: P2P_INVALID_TRANSITION"))
-        assertNull(gatewayErrorCode("""{"code":"Forbidden"}"""))
+        assertEquals(
+            "P2P_STEAM_NOT_LINKED",
+            gatewayErrorCode("""{"code":"P2P_STEAM_NOT_LINKED","message":"cut sho…[truncated]"""),
+            "a cut body",
+        )
+        assertEquals("P2P_INTERNAL", gatewayErrorCode("""{"code":"","message":"P2P_INTERNAL"}"""), "a blank field")
+        assertEquals("P2P_INTERNAL", gatewayErrorCode("""{"code":13,"message":"P2P_INTERNAL"}"""), "a code that is not a string")
+        assertNull(gatewayErrorCode("{\"code\":"), "malformed JSON with no token")
+        assertNull(gatewayErrorCode(""), "an empty body")
+        assertNull(gatewayErrorCode("[]"))
+        assertNull(gatewayErrorCode("""{"code":null}"""))
+    }
+
+    @Test
+    fun a_refused_heartbeat_carries_a_code_with_no_prefix() = runTest {
+        val engine = MockEngine { respond("""{"code":"Not Found","message":"Not Found"}""", HttpStatusCode.NotFound, jsonHeaders()) }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        val refused = assertFailsWith<MarketplaceServerErrorException> { client.heartbeat(aHeartbeat()) }
+        assertEquals(404, refused.statusCode)
+        assertEquals("Not Found", refused.errorCode)
+    }
+
+    @Test
+    fun a_refused_heartbeat_with_an_empty_body_has_no_code() = runTest {
+        val engine = MockEngine { respond("", HttpStatusCode.InternalServerError) }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        assertNull(assertFailsWith<MarketplaceServerErrorException> { client.heartbeat(aHeartbeat()) }.errorCode)
     }
 }

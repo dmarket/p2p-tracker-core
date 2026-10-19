@@ -52,6 +52,8 @@ import io.ktor.http.encodeURLPath
 import io.ktor.http.fromHttpToGmtDate
 import kotlinx.coroutines.delay
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Instant
@@ -78,9 +80,9 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * [onServerDate] hears the `Date` of every reply that carries one, a refusal included, so a host whose requests
  * are signed over its own clock can tell a skewed clock from a refused key. `null` (the default) reads none.
  *
- * A failed heartbeat's body is read for the gateway's machine code (`P2P_…`, at most [ERROR_BODY_CHARS], redacted)
- * and carried as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's to fix,
- * not the gateway's.
+ * A failed heartbeat's body is read for the gateway's machine code (at most [ERROR_BODY_CHARS], redacted) and carried
+ * as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's to fix, not the
+ * gateway's. See [gatewayErrorCode] for where the code is read from.
  *
  * Audit boundary: no method here accepts a Steam credential — by construction the Steam JWT can never
  * be sent to the marketplace. The client also uses a DMarket-only [HttpClient], physically separate
@@ -324,7 +326,19 @@ class KtorMarketplaceClient(
     }
 }
 
-/** The gateway's machine code in a refusal's body (`P2P_STEAM_NOT_LINKED`, …), whatever envelope carries it. */
-internal fun gatewayErrorCode(body: String): String? = GATEWAY_ERROR_CODE.find(body)?.value
+/**
+ * The gateway's machine code in a refusal's body. The gateway answers `{"code":"…","message":"…"}`, and its `code` is
+ * read as sent, trimmed: `P2P_STEAM_NOT_LINKED`, but also a status text with no prefix (`Not Found`, `Too Many
+ * Requests`) where an upstream error was wrapped. A body that is not such an object — another envelope, plain text, or
+ * one cut short at the capture limit — falls back to the first `P2P_…` token anywhere in it. `null` when neither
+ * finds one.
+ */
+internal fun gatewayErrorCode(body: String): String? = topLevelCode(body) ?: GATEWAY_ERROR_CODE.find(body)?.value
+
+private fun topLevelCode(body: String): String? {
+    val envelope = runCatching { TrackerJson.parseToJsonElement(body) }.getOrNull() as? JsonObject ?: return null
+    val code = envelope["code"] as? JsonPrimitive ?: return null
+    return code.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
+}
 
 private val GATEWAY_ERROR_CODE = Regex("\\bP2P_[A-Z0-9_]+\\b")

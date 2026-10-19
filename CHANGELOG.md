@@ -133,7 +133,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     they are `false` and `null`, and a malformed time is no schedule.
   - `KtorMarketplaceClient(onServerDate = …)` hears the `Date` of every DMarket reply, a refusal included, and
     `HttpStatusException.serverDate` carries it. A failed heartbeat's body is read for the gateway's
-    machine code, carried as `MarketplaceServerErrorException.errorCode`.
+    machine code, carried as `MarketplaceServerErrorException.errorCode`: the `code` field of the gateway's
+    `{"code","message"}` reply as sent, a status text with no `P2P_` prefix included, or the first `P2P_…`
+    token in a body that is not such an object.
 - `DirectiveExecuted` carries the deal it acted for and the outcome's error.
 
 ### Changed
