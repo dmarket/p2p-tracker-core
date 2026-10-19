@@ -105,8 +105,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
     `WasmProverHost` seams; the notary socket must authenticate by headers. `HeaderSteamProofCookieSource`
     (and `PushedSteamSession.proofCookies`) builds the Steam web session a cookie-authenticated proven read
     sends from the token. `TradingApiSignature.redact` blanks signed-header values in a log line.
-  - `HeadlessTracker`'s heartbeat reports `foreground` from the token: `true` only while the account is bound
-    to the token's and the token has 30 minutes left. Once an account is bound, a token that expires or is
+  - `HeadlessTracker`'s heartbeat reports `foreground` from the token: `true` while the token has 30 minutes
+    left and no heartbeat has named another Steam account as linked, from the first heartbeat on. Once an
+    account is bound, a token that expires or is
     missing no longer stops the heartbeat: it goes on for the bound account with `foreground: false` and
     touches nothing on Steam. In the loop these are `LoopConfig.foregroundMinTokenLifetime` and
     `LoopConfig.heartbeatWithoutCredential`, off by default.

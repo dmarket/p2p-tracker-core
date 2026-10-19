@@ -1461,12 +1461,17 @@ class TradeTrackerLoop(
 
     /**
      * The heartbeat's `foreground`: the host's [LoopConfig.mode], or — with [LoopConfig.foregroundMinTokenLifetime]
-     * set — whether this device can act for the account right now: the last heartbeat named [credential]'s account
-     * as linked and the credential has that long left.
+     * set — whether this device can act for the account right now: the credential has that long left, and no
+     * heartbeat has named another account as linked. A binding not known yet does not hold it back: the gateway
+     * checks the body's `steamId` against the account itself and sets no presence on a mismatch, so the first
+     * heartbeat after a start already counts.
      */
     private fun foregroundFor(credential: SteamCredential): Boolean {
         val minimum = config.foregroundMinTokenLifetime ?: return config.mode == TrackerMode.Foreground
-        return lastLinkedSteamId == credential.subjectSteamId && credential.expiresAt - clock.now() >= minimum
+        val linked = lastLinkedSteamId
+        if (linked != null && linked != credential.subjectSteamId) return false
+        if (mismatchTokenSteamId == credential.subjectSteamId) return false
+        return credential.expiresAt - clock.now() >= minimum
     }
 
     /**

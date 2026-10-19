@@ -218,12 +218,12 @@ class HeadlessTrackerTest {
     private fun HttpRequestData.steamId(): String = Json.parseToJsonElement(text()).jsonObject.getValue("steamId").jsonPrimitive.content
 
     @Test
-    fun the_tracker_is_foreground_only_while_bound_to_a_token_with_thirty_minutes_left() = runTest {
+    fun the_tracker_is_foreground_from_the_first_heartbeat_while_the_token_has_thirty_minutes_left() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
         tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 2.hours))
         tracker.cycle()
-        assertEquals(false, heartbeats().last().foreground(), "no account is bound before the first heartbeat comes back")
+        assertEquals(true, heartbeats().last().foreground(), "nothing is bound yet, and the token alone decides")
 
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
@@ -233,6 +233,30 @@ class HeadlessTrackerTest {
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
         assertEquals(false, heartbeats().last().foreground(), "29 minutes left")
+    }
+
+    @Test
+    fun a_first_heartbeat_on_a_token_with_less_than_thirty_minutes_is_not_foreground() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 29.minutes))
+        tracker.cycle()
+        assertEquals(false, heartbeats().single().foreground())
+    }
+
+    @Test
+    fun once_another_account_is_named_as_linked_the_tracker_is_not_foreground() = runTest {
+        heartbeatBody = """{"activeTracking":[],"directives":[],"ttlSeconds":60,"linkedSteamId":"$OTHER_STEAM_ID"}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(true, heartbeats().single().foreground(), "the gateway checks the account on this one itself")
+
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(2, heartbeats().size)
+        assertEquals(false, heartbeats().last().foreground(), "the binding is known now, and it is another account")
     }
 
     @Test

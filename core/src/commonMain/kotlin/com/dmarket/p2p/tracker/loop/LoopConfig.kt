@@ -23,9 +23,9 @@ import kotlin.time.Duration
  *   less than this left: it is deferred unreported, so its lease lapses and the backend re-leases it. For a
  *   host whose token is pushed from outside and cannot be refreshed here. `null` (the default) never defers.
  * @param foregroundMinTokenLifetime When set, the heartbeat's `foreground` follows the Steam session instead of
- *   [mode]: `true` only while the last heartbeat named the credential's account as linked and the credential has at
- *   least this long left, so the backend counts the device present only while it can deliver. `null` (the default)
- *   reports [mode].
+ *   [mode]: `true` only while the credential has at least this long left and no heartbeat has named another account
+ *   as linked (a binding not known yet, as on the first heartbeat, does not count against it), so the backend counts
+ *   the device present only while it can deliver. `null` (the default) reports [mode].
  * @param heartbeatWithoutCredential When `true`, a due heartbeat still goes out while no Steam credential is held —
  *   for the Steam account the last heartbeat named as linked, with `foreground: false` — and the cycle takes no
  *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the

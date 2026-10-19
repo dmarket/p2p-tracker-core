@@ -148,8 +148,9 @@ data class HeadlessTrackerState(
  *    [MIN_WRITE_TOKEN_LIFETIME] left.
  *  - A `create_offer` that never reached Steam — refused by the account or buyer-role guard, or deferred — is never
  *    reported `FAILED`, which DMarket reads as the seller failing to deliver; its lease lapses instead.
- *  - `foreground` follows the token, not a mode: `true` only while the account is bound to the token's and the token
- *    has [MIN_WRITE_TOKEN_LIFETIME] left. DMarket counts the tracker present only then.
+ *  - `foreground` follows the token, not a mode: `true` while the token has [MIN_WRITE_TOKEN_LIFETIME] left and no
+ *    heartbeat has named another account as linked — from the first heartbeat on, since the gateway checks the
+ *    account itself. DMarket counts the tracker present only then.
  *  - It does not heartbeat at all until a key and a live token are held. Once a heartbeat has bound the account, a
  *    token that expires or is missing does not stop the heartbeat: it goes on for the bound account with
  *    `foreground: false`, and nothing touches Steam until a fresh token is pushed. After a restart nothing is bound

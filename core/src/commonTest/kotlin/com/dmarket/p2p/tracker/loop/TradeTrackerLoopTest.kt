@@ -175,6 +175,7 @@ class TradeTrackerLoopTest {
         requireLinkedSteamId: Boolean = false,
         minWriteTokenLifetime: Duration? = null,
         reportUnsentCreates: Boolean = true,
+        foregroundMinTokenLifetime: Duration? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -191,6 +192,7 @@ class TradeTrackerLoopTest {
                 tunables,
                 requireLinkedSteamId,
                 minWriteTokenLifetime,
+                foregroundMinTokenLifetime = foregroundMinTokenLifetime,
                 reportUnsentCreates = reportUnsentCreates,
             ),
             marketplace = marketplace,
@@ -5602,6 +5604,19 @@ class TradeTrackerLoopTest {
         val sessionless = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60))
         loop(marketplace = sessionless, credential = false).runOnce()
         assertTrue(sessionless.heartbeatsSent.isEmpty(), "no Steam session, no heartbeat")
+    }
+
+    @Test
+    fun a_wrong_account_verdict_kept_across_a_respawn_holds_foreground_back_before_any_heartbeat() = runTest {
+        val store = InMemoryLoopStateStore()
+        store.setSteamMismatchTokenId(fakeSteamCredential().subjectSteamId.value)
+        val marketplace = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60))
+        loop(marketplace = marketplace, loopState = store, foregroundMinTokenLifetime = 30.minutes).runOnce()
+        assertEquals(listOf(false), marketplace.heartbeatsSent.map { it.foreground })
+
+        val fresh = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60))
+        loop(marketplace = fresh, foregroundMinTokenLifetime = 30.minutes).runOnce()
+        assertEquals(listOf(true), fresh.heartbeatsSent.map { it.foreground }, "with nothing known, the token decides")
     }
 
     // ---- a create that never reached Steam, where FAILED would fault the seller ---------------------
