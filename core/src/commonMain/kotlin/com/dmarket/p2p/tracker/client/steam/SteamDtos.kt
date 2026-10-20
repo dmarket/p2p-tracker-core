@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.steam
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -130,12 +131,18 @@ data class GetSteamNotificationsWrapper(@SerialName("response") val response: Ge
 data class GetSteamNotificationsResponse(@SerialName("notifications") val notifications: List<SteamNotificationDto> = emptyList())
 
 /**
- * One notification. Only these three fields are mapped onward — the payload also carries `body_data`
- * (free text and counterparty ids for unrelated traffic: comments, invites, gifts, support messages),
- * which is deliberately **not** modelled so it cannot travel past the reader.
+ * One notification. Only three facts are mapped onward — type, actor, timestamp. `body_data` (free text
+ * and counterparty ids for unrelated traffic: comments, invites, gifts, support messages) is decoded only
+ * to look up `actor` and is then dropped in [SteamReadResponses.notifications], so it cannot travel past the
+ * reader.
  *
- * Numeric fields are typed [JsonPrimitive] for the same non-lenient-decode reason as `time_mod`: this is
- * a rarely-exercised endpoint, and one unexpected encoding must not abort attribution with a throw.
+ * The actor has two candidate locations. Steam's published schema has no top-level `actor` and
+ * JSON-encodes the payload into the `body_data` string, where the reversal's `actor` is documented; a
+ * top-level `actor` is accepted as well, so either response shape attributes.
+ *
+ * Numeric fields are typed [JsonPrimitive], and [bodyData] [JsonElement], for the same non-lenient-decode
+ * reason as `time_mod`: this is a rarely-exercised endpoint, and one unexpected encoding must not abort
+ * attribution with a throw.
  */
 @Serializable
 data class SteamNotificationDto(
@@ -143,6 +150,8 @@ data class SteamNotificationDto(
     /** 32-bit account id of the actor; expand to steamid64 by adding `76561197960265728`. */
     @SerialName("actor") val actor: JsonPrimitive? = null,
     @SerialName("timestamp") val timestamp: JsonPrimitive? = null,
+    /** The notification payload — a JSON-encoded string per Steam's schema; an inline object is tolerated. */
+    @SerialName("body_data") val bodyData: JsonElement? = null,
 )
 
 // ---- Community /inventory/{steamid}/{appid}/{ctx} ----------------------------------------------

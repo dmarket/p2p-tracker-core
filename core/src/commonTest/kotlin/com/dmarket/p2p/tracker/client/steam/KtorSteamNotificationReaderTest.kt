@@ -85,6 +85,43 @@ class KtorSteamNotificationReaderTest {
         assertNull(reader(partial).reversalInitiator(credential, counterparty, modifiedAt))
     }
 
+    /** One entry with the actor in the `body_data` slot, given verbatim (a JSON value: string or object). */
+    private fun bodyDataEntry(bodyData: String, topLevelActor: Long? = null) =
+        """{"notification_type":29,${topLevelActor?.let { "\"actor\":\"$it\"," } ?: ""}"body_data":$bodyData,"timestamp":1781697600}"""
+
+    private fun stream(vararg entries: String) = """{"response":{"notifications":[${entries.joinToString(",")}]}}"""
+
+    @Test
+    fun resolves_the_actor_from_either_response_shape() = runTest {
+        // Top level: the shape the reader was first written against.
+        assertEquals(counterparty, reader(body()).reversalInitiator(credential, counterparty, modifiedAt))
+        // Steam's schema: no top-level actor, the payload JSON-encoded into the body_data string.
+        val encoded = bodyDataEntry(
+            """"{\"actor\":\"$actorAccountId\",\"title\":\"Trade Protection\",\"body\":\"One of your recent trades was reversed by your trade partner.\"}"""",
+        )
+        assertEquals(counterparty, reader(stream(encoded)).reversalInitiator(credential, counterparty, modifiedAt))
+        // body_data delivered as an inline object, with a numeric actor.
+        val inline = bodyDataEntry("""{"actor":$actorAccountId,"title":"Trade Protection"}""")
+        assertEquals(counterparty, reader(stream(inline)).reversalInitiator(credential, counterparty, modifiedAt))
+    }
+
+    @Test
+    fun an_entry_naming_two_different_actors_is_dropped() = runTest {
+        val agreeing = bodyDataEntry(""""{\"actor\":\"$actorAccountId\"}"""", topLevelActor = actorAccountId)
+        assertEquals(counterparty, reader(stream(agreeing)).reversalInitiator(credential, counterparty, modifiedAt))
+        // Neither location wins by precedence: a disagreement is undecided, never a guess.
+        val conflicting = bodyDataEntry(""""{\"actor\":\"1\"}"""", topLevelActor = actorAccountId)
+        assertNull(reader(stream(conflicting)).reversalInitiator(credential, counterparty, modifiedAt))
+    }
+
+    @Test
+    fun a_malformed_body_data_drops_only_its_own_entry() = runTest {
+        val malformed = bodyDataEntry(""""not json"""")
+        val good = bodyDataEntry(""""{\"actor\":\"$actorAccountId\"}"""")
+        assertNull(reader(stream(malformed)).reversalInitiator(credential, counterparty, modifiedAt))
+        assertEquals(counterparty, reader(stream(malformed, good)).reversalInitiator(credential, counterparty, modifiedAt))
+    }
+
     @Test
     fun a_non_matching_notification_resolves_to_nothing() = runTest {
         assertNull(reader(body(type = 4)).reversalInitiator(credential, counterparty, modifiedAt))

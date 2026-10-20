@@ -11,6 +11,8 @@ import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.steamIdOfAccount
 import com.dmarket.p2p.tracker.wire.trackerJson
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlin.time.Instant
 
@@ -108,15 +110,36 @@ internal object SteamReadResponses {
      * `GetSteamNotifications`: the notifications reduced to the three fields reversal attribution needs.
      * Entries missing any of the three are dropped — an unusable candidate must not become a loose match.
      * Everything else in the payload (notification bodies and unrelated traffic) is discarded here.
+     *
+     * The actor is read from the entry's top level or from the `body_data` payload (see
+     * [SteamNotificationDto]). An entry naming two **different** actors across the two is dropped: a wrong
+     * actor is worse than none, so a disagreement is not resolved by precedence.
      */
     fun notifications(body: String): List<SteamNotification> {
         val entries = json.decodeFromString<GetSteamNotificationsWrapper>(body).response?.notifications ?: return emptyList()
         return entries.mapNotNull { entry ->
             val type = entry.notificationType?.content?.toIntOrNull() ?: return@mapNotNull null
-            val actor = entry.actor?.content?.toLongOrNull() ?: return@mapNotNull null
+            val topLevelActor = entry.actor?.content?.toLongOrNull()
+            val bodyDataActor = entry.bodyData?.let(::bodyDataActor)
+            if (topLevelActor != null && bodyDataActor != null && topLevelActor != bodyDataActor) return@mapNotNull null
+            val actor = topLevelActor ?: bodyDataActor ?: return@mapNotNull null
             val timestamp = entry.timestamp?.content?.toLongOrNull()?.takeIf { it > 0L } ?: return@mapNotNull null
             SteamNotification(type = type, actorAccountId = actor, timestamp = Instant.fromEpochSeconds(timestamp))
         }
+    }
+
+    /**
+     * `actor` inside a notification's `body_data`: a JSON-encoded string per Steam's schema, or an inline
+     * object. `null` for anything unreadable — a malformed payload drops its own entry, never the stream.
+     */
+    private fun bodyDataActor(bodyData: JsonElement): Long? {
+        val payload = when (bodyData) {
+            is JsonObject -> bodyData
+            is JsonPrimitive -> bodyData.takeIf { it.isString }
+                ?.let { runCatching { json.parseToJsonElement(it.content) }.getOrNull() as? JsonObject }
+            else -> null
+        } ?: return null
+        return (payload["actor"] as? JsonPrimitive)?.content?.toLongOrNull()
     }
 
     /**
