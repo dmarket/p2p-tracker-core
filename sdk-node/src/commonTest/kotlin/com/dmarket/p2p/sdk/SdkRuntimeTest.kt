@@ -294,6 +294,43 @@ class SdkRuntimeTest {
     }
 
     @Test
+    fun a_waiting_cancel_outlasts_its_deal_and_a_fresh_token_and_clears_once_issued_again() = runTest {
+        val sdk = runtime()
+        sdk.putDmarketKey(PUBLIC_KEY, SECRET_SEED)
+        sdk.putSteamToken(steamToken(exp = T0 + 1.hours))
+        sdk.tracker.cycle()
+        val cancel = """{"directiveId":"dir-2","action":"cancel_offer","dealId":"deal-1","steamOfferId":"555"}"""
+        val withCancel = """{"activeTracking":[],"directives":[$cancel],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        val without = """{"activeTracking":[],"directives":[],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
+        heartbeatBody = withCancel
+        clock.advance(2.hours)
+        sdk.tracker.cycle()
+        assertEquals(listOf(ProblemCode.STEAM_TOKEN_EXPIRED, ProblemCode.STEAM_CANCEL_PENDING), sdk.codes())
+
+        heartbeatBody = without
+        clock.advance(2.minutes)
+        sdk.tracker.cycle()
+        sdk.putSteamToken(steamToken(exp = T0 + 24.hours))
+        clock.advance(2.minutes)
+        sdk.tracker.cycle()
+        val waiting = sdk.health().problems.single()
+        assertEquals(
+            ProblemCode.STEAM_CANCEL_PENDING,
+            waiting.code,
+            "the deal left the heartbeat and a token came, but the cancel did not run",
+        )
+        assertEquals(listOf("deal-1"), waiting.affectedDeals.map { it.dealId })
+        assertTrue("PUT /v1/steam/session" !in waiting.message, waiting.message)
+        assertTrue(requested.none { "/tradeoffer/" in it }, "$requested")
+
+        heartbeatBody = withCancel
+        clock.advance(2.minutes)
+        sdk.tracker.cycle()
+        assertTrue(requested.any { it.endsWith("/tradeoffer/555/cancel") }, "$requested")
+        assertEquals(emptyList(), sdk.codes())
+    }
+
+    @Test
     fun below_the_minimum_version_the_sdk_is_degraded_and_keeps_serving_its_deals() = runTest {
         heartbeatBody = """
             {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],

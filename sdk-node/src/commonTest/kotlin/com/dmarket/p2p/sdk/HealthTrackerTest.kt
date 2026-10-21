@@ -17,6 +17,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -277,9 +278,44 @@ class HealthTrackerTest {
         }
     }
 
+    /** A heartbeat cycle with a usable token: the loop completes it, running whatever cancel the heartbeat carried. */
+    private suspend fun heartbeatWithToken() {
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 0, 0))
+        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 0))
+    }
+
+    private suspend fun heartbeatWithWritesOff(vararg cancels: String) {
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 0, cancels.size))
+        cancels.forEach { tracker.onEvent(LifecycleEvent.DirectiveDropped("cancel_offer", "dir-$it", OFFER_WRITES_DISABLED, it)) }
+    }
+
+    private fun tokenMissing() = state(tokenExpiresIn = null)
+
+    private fun tokenHeld() = state(tokenExpiresIn = clock.now() - T0 + 24.hours)
+
     private fun cancelPending(state: HeadlessTrackerState) = tracker.snapshot(state).problems.singleOrNull {
         it.code ==
             ProblemCode.STEAM_CANCEL_PENDING
+    }
+
+    /**
+     * Heartbeats every 100 s for [span], each told by [heartbeat] whether it carries a cancel DMarket keeps issuing: five
+     * attempts in its first five minutes, then one every 30 minutes, each leased for two minutes. [check] follows each.
+     */
+    private suspend fun heartbeatsOfAReissuedCancel(
+        span: Duration,
+        heartbeat: suspend (carried: Boolean) -> Unit,
+        check: (at: Duration) -> Unit,
+    ) {
+        val issues = (0..4).map { it.minutes } + (1..12).map { 5.minutes + 30.minutes * it }
+        var at = Duration.ZERO
+        while (at <= span) {
+            heartbeat(issues.any { at >= it && at < it + 2.minutes })
+            check(at)
+            clock.advance(100.seconds)
+            at += 100.seconds
+        }
     }
 
     @Test
@@ -294,39 +330,105 @@ class HealthTrackerTest {
     }
 
     @Test
-    fun a_waiting_cancel_clears_once_it_runs() = runTest {
-        heartbeatWithoutToken("deal-1", "deal-2")
-        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "SUCCESS", dealId = "deal-1"))
-        assertEquals(listOf("deal-2"), cancelPending(state(tracked = listOf("deal-1", "deal-2")))?.affectedDeals?.map { it.dealId })
+    fun a_waiting_cancel_stands_through_heartbeats_that_no_longer_carry_it_and_keeps_its_since() = runTest {
+        heartbeatWithoutToken("deal-1")
+        val first = assertNotNull(cancelPending(tokenMissing()))
+        repeat(12) {
+            clock.advance(10.minutes)
+            heartbeatWithoutToken()
+            val problem = assertNotNull(cancelPending(tokenMissing()), "neither tracked nor leased, its offer may still be open")
+            assertEquals(listOf("deal-1"), problem.affectedDeals.map { it.dealId })
+            assertEquals(first.since, problem.since)
+        }
+    }
 
-        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "FAILED", dealId = "deal-2", error = "(16)"))
-        val codes = codes(state(tracked = listOf("deal-1", "deal-2")))
+    @Test
+    fun a_token_held_before_the_cancel_is_issued_again_changes_the_message_and_not_the_problem() = runTest {
+        heartbeatWithoutToken("deal-1")
+        val waiting = assertNotNull(cancelPending(tokenMissing()))
+
+        clock.advance(5.minutes)
+        heartbeatWithToken()
+        val held = assertNotNull(cancelPending(tokenHeld()), "a heartbeat with a token runs only the cancels it carries")
+        assertEquals(waiting.since, held.since)
+        assertEquals(listOf("deal-1"), held.affectedDeals.map { it.dealId })
+        assertTrue("issues it again" in held.message && "PUT /v1/steam/session" !in held.message, held.message)
+        assertTrue("by hand" !in held.message, held.message)
+
+        clock.advance(30.minutes)
+        heartbeatWithToken()
+        assertTrue("by hand" !in assertNotNull(cancelPending(tokenHeld())).message, "35 minutes since its issue: still between two")
+        clock.advance(1.seconds)
+        val overdue = assertNotNull(cancelPending(tokenHeld()))
+        assertTrue("35 minutes" in overdue.message && "cancelled by hand on Steam" in overdue.message, overdue.message)
+        assertEquals(waiting.since, overdue.since)
+    }
+
+    @Test
+    fun a_cancel_no_longer_issued_is_overdue_as_soon_as_a_token_is_held() = runTest {
+        heartbeatWithoutToken("deal-1")
+        clock.advance(2.hours)
+        heartbeatWithToken()
+        val problem = assertNotNull(cancelPending(tokenHeld()))
+        assertTrue("cancelled by hand on Steam" in problem.message, problem.message)
+    }
+
+    @Test
+    fun a_cancel_issued_again_with_a_token_clears_once_it_runs_whatever_steam_answers() = runTest {
+        heartbeatWithoutToken("deal-1", "deal-2")
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.CycleStarted)
+        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 0, 2))
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "SUCCESS", dealId = "deal-1"))
+        assertEquals(listOf("deal-2"), cancelPending(tokenHeld())?.affectedDeals?.map { it.dealId })
+
+        tracker.onEvent(
+            LifecycleEvent.DirectiveExecuted("cancel_offer", "FAILED", dealId = "deal-2", error = "Steam cancel refused with EResult 16"),
+        )
+        tracker.onEvent(LifecycleEvent.CycleCompleted(2, 0, 0, 0))
+        val codes = codes(tokenHeld())
         assertTrue(ProblemCode.STEAM_CANCEL_PENDING !in codes, "a cancel that ran and failed is DIRECTIVE_FAILED's: $codes")
         assertTrue(ProblemCode.DIRECTIVE_FAILED in codes)
     }
 
     @Test
-    fun a_heartbeat_cycle_with_a_usable_token_clears_every_waiting_cancel_and_a_watch_cycle_does_not() = runTest {
+    fun a_waiting_cancel_lapses_fourteen_days_after_its_first_issue() = runTest {
         heartbeatWithoutToken("deal-1")
-        tracker.onEvent(LifecycleEvent.CycleStarted)
-        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 1))
-        assertNotNull(cancelPending(state(tracked = listOf("deal-1"))), "a watch-only cycle ran no directive")
-
-        tracker.onEvent(LifecycleEvent.CycleStarted)
-        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
-        tracker.onEvent(LifecycleEvent.CycleCompleted(0, 0, 0, 1))
-        assertNull(cancelPending(state(tracked = listOf("deal-1"))))
+        clock.advance(13.days)
+        heartbeatWithoutToken("deal-1")
+        clock.advance(1.days - 1.seconds)
+        assertNotNull(cancelPending(tokenMissing()), "a later issue does not move the offer's own lapse")
+        clock.advance(1.seconds)
+        assertNull(cancelPending(tokenMissing()), "Steam has let the offer lapse")
+        heartbeatWithoutToken()
+        assertNull(cancelPending(tokenMissing()), "and once gone it does not come back")
     }
 
     @Test
-    fun a_waiting_cancel_stands_while_its_deal_is_in_the_heartbeat_and_clears_once_it_is_gone() = runTest {
-        heartbeatWithoutToken("deal-1")
-        heartbeatWithoutToken() // the drops of this one have not arrived yet: the one before still counts
-        assertNotNull(cancelPending(state()), "not tracked, but a heartbeat ago it was leased")
-        heartbeatWithoutToken()
-        assertNotNull(cancelPending(state(tracked = listOf("deal-1"))), "still tracked, though no longer leased")
-        assertNull(cancelPending(state()), "neither tracked nor leased for a whole heartbeat")
-        assertNull(cancelPending(state(tracked = listOf("deal-1"))), "and once gone it does not come back")
+    fun a_cancel_issued_every_half_hour_does_not_blink_out_between_issues() = runTest {
+        val since = mutableSetOf<String>()
+        heartbeatsOfAReissuedCancel(3.hours, { carried ->
+            if (carried) heartbeatWithoutToken("deal-1") else heartbeatWithoutToken()
+        }) { at ->
+            val problem = assertNotNull(cancelPending(tokenMissing()), "at $at")
+            assertEquals(listOf("deal-1"), problem.affectedDeals.map { it.dealId }, "at $at")
+            since += problem.since
+        }
+        assertEquals(setOf(T0.toString()), since)
+    }
+
+    @Test
+    fun a_cancel_leased_to_an_sdk_without_steam_writes_does_not_blink_out_between_issues() = runTest {
+        val since = mutableSetOf<String>()
+        heartbeatsOfAReissuedCancel(3.hours, { carried ->
+            if (carried) heartbeatWithWritesOff("deal-2") else heartbeatWithWritesOff()
+        }) { at ->
+            val problem = tracker.snapshot(tokenHeld()).problems.single()
+            assertEquals(ProblemCode.STEAM_WRITES_DISABLED, problem.code, "at $at")
+            assertEquals(listOf("deal-2"), problem.affectedDeals.map { it.dealId }, "at $at")
+            since += problem.since
+        }
+        assertEquals(setOf(T0.toString()), since)
     }
 
     @Test
@@ -341,14 +443,26 @@ class HealthTrackerTest {
         assertEquals(listOf("deal-1", "deal-2"), problem.affectedDeals.map { it.dealId })
         assertTrue("steamWrites: false" in problem.message, problem.message)
 
+        // A create is leased again every heartbeat while its window lasts: it goes a heartbeat after its last lease.
+        clock.advance(100.seconds)
         tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 1))
         tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-1", OFFER_WRITES_DISABLED, "deal-1"))
         assertEquals(listOf("deal-1", "deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
-        tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 1))
-        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-1", OFFER_WRITES_DISABLED, "deal-1"))
-        assertEquals(listOf("deal-1"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        clock.advance(100.seconds)
         tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
+        assertEquals(listOf("deal-1", "deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        clock.advance(100.seconds)
         tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 1, 0))
+        assertEquals(
+            listOf("deal-2"),
+            tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId },
+            "a cancel is issued only now and then: it stands until its next issue is due",
+        )
+
+        // A cancel stands until its next issue is overdue: 35 minutes after its last lease.
+        clock.advance(35.minutes - 300.seconds)
+        assertEquals(listOf("deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        clock.advance(1.seconds)
         assertEquals(emptyList(), codes())
     }
 }

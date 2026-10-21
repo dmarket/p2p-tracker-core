@@ -86,12 +86,16 @@ enum class ProblemCode(val severity: Severity) {
     /** A `create_offer` or `cancel_offer` failed (item gone, trade hold, a Steam EResult). */
     DIRECTIVE_FAILED(Severity.DEGRADED),
 
-    /** DMarket leases offer writes to this SDK, which runs with `steamWrites: false`: they lapse to another device. */
+    /**
+     * DMarket leases offer writes to this SDK, which runs with `steamWrites: false`: they lapse to another device. A
+     * leased cancel is named until its next issue is due, as DMarket issues it only now and then.
+     */
     STEAM_WRITES_DISABLED(Severity.DEGRADED),
 
     /**
-     * DMarket leased a `cancel_offer` and there is no usable Steam token to run it: the offer stays open on Steam,
-     * where the seller could still confirm it, until a token is pushed.
+     * DMarket leased a `cancel_offer` when there was no usable Steam token to run it: the offer stays open on Steam,
+     * where the seller could still confirm it. Named until the cancel runs, which a pushed token does at DMarket's next
+     * issue of it, or for 14 days, when the offer lapses on Steam.
      */
     STEAM_CANCEL_PENDING(Severity.DEGRADED),
 }

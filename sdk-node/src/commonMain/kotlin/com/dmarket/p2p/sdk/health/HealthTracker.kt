@@ -14,6 +14,7 @@ import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.runtime.HeadlessTrackerState
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.days
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
@@ -25,6 +26,9 @@ import kotlin.time.Instant
  * account problems it would have raised again, a cycle with no failed Steam read clears the read problem, and
  * a per-deal failure clears when the same deal's next attempt succeeds. Each open problem keeps the time it was
  * first seen in `since`, across the cycles that re-raise it.
+ *
+ * Its state is held in memory only, so a restart forgets a cancel that waits for a token. The SDK starts without the
+ * key and the token anyway, and the cancel's next issue, told by a heartbeat sent without a token, raises it again.
  *
  * Driven from one event loop (Node's), so its state needs no lock.
  */
@@ -46,10 +50,13 @@ class HealthTracker(
     private var throttledThisCycle = false
     private val tokenHeldDeals = linkedSetOf<String>()
     private var tokenHeldThisCycle = false
-    private val cancelsAwaitingToken = linkedSetOf<String>()
-    private val cancelsLeased = LeasedDeals()
-    private val writesLeasedWhileDisabled = LeasedDeals()
-    private var heartbeatThisCycle = false
+
+    /** Each `cancel_offer` leased while no token was usable and not run since, by deal. */
+    private val cancelsAwaitingToken = linkedMapOf<String, CancelIssues>()
+    private val createsLeasedWhileDisabled = LeasedDeals()
+
+    /** Each `cancel_offer` leased while offer writes are off, by deal: when a heartbeat last carried it. */
+    private val cancelsLeasedWhileDisabled = linkedMapOf<String, Instant>()
     private val directiveFailures = linkedMapOf<String, String>()
     private val proofFailures = linkedMapOf<String, String>()
     private val proverFailures = linkedMapOf<String, ProofFailure>()
@@ -63,23 +70,21 @@ class HealthTracker(
                 readFailedThisCycle = false
                 throttledThisCycle = false
                 tokenHeldThisCycle = false
-                heartbeatThisCycle = false
             }
             is LifecycleEvent.HeartbeatSent -> {
                 lastHeartbeatAt = clock.now()
                 dmarketAuthFailed = false
                 dmarketUnreachable = false
                 wrongAccount = null
-                heartbeatThisCycle = true
-                cancelsLeased.heartbeat()
-                writesLeasedWhileDisabled.heartbeat()
+                createsLeasedWhileDisabled.heartbeat()
             }
             is LifecycleEvent.DirectiveDropped -> event.dealId?.let { deal ->
+                val cancel = event.kind == DirectiveAction.CANCEL_OFFER.wireName
+                val now = clock.now()
                 when (event.reason) {
-                    OFFER_WRITES_DISABLED -> writesLeasedWhileDisabled += deal
-                    STEAM_SESSION_MISSING_DROP_REASON -> if (event.kind == DirectiveAction.CANCEL_OFFER.wireName) {
-                        cancelsAwaitingToken += deal
-                        cancelsLeased += deal
+                    OFFER_WRITES_DISABLED -> if (cancel) cancelsLeasedWhileDisabled[deal] = now else createsLeasedWhileDisabled += deal
+                    STEAM_SESSION_MISSING_DROP_REASON -> if (cancel) {
+                        cancelsAwaitingToken[deal] = CancelIssues(first = cancelsAwaitingToken[deal]?.first ?: now, last = now)
                     }
                 }
             }
@@ -104,10 +109,9 @@ class HealthTracker(
                 if (!readFailedThisCycle) steamRead = null
                 if (!throttledThisCycle) throttledDeals.clear()
                 if (!tokenHeldThisCycle) tokenHeldDeals.clear()
-                // A heartbeat with a usable token ran every cancel it leased; one it no longer leases waits for no token.
-                if (heartbeatThisCycle) cancelsAwaitingToken.clear()
             }
             is LifecycleEvent.DirectiveExecuted -> event.dealId?.let { deal ->
+                // The cancel ran, however it ended: a failure is DIRECTIVE_FAILED's from here on.
                 if (event.kind == DirectiveAction.CANCEL_OFFER.wireName) cancelsAwaitingToken -= deal
                 if (event.status == FAILED) {
                     directiveFailures[deal] = "${event.kind} failed: ${event.error ?: "no detail"}"
@@ -245,18 +249,27 @@ class HealthTracker(
         }
         steamRead?.let { (code, message) -> raise(code, message) }
         if (throttledDeals.isNotEmpty()) raise(ProblemCode.STEAM_RATE_LIMITED, "Steam offer creation is cooling down", throttledDeals)
-        // A waiting cancel stands while its deal is still in the heartbeat: tracked, or its cancel still leased.
-        val cancelsStillLeased = cancelsLeased.deals
-        cancelsAwaitingToken.retainAll { it in dealsTracked || it in cancelsStillLeased }
+        // A waiting cancel stands until it runs, though its deal has usually left the tracking list and DMarket issues
+        // the cancel only now and then: the offer may be open all that while. A token pushed meanwhile runs it only
+        // at its next issue.
+        cancelsAwaitingToken.values.removeAll { now - it.first >= CANCEL_OFFER_LIFETIME }
         if (cancelsAwaitingToken.isNotEmpty()) {
-            raise(
-                ProblemCode.STEAM_CANCEL_PENDING,
-                "DMarket asks to cancel a Steam offer and there is no usable Steam token: the offer stays open until one " +
-                    "is pushed (PUT /v1/steam/session)",
-                cancelsAwaitingToken,
-            )
+            val heldBack = "DMarket asks to cancel a Steam offer: with a usable Steam token held, it runs when DMarket issues it again"
+            val message = when {
+                expiresAt == null || expiresAt <= now ->
+                    "DMarket asks to cancel a Steam offer and there is no usable Steam token: the offer stays open until one " +
+                        "is pushed (PUT /v1/steam/session)"
+                cancelsAwaitingToken.values.any { now - it.last > CANCEL_REISSUED_WITHIN } ->
+                    "$heldBack, which it has not for over ${CANCEL_REISSUED_WITHIN.inWholeMinutes} minutes: the offer can be " +
+                        "cancelled by hand on Steam"
+                else -> heldBack
+            }
+            raise(ProblemCode.STEAM_CANCEL_PENDING, message, cancelsAwaitingToken.keys)
         }
-        val writesNotRun = writesLeasedWhileDisabled.deals
+        // A create is leased again every heartbeat while its window lasts; a cancel only now and then, so it stands
+        // until the next issue is due rather than blinking out in between.
+        cancelsLeasedWhileDisabled.values.removeAll { now - it > CANCEL_REISSUED_WITHIN }
+        val writesNotRun = createsLeasedWhileDisabled.deals + cancelsLeasedWhileDisabled.keys
         if (writesNotRun.isNotEmpty()) {
             raise(
                 ProblemCode.STEAM_WRITES_DISABLED,
@@ -328,9 +341,26 @@ class HealthTracker(
         }
     }
 
+    /** When a heartbeat sent without a usable token first and last carried a deal's `cancel_offer`. */
+    private class CancelIssues(val first: Instant, val last: Instant)
+
     private companion object {
         const val FAILED = "FAILED"
         const val MIB = 1024L * 1024L
         val HTTP_STATUS = Regex("HTTP (\\d{3})")
+
+        /**
+         * How long a cancel waits at most. Steam lets an unanswered trade offer lapse after 14 days, and DMarket keeps
+         * the cancel it issues as long: past that there is no offer left to cancel and no issue left to wait for.
+         */
+        val CANCEL_OFFER_LIFETIME: Duration = 14.days
+
+        /**
+         * How soon after its last issue an unfinished cancel is due again. DMarket re-issues one about every 30 minutes
+         * once its first few attempts are spent, and a device sees an issue at its next heartbeat, a minute or two
+         * later: past 35 minutes an issue is overdue, not merely between two. A backend that stops re-issuing leaves
+         * every waiting cancel overdue, and the problem says so.
+         */
+        val CANCEL_REISSUED_WITHIN: Duration = 35.minutes
     }
 }
