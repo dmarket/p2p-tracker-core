@@ -98,6 +98,13 @@ enum class ProblemCode(val severity: Severity) {
      * issue of it, or for 14 days, when the offer lapses on Steam.
      */
     STEAM_CANCEL_PENDING(Severity.DEGRADED),
+
+    /**
+     * DMarket requires a proof for a tracked deal and this SDK has no prover (`prover.enabled: false`, or its files were
+     * not found): the deal's decisive report is held back, and the deal does not advance until its deadline. Named until
+     * the report goes or DMarket no longer tracks the deal.
+     */
+    PROVER_DISABLED(Severity.DEGRADED),
 }
 
 /** A deal a problem holds up. [deadline] is the time it lapses, when the SDK knows it. */

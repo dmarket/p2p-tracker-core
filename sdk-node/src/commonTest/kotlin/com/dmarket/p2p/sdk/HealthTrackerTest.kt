@@ -3,6 +3,7 @@ package com.dmarket.p2p.sdk
 import com.dmarket.p2p.sdk.health.HealthTracker
 import com.dmarket.p2p.sdk.health.ProblemCode
 import com.dmarket.p2p.sdk.health.Severity
+import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
@@ -336,6 +337,59 @@ class HealthTrackerTest {
 
         tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_inactive", 6))
         assertEquals(listOf("deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+    }
+
+    // ---- a proof due with no prover ----------------------------------------------------------------
+
+    private suspend fun proofWithoutProver(deal: String, source: String = "offer") {
+        tracker.onEvent(LifecycleEvent.ProofSuppressed(deal, source, ProofSkipReason.NO_PROVER.message))
+        tracker.onEvent(LifecycleEvent.TradeStatusReportDeferred(deal, source, 3, "an unproven report was already sent"))
+    }
+
+    @Test
+    fun a_proof_due_with_no_prover_names_its_deals_with_their_deadlines() = runTest {
+        val deadline = T0 + 18.hours
+        proofWithoutProver("deal-1")
+        proofWithoutProver("deal-1", "history")
+        proofWithoutProver("deal-2")
+
+        val problem = tracker.snapshot(
+            state(tracked = listOf("deal-1", "deal-2"), deadlines = mapOf("deal-1" to deadline)),
+        ).problems.single()
+        assertEquals(ProblemCode.PROVER_DISABLED, problem.code)
+        assertEquals("degraded", problem.severity)
+        assertEquals(listOf("deal-1" to deadline.toString(), "deal-2" to null), problem.affectedDeals.map { it.dealId to it.deadline })
+        assertTrue("prover" in problem.message, problem.message)
+    }
+
+    @Test
+    fun a_proof_without_a_prover_clears_once_the_report_goes_or_the_deal_is_untracked() = runTest {
+        proofWithoutProver("deal-1")
+        proofWithoutProver("deal-2")
+        tracker.onEvent(LifecycleEvent.TradeStatusReported("deal-1", "history", 2))
+        assertEquals(
+            listOf("deal-1", "deal-2"),
+            tracker.snapshot(state(tracked = listOf("deal-1", "deal-2"))).problems.single().affectedDeals.map { it.dealId },
+            "another axis's report says nothing about this one",
+        )
+
+        tracker.onEvent(LifecycleEvent.TradeStatusReported("deal-1", "offer", 3))
+        assertEquals(
+            listOf("deal-2"),
+            tracker.snapshot(state(tracked = listOf("deal-1", "deal-2"))).problems.single().affectedDeals.map { it.dealId },
+        )
+
+        assertEquals(emptyList(), codes(state(tracked = listOf("deal-1"))), "DMarket no longer tracks deal-2")
+        proofWithoutProver("deal-3")
+        assertEquals(listOf(ProblemCode.PROVER_DISABLED), codes(state(tracked = listOf("deal-3"))), "an untracked deal does not come back")
+    }
+
+    @Test
+    fun a_proof_held_back_for_another_reason_is_not_a_missing_prover() = runTest {
+        for (reason in ProofSkipReason.entries - ProofSkipReason.NO_PROVER) {
+            tracker.onEvent(LifecycleEvent.ProofSuppressed("deal-1", "offer", reason.message))
+        }
+        assertEquals(emptyList(), codes(state(tracked = listOf("deal-1"))))
     }
 
     // ---- leased writes this SDK does not run -------------------------------------------------------

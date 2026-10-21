@@ -3,6 +3,7 @@ package com.dmarket.p2p.sdk.health
 import com.dmarket.p2p.sdk.prover.ProofProblems
 import com.dmarket.p2p.sdk.prover.ProverOutput
 import com.dmarket.p2p.tracker.engine.FailedCancelKind
+import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
@@ -63,6 +64,9 @@ class HealthTracker(
     /** Each deal's last failed directive, by deal. */
     private val directiveFailures = linkedMapOf<String, DirectiveFailure>()
     private val proofFailures = linkedMapOf<String, String>()
+
+    /** Each decisive transition whose proof is due with no prover to make it, as (deal, axis): its report is held back. */
+    private val proofsWithoutProver = linkedSetOf<Pair<String, String>>()
     private val proverFailures = linkedMapOf<String, ProofFailure>()
     private val classifiedProofs = mutableSetOf<String>()
     private var proverMemory: String? = null
@@ -139,6 +143,11 @@ class HealthTracker(
                 else -> proofFailures[event.dealId] = "proof failed: ${event.reason ?: "no detail"}"
             }
             is LifecycleEvent.ProofSubmitted -> if (event.verified) proofFailures.remove(event.dealId)
+            is LifecycleEvent.ProofSuppressed -> if (event.reason == ProofSkipReason.NO_PROVER.message) {
+                proofsWithoutProver += event.dealId to event.source
+            }
+            // The axis's report went: the proof it waited for is no longer due.
+            is LifecycleEvent.TradeStatusReported -> proofsWithoutProver -= event.dealId to event.source
             else -> Unit
         }
     }
@@ -299,6 +308,16 @@ class HealthTracker(
             }
         }
         proverMemory?.let { raise(ProblemCode.PROVER_MEMORY_LOW, it) }
+        // A deal DMarket no longer tracks owes no proof.
+        proofsWithoutProver.retainAll { it.first in dealsTracked }
+        if (proofsWithoutProver.isNotEmpty()) {
+            raise(
+                ProblemCode.PROVER_DISABLED,
+                "DMarket requires a proof for these deals and this SDK has no prover (prover.enabled is false, or its files " +
+                    "were not found): they do not advance until the prover is enabled, or DMarket stops requiring the proof",
+                proofsWithoutProver.map { it.first },
+            )
+        }
         // A deal DMarket still tracks keeps its failure until an attempt succeeds. One it no longer tracks keeps it while
         // its directives are still issued: a create every heartbeat, a cancel about every 30 minutes, so a failure
         // does not blink out between two issues. Past that DMarket has given up on it, and so does the problem.
