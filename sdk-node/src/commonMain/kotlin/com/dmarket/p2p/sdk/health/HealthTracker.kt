@@ -2,6 +2,7 @@ package com.dmarket.p2p.sdk.health
 
 import com.dmarket.p2p.sdk.prover.ProofProblems
 import com.dmarket.p2p.sdk.prover.ProverOutput
+import com.dmarket.p2p.tracker.engine.FailedCancelKind
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
@@ -24,8 +25,9 @@ import kotlin.time.Instant
  *
  * Event-derived problems last as long as their cause: a heartbeat that round-trips clears the DMarket and
  * account problems it would have raised again, a cycle with no failed Steam read clears the read problem, and
- * a per-deal failure clears when the same deal's next attempt succeeds. Each open problem keeps the time it was
- * first seen in `since`, across the cycles that re-raise it.
+ * a per-deal failure clears when the same deal's next attempt succeeds, when its offer turns out to be gone already,
+ * or once DMarket has stopped asking for it. Each open problem keeps the time it was first seen in `since`, across the
+ * cycles that re-raise it.
  *
  * Its state is held in memory only, so a restart forgets a cancel that waits for a token. The SDK starts without the
  * key and the token anyway, and the cancel's next issue, told by a heartbeat sent without a token, raises it again.
@@ -57,7 +59,9 @@ class HealthTracker(
 
     /** Each `cancel_offer` leased while offer writes are off, by deal: when a heartbeat last carried it. */
     private val cancelsLeasedWhileDisabled = linkedMapOf<String, Instant>()
-    private val directiveFailures = linkedMapOf<String, String>()
+
+    /** Each deal's last failed directive, by deal. */
+    private val directiveFailures = linkedMapOf<String, DirectiveFailure>()
     private val proofFailures = linkedMapOf<String, String>()
     private val proverFailures = linkedMapOf<String, ProofFailure>()
     private val classifiedProofs = mutableSetOf<String>()
@@ -65,6 +69,7 @@ class HealthTracker(
     private val since = mutableMapOf<ProblemCode, Instant>()
 
     override suspend fun onEvent(event: LifecycleEvent) {
+        leasedDeal(event)?.let { directiveFailures[it]?.leasedAt = clock.now() }
         when (event) {
             is LifecycleEvent.CycleStarted -> {
                 readFailedThisCycle = false
@@ -114,10 +119,14 @@ class HealthTracker(
                 // The cancel ran, however it ended: a failure is DIRECTIVE_FAILED's from here on.
                 if (event.kind == DirectiveAction.CANCEL_OFFER.wireName) cancelsAwaitingToken -= deal
                 if (event.status == FAILED) {
-                    directiveFailures[deal] = "${event.kind} failed: ${event.error ?: "no detail"}"
+                    directiveFailures[deal] = DirectiveFailure("${event.kind} failed: ${event.error ?: "no detail"}", clock.now())
                 } else {
                     directiveFailures.remove(deal)
                 }
+            }
+            // An offer gone already is what the cancel was for: nothing is left to fix, whatever the cancel reported.
+            is LifecycleEvent.FailedCancelChecked -> if (event.kind == FailedCancelKind.ALREADY_INACTIVE.wireName) {
+                event.dealId?.let(directiveFailures::remove)
             }
             is LifecycleEvent.ProofFailed -> when {
                 // The prover's host already said how it ended ([proofOutcome]).
@@ -290,7 +299,14 @@ class HealthTracker(
             }
         }
         proverMemory?.let { raise(ProblemCode.PROVER_MEMORY_LOW, it) }
-        if (directiveFailures.isNotEmpty()) raise(ProblemCode.DIRECTIVE_FAILED, directiveFailures.values.first(), directiveFailures.keys)
+        // A deal DMarket still tracks keeps its failure until an attempt succeeds. One it no longer tracks keeps it while
+        // its directives are still issued: a create every heartbeat, a cancel about every 30 minutes, so a failure
+        // does not blink out between two issues. Past that DMarket has given up on it, and so does the problem.
+        val tracked = dealsTracked.toSet()
+        directiveFailures.entries.removeAll { (deal, failure) -> deal !in tracked && now - failure.leasedAt > CANCEL_REISSUED_WITHIN }
+        if (directiveFailures.isNotEmpty()) {
+            raise(ProblemCode.DIRECTIVE_FAILED, directiveFailures.values.first().message, directiveFailures.keys)
+        }
 
         since.keys.retainAll(open.keys)
         val deadlines = state.dealDeadlines.mapKeys { it.key.value }
@@ -313,6 +329,16 @@ class HealthTracker(
             lastHeartbeatAt = lastHeartbeatAt?.toString(),
             version = version,
         )
+    }
+
+    /** The deal [event] shows a directive leased for, run or not; `null` when it shows none. */
+    private fun leasedDeal(event: LifecycleEvent): String? = when (event) {
+        is LifecycleEvent.DirectiveExecuted -> event.dealId
+        is LifecycleEvent.DirectiveDropped -> event.dealId
+        is LifecycleEvent.SteamWriteDeferred -> event.dealId
+        is LifecycleEvent.DuplicateWriteSuppressed -> event.dealId
+        is LifecycleEvent.CreateUnanswered -> event.dealId
+        else -> null
     }
 
     private fun classifyRead(reason: String?): ProblemCode = when (HTTP_STATUS.find(reason.orEmpty())?.groupValues?.get(1)) {
@@ -341,6 +367,9 @@ class HealthTracker(
         }
     }
 
+    /** A deal's failed directive: what failed, and when a directive was last leased for the deal. */
+    private class DirectiveFailure(val message: String, var leasedAt: Instant)
+
     /** When a heartbeat sent without a usable token first and last carried a deal's `cancel_offer`. */
     private class CancelIssues(val first: Instant, val last: Instant)
 
@@ -359,7 +388,8 @@ class HealthTracker(
          * How soon after its last issue an unfinished cancel is due again. DMarket re-issues one about every 30 minutes
          * once its first few attempts are spent, and a device sees an issue at its next heartbeat, a minute or two
          * later: past 35 minutes an issue is overdue, not merely between two. A backend that stops re-issuing leaves
-         * every waiting cancel overdue, and the problem says so.
+         * every waiting cancel overdue, and the problem says so. A failed directive for a deal no longer tracked lapses
+         * after as long without a lease: by then DMarket has stopped issuing it.
          */
         val CANCEL_REISSUED_WITHIN: Duration = 35.minutes
     }

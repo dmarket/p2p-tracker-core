@@ -268,6 +268,76 @@ class HealthTrackerTest {
         assertTrue(!required.isDown)
     }
 
+    private suspend fun cancelFailed(deal: String = "deal-1") {
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "FAILED", dealId = deal, error = "HTTP 500"))
+    }
+
+    @Test
+    fun a_failed_directive_of_a_deal_no_longer_tracked_lapses_once_dmarket_stops_issuing_it() = runTest {
+        cancelFailed()
+        assertEquals(listOf(ProblemCode.DIRECTIVE_FAILED), codes())
+
+        clock.advance(35.minutes)
+        assertEquals(listOf(ProblemCode.DIRECTIVE_FAILED), codes(), "the next issue may still be on its way")
+        clock.advance(1.seconds)
+        assertEquals(emptyList(), codes(), "35 minutes without an issue: DMarket has given up on it")
+    }
+
+    @Test
+    fun a_failed_directive_of_a_tracked_deal_stands_until_an_attempt_succeeds() = runTest {
+        cancelFailed()
+        clock.advance(2.hours)
+        assertEquals(listOf(ProblemCode.DIRECTIVE_FAILED), codes(state(tracked = listOf("deal-1"))))
+
+        tracker.onEvent(LifecycleEvent.DirectiveExecuted("cancel_offer", "SUCCESS", dealId = "deal-1"))
+        assertEquals(emptyList(), codes(state(tracked = listOf("deal-1"))))
+    }
+
+    @Test
+    fun a_failed_cancel_issued_every_half_hour_does_not_blink_out_between_issues() = runTest {
+        val since = mutableSetOf<String>()
+        heartbeatsOfAReissuedCancel(3.hours, { carried ->
+            tracker.onEvent(LifecycleEvent.HeartbeatSent(100, 0, if (carried) 1 else 0))
+            if (carried) cancelFailed()
+        }) { at ->
+            val problem = tracker.snapshot(state()).problems.single()
+            assertEquals(ProblemCode.DIRECTIVE_FAILED, problem.code, "at $at")
+            since += problem.since
+        }
+        assertEquals(setOf(T0.toString()), since)
+    }
+
+    @Test
+    fun any_directive_leased_for_the_deal_keeps_its_failure() = runTest {
+        cancelFailed()
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.DuplicateWriteSuppressed("cancel_offer", "deal-1", "dir-2", "COMPLETED", "555"))
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-3", "refused", "deal-1"))
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.SteamWriteDeferred("create_offer", "dir-4", "partner cooling down", "deal-1"))
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.CreateUnanswered("deal-1", "dir-5"))
+        clock.advance(30.minutes)
+        tracker.onEvent(LifecycleEvent.DirectiveDropped("create_offer", "dir-6", "refused", "deal-2"))
+        assertTrue(ProblemCode.DIRECTIVE_FAILED in codes(), "the last lease was 30 minutes ago")
+        clock.advance(5.minutes + 1.seconds)
+        assertTrue(ProblemCode.DIRECTIVE_FAILED !in codes(), "another deal's lease says nothing about this one")
+    }
+
+    @Test
+    fun a_cancel_whose_offer_is_already_inactive_clears_its_failure() = runTest {
+        cancelFailed("deal-1")
+        cancelFailed("deal-2")
+        for (kind in listOf("already_traded", "still_open", "unread")) {
+            tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", kind, 3))
+        }
+        assertEquals(listOf("deal-1", "deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+
+        tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_inactive", 6))
+        assertEquals(listOf("deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+    }
+
     // ---- leased writes this SDK does not run -------------------------------------------------------
 
     private suspend fun heartbeatWithoutToken(vararg cancels: String) {
