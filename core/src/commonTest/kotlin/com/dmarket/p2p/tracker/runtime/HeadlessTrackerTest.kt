@@ -73,6 +73,12 @@ class HeadlessTrackerTest {
     private var createThrows: Throwable? = null
     private var sentOffersBody = """{"response":{"trade_offers_sent":[]}}"""
 
+    /** What a cancel POST answers with instead of the default reply; `null` keeps the default. */
+    private var cancelStatus: HttpStatusCode? = null
+
+    /** What a single-offer `GetTradeOffer` read answers. */
+    private var offerBody = """{"response":{}}"""
+
     private class RecordingStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
 
@@ -110,7 +116,9 @@ class HeadlessTrackerTest {
                 createThrows?.let { throw it }
                 respond("""{"tradeofferid":"555","needs_mobile_confirmation":true}""", headers = json)
             }
+            path.endsWith("/cancel") && cancelStatus != null -> respond("", cancelStatus!!, json)
             path.contains("GetTradeOffers") -> respond(sentOffersBody, headers = json)
+            path.contains("GetTradeOffer/") -> respond(offerBody, headers = json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }
@@ -414,6 +422,28 @@ class HeadlessTrackerTest {
         val dropped = events.filterIsInstance<LifecycleEvent.DirectiveDropped>()
         assertEquals(listOf("dir-1" to "deal-2", "dir-2" to "deal-1"), dropped.map { it.directiveId to it.dealId })
         assertTrue(steamRequests().isNotEmpty(), "reads go on")
+    }
+
+    @Test
+    fun a_cancel_steam_refuses_is_reported_by_what_its_offer_says() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[],
+             "directives":[{"directiveId":"dir-1","action":"cancel_offer","dealId":"deal-1","steamOfferId":"9425458647"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        cancelStatus = HttpStatusCode.InternalServerError
+        offerBody = """{"response":{"offer":{"tradeofferid":"9425458647","accountid_other":1,"trade_offer_state":6,
+            "time_created":1,"time_updated":2}}}"""
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+
+        val report = requests.single { it.url.encodedPath.endsWith("/p2p/ext/trade-actions") }
+        val outcome = Json.parseToJsonElement(report.text()).jsonObject.getValue("reports").jsonArray.single().jsonObject
+        assertEquals("failed", outcome.getValue("status").jsonPrimitive.content)
+        assertEquals("offer already canceled (state 6)", outcome.getValue("error").jsonPrimitive.content)
+        assertTrue(events.any { it is LifecycleEvent.FailedCancelChecked && it.kind == "already_inactive" }, "$events")
     }
 
     @Test

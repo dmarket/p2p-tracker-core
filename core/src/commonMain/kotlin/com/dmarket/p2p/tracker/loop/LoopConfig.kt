@@ -46,6 +46,12 @@ import kotlin.time.Duration
  *   reported `failed`; a failed read says nothing and is tried again. The check ends with the claim's TTL or the
  *   create's deadline, whichever comes first, reporting nothing. `null` (the default) reports such a create `FAILED`
  *   at once, as the browser does.
+ * @param checkFailedCancels When `true`, a `cancel_offer` Steam refuses is followed by one read of its offer, and the
+ *   offer's state decides the report ([com.dmarket.p2p.tracker.engine.FailedCancelCheck]): an offer no longer active
+ *   reports [com.dmarket.p2p.tracker.engine.FailedCancelCheck.ALREADY_INACTIVE_STATUS] with the state as its error, and
+ *   the cancel is marked handled, since another attempt could only fail the same way; an accepted or escrowed offer
+ *   reports `FAILED` with that state; an open or unread one reports `FAILED` with Steam's error, as before. `false` (the
+ *   default) reports Steam's error without the read, as the browser does.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -59,4 +65,5 @@ data class LoopConfig(
     val steamWrites: Boolean = true,
     val reportUnsentCreates: Boolean = true,
     val unansweredCreateGrace: Duration? = null,
+    val checkFailedCancels: Boolean = false,
 )

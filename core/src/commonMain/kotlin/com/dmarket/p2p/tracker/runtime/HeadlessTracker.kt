@@ -457,6 +457,7 @@ class HeadlessTracker(
                 steamWrites = steamWrites,
                 reportUnsentCreates = false,
                 unansweredCreateGrace = UNANSWERED_CREATE_GRACE,
+                checkFailedCancels = true,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(

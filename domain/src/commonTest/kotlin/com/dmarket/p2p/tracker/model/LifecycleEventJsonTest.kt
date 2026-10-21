@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.model
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -260,6 +261,16 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun a_checked_cancel_failure_carries_the_offer_and_what_its_state_says() {
+        val json = parse(LifecycleEvent.FailedCancelChecked("deal1", "9425458647", "already_inactive", 6))
+        assertEquals("FailedCancelChecked", json["event"]?.jsonPrimitive?.content)
+        assertEquals("9425458647", json["steamOfferId"]?.jsonPrimitive?.content)
+        assertEquals("already_inactive", json["kind"]?.jsonPrimitive?.content)
+        assertEquals("6", json["offerState"]?.jsonPrimitive?.content)
+        assertEquals(JsonNull, parse(LifecycleEvent.FailedCancelChecked("deal1", "1", "unread", null))["offerState"])
+    }
+
+    @Test
     fun every_variant_emits_a_nonblank_event_tag() {
         // Hand-maintained on purpose: the encoder's `when` is exhaustiveness-checked, but nothing forces a
         // NEW variant to be exercised here — so a variant added without a sample silently loses its coverage.
@@ -273,6 +284,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.DirectiveDropped("create_offer", "d4", "missing partner"),
             LifecycleEvent.DuplicateWriteSuppressed("create_offer", "deal1", "d5", "COMPLETED", "778899"),
             LifecycleEvent.DeadOfferClaimReleased("deal1", "778899", 10, "watch"),
+            LifecycleEvent.FailedCancelChecked("deal1", "778899", "already_inactive", 6),
             LifecycleEvent.SteamWriteDeferred("create_offer", "d6", "partner cooling down", "deal1", 120),
             LifecycleEvent.CreateChainStopped("76561199497281579", "d7", "too many trade offers", 21),
             LifecycleEvent.CreateUnanswered("deal1", "d8", "HttpTransportException: timeout on POST"),

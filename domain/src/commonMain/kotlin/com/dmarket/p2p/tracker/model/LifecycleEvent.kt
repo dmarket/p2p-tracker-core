@@ -110,6 +110,13 @@ sealed interface LifecycleEvent {
         LifecycleEvent
 
     /**
+     * A `cancel_offer` Steam refused, after a read of its offer [steamOfferId]: [kind] is what the read says
+     * (`already_inactive`, `already_traded`, `still_open`, `unread` — [com.dmarket.p2p.tracker.engine.FailedCancelKind]),
+     * [offerState] the raw `ETradeOfferState` read (`null`: none). Follows the cancel's [DirectiveExecuted].
+     */
+    data class FailedCancelChecked(val dealId: String?, val steamOfferId: String, val kind: String, val offerState: Int?) : LifecycleEvent
+
+    /**
      * A leased `create_offer` was **not attempted this cycle** — the create surface's own back-pressure
      * firing, not a Steam failure. [reason] names which limit deferred it (the surface or the partner is
      * cooling down after a Steam refusal, a per-partner / per-cycle cap, or the concurrent-chain limit), and

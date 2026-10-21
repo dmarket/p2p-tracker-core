@@ -20,6 +20,8 @@ import com.dmarket.p2p.tracker.engine.DirectiveAcknowledgement
 import com.dmarket.p2p.tracker.engine.DirectivePlanner
 import com.dmarket.p2p.tracker.engine.DirectiveRefusal
 import com.dmarket.p2p.tracker.engine.ExpeditedTransitions
+import com.dmarket.p2p.tracker.engine.FailedCancelCheck
+import com.dmarket.p2p.tracker.engine.FailedCancelVerdict
 import com.dmarket.p2p.tracker.engine.FreshProofDemand
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
 import com.dmarket.p2p.tracker.engine.ObservedTrade
@@ -2230,22 +2232,41 @@ class TradeTrackerLoop(
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
             val failure = runCatching { offerCanceller.cancelOffer(credential, offerId) }.exceptionOrNull()?.redactedSummary()
             val cancelled = failure == null
-            val status = if (cancelled) DirectiveStatus.SUCCESS else DirectiveStatus.FAILED
-            val outcome = directive.outcome(status, error = failure)
+            val verdict = if (cancelled || !config.checkFailedCancels) null else checkFailedCancel(credential, offerId)
+            val status = if (cancelled) DirectiveStatus.SUCCESS else verdict?.status ?: DirectiveStatus.FAILED
+            val outcome = directive.outcome(status, error = verdict?.error(failure) ?: failure)
+            // Over for this device: the offer is gone, or can never be active again, so a re-lease is answered
+            // with this outcome rather than another write.
+            val settled = cancelled || verdict?.settled == true
             // Marked handled before the report leaves, which is what makes the deferred (batched) report safe:
             // a worker that dies in between re-sends the stored outcome instead of re-cancelling.
             //
-            // A failed cancel changed nothing on Steam (the offer may still dangle), so it stays unhandled (and
-            // unclaimed) and is re-executed on the backend's next re-lease, whether or not the FAILED report was
-            // accepted. The backend ends the retries by no longer re-serving it.
-            if (cancelled) markHandled(outcome)
+            // Any other failed cancel changed nothing on Steam (the offer may still dangle), so it stays unhandled
+            // (and unclaimed) and is re-executed on the backend's next re-lease, whether or not the FAILED report
+            // was accepted. The backend ends the retries by no longer re-serving it.
+            if (settled) markHandled(outcome)
             // A cancelled offer is gone, so the create claim for this deal has nothing left to protect — and
             // a re-create is now the expected next step. Release it causally rather than making the deal wait
             // out the TTL: this, not the tracking heuristic, is what unblocks a legitimate cancel-then-recreate.
             if (cancelled) directive.dealId?.let { claims.release(setOf(DealWriteKey(it, DirectiveAction.CREATE_OFFER))) }
             emitExecuted(outcome)
-            WriteAttempt(outcome = outcome, wroteToSteam = cancelled) to outcome.takeIf { cancelled }.claimEnd()
+            verdict?.let {
+                emit(LifecycleEvent.FailedCancelChecked(directive.dealId?.value, offerId.value, it.kind.wireName, it.offerState))
+            }
+            WriteAttempt(outcome = outcome, wroteToSteam = settled) to outcome.takeIf { settled }.claimEnd()
         }
+    }
+
+    /**
+     * What one read of [offerId] says about a cancel Steam refused ([LoopConfig.checkFailedCancels]). A failed read
+     * is told as any other and leaves the failure standing.
+     */
+    private suspend fun checkFailedCancel(credential: SteamCredential, offerId: OfferId): FailedCancelVerdict {
+        val state = runCatching { steamReader.offerSnapshots(credential, setOf(offerId))[offerId]?.state }.getOrElse {
+            emit(LifecycleEvent.SteamReadFailed("offer", it.redactedSummary()))
+            null
+        }
+        return FailedCancelCheck.verdict(state)
     }
 
     /**

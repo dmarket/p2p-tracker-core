@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.config.NotaryBreakerConfig
 import com.dmarket.p2p.tracker.config.SteamWriteConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
+import com.dmarket.p2p.tracker.engine.FailedCancelCheck
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
 import com.dmarket.p2p.tracker.engine.ProofFreshness
 import com.dmarket.p2p.tracker.engine.ProofIntent
@@ -179,6 +180,7 @@ class TradeTrackerLoopTest {
         reportUnsentCreates: Boolean = true,
         foregroundMinTokenLifetime: Duration? = null,
         unansweredCreateGrace: Duration? = null,
+        checkFailedCancels: Boolean = false,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -198,6 +200,7 @@ class TradeTrackerLoopTest {
                 foregroundMinTokenLifetime = foregroundMinTokenLifetime,
                 reportUnsentCreates = reportUnsentCreates,
                 unansweredCreateGrace = unansweredCreateGrace,
+                checkFailedCancels = checkFailedCancels,
             ),
             marketplace = marketplace,
             steamReader = reader,
@@ -2123,6 +2126,166 @@ class TradeTrackerLoopTest {
         // also contains no secret, so a negative-only assertion would pass against the very bug this
         // covers. The scrubbed reason must ARRIVE, with the secret replaced in place.
         assertEquals("IllegalStateException: refused for access_token=<redacted>", error)
+    }
+
+    // ---- a failed cancel, read against its offer ---------------------------------------------
+
+    /** A loop whose cancel of `offer-9` Steam refuses with an HTTP 500, and whose read of that offer says [state]. */
+    private fun failedCancelLoop(
+        state: Int?,
+        mp: FakeMarketplaceClient,
+        canceller: FakeSteamOfferCanceller = FakeSteamOfferCanceller(failWith = IllegalStateException("HTTP 500")),
+        reader: FakeSteamReadClient = FakeSteamReadClient(state?.let { mapOf(OfferId("offer-9") to it) }.orEmpty()),
+        progress: TrackerProgressStore = InMemoryTrackerProgressStore(),
+        events: EventObserver = NoOpEventObserver,
+        clock: FakeClock = FakeClock(),
+        checkFailedCancels: Boolean = true,
+    ) = loop(
+        marketplace = mp,
+        canceller = canceller,
+        reader = reader,
+        progress = progress,
+        eventObserver = events,
+        clock = clock,
+        directivesEnabled = true,
+        checkFailedCancels = checkFailedCancels,
+    )
+
+    private fun cancelHeartbeat() = FakeMarketplaceClient(
+        heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective()), ttlSeconds = 60),
+    )
+
+    @Test
+    fun without_the_check_a_failed_cancel_reads_nothing_and_reports_steams_error() = runTest {
+        val mp = cancelHeartbeat()
+        val reader = FakeSteamReadClient(mapOf(OfferId("offer-9") to 6))
+        failedCancelLoop(6, mp, reader = reader, checkFailedCancels = false).runOnce()
+
+        assertEquals(0, reader.offerStatusesCalls, "the browser default makes no read")
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.FAILED, outcome.status)
+        assertEquals("IllegalStateException: HTTP 500", outcome.error)
+    }
+
+    @Test
+    fun a_cancel_of_an_offer_already_inactive_reports_its_state_and_is_not_run_again() = runTest {
+        for (state in listOf(4, 5, 6, 7, 8, 10)) {
+            val mp = cancelHeartbeat()
+            val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("HTTP 500"))
+            val progress = InMemoryTrackerProgressStore()
+            val events = RecordingEventObserver()
+            val clock = FakeClock()
+            val l = failedCancelLoop(state, mp, canceller = canceller, progress = progress, events = events, clock = clock)
+            l.runOnce()
+
+            val outcome = mp.directiveOutcomes.single()
+            assertEquals(FailedCancelCheck.ALREADY_INACTIVE_STATUS, outcome.status, "state $state")
+            assertTrue(outcome.error.orEmpty().startsWith("offer already "), "state $state: ${outcome.error}")
+            assertTrue(outcome.error.orEmpty().endsWith("(state $state)"), "state $state: ${outcome.error}")
+            assertEquals(setOf(DirectiveId("dir-c1")), progress.loadHandledDirectives(), "state $state: settled for good")
+            assertEquals(
+                LifecycleEvent.FailedCancelChecked("deal-1", "offer-9", "already_inactive", state),
+                events.events.filterIsInstance<LifecycleEvent.FailedCancelChecked>().single(),
+            )
+
+            clock.advance(61.seconds)
+            l.runOnce()
+            assertEquals(1, canceller.attempts, "state $state: a re-lease is answered, not re-cancelled")
+        }
+    }
+
+    @Test
+    fun a_re_leased_cancel_of_an_inactive_offer_under_a_new_directive_id_replays_the_first_answer() = runTest {
+        val mp = cancelHeartbeat()
+        val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("HTTP 500"))
+        val l = failedCancelLoop(6, mp, canceller = canceller)
+        l.runOnce()
+
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective(id = "dir-c2")), ttlSeconds = 60)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(1, canceller.attempts)
+        val replay = mp.directiveOutcomes.last()
+        assertEquals(DirectiveId("dir-c2"), replay.directiveId)
+        assertEquals("offer already canceled (state 6)", replay.error)
+    }
+
+    @Test
+    fun a_cancel_of_a_traded_offer_is_a_real_failure_and_runs_again() = runTest {
+        for ((state, error) in listOf(3 to "offer already accepted (state 3)", 11 to "offer in escrow (state 11)")) {
+            val mp = cancelHeartbeat()
+            val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("HTTP 500"))
+            val progress = InMemoryTrackerProgressStore()
+            val clock = FakeClock()
+            val l = failedCancelLoop(state, mp, canceller = canceller, progress = progress, clock = clock)
+            l.runOnce()
+
+            val outcome = mp.directiveOutcomes.single()
+            assertEquals(DirectiveStatus.FAILED, outcome.status)
+            assertEquals(error, outcome.error)
+            assertTrue(progress.loadHandledDirectives().isEmpty(), "state $state")
+
+            clock.advance(61.seconds)
+            l.runOnce()
+            assertEquals(2, canceller.attempts, "state $state: as before, the next re-lease runs it again")
+        }
+    }
+
+    @Test
+    fun a_cancel_of_an_offer_still_open_keeps_steams_error_and_runs_again() = runTest {
+        for (state in listOf(2, 9)) {
+            val mp = cancelHeartbeat()
+            val canceller = FakeSteamOfferCanceller(failWith = IllegalStateException("HTTP 500"))
+            val progress = InMemoryTrackerProgressStore()
+            val events = RecordingEventObserver()
+            val clock = FakeClock()
+            val l = failedCancelLoop(state, mp, canceller = canceller, progress = progress, events = events, clock = clock)
+            l.runOnce()
+
+            val outcome = mp.directiveOutcomes.single()
+            assertEquals(DirectiveStatus.FAILED, outcome.status)
+            assertEquals("IllegalStateException: HTTP 500", outcome.error)
+            assertTrue(progress.loadHandledDirectives().isEmpty())
+            assertEquals("still_open", events.events.filterIsInstance<LifecycleEvent.FailedCancelChecked>().single().kind)
+
+            clock.advance(61.seconds)
+            l.runOnce()
+            assertEquals(2, canceller.attempts, "state $state")
+        }
+    }
+
+    @Test
+    fun a_failed_read_leaves_the_failure_as_it_was_and_quotes_no_secret() = runTest {
+        val mp = cancelHeartbeat()
+        val events = RecordingEventObserver()
+        val progress = InMemoryTrackerProgressStore()
+        val reader = FakeSteamReadClient().apply {
+            offerStatusesThrows = true
+            offerStatusesThrowMessage = "read refused for access_token=supersecret"
+        }
+        failedCancelLoop(null, mp, reader = reader, progress = progress, events = events).runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.FAILED, outcome.status)
+        assertEquals("IllegalStateException: HTTP 500", outcome.error)
+        assertTrue(progress.loadHandledDirectives().isEmpty())
+        assertEquals(
+            LifecycleEvent.FailedCancelChecked("deal-1", "offer-9", "unread", null),
+            events.events.filterIsInstance<LifecycleEvent.FailedCancelChecked>().single(),
+        )
+        val readFailed = events.events.filterIsInstance<LifecycleEvent.SteamReadFailed>().single()
+        assertEquals("offer", readFailed.axis)
+        assertTrue("supersecret" !in events.events.toString(), "${events.events}")
+    }
+
+    @Test
+    fun an_offer_steam_does_not_return_is_unread() = runTest {
+        val mp = cancelHeartbeat()
+        val events = RecordingEventObserver()
+        failedCancelLoop(null, mp, events = events).runOnce()
+
+        assertEquals("IllegalStateException: HTTP 500", mp.directiveOutcomes.single().error)
+        assertEquals("unread", events.events.filterIsInstance<LifecycleEvent.FailedCancelChecked>().single().kind)
     }
 
     // ---- report_inventory ------------------------------------------------------------------

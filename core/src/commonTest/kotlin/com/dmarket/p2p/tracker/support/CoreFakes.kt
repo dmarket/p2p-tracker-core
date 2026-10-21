@@ -709,7 +709,11 @@ class RecordingEventObserver : EventObserver {
 class FakeSteamOfferCanceller(private val failWith: Throwable? = null) : SteamOfferCanceller {
     val cancelledOffers = mutableListOf<OfferId>()
 
+    /** Every cancel asked for, failed ones included. */
+    var attempts = 0
+
     override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId) {
+        attempts++
         failWith?.let { throw it }
         cancelledOffers += offerId
     }

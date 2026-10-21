@@ -29,6 +29,14 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Added
 
+- `LoopConfig.checkFailedCancels`: a `cancel_offer` Steam refuses is followed by one read of its offer, and the
+  offer's state decides the report (`FailedCancelCheck`). Steam refuses a cancel of an offer that is no longer active
+  with an error that alone reads like a network failure. An offer already countered, expired, cancelled, declined,
+  invalid or cancelled by second factor reports `FailedCancelCheck.ALREADY_INACTIVE_STATUS` (`FAILED` for now) with
+  the state as its error, e.g. `offer already canceled (state 6)`, and is marked handled: a re-lease of it is
+  answered with that outcome, not another cancel. An
+  accepted or escrowed offer reports `FAILED` with that state; an open or unread one reports Steam's error as before.
+  Each check is told as `LifecycleEvent.FailedCancelChecked`. Off by default; `HeadlessTracker` turns it on.
 - `startTrackerWithEvents` and `createBrowserLoop` take an optional trailing `clientVersion`: the host's
   own build, sent as the heartbeat's `clientVersion` so the backend can tell which build a device runs.
   Omitted or blank, the heartbeat reports this library's version as before. Appended last, so existing
