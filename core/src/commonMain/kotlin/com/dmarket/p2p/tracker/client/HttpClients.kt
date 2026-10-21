@@ -26,6 +26,7 @@ import io.ktor.client.plugins.HttpTimeout
  *   plugin is installed and reports one redacted [com.dmarket.p2p.tracker.model.NetworkExchange] per
  *   call. Defaults to [NoOpNetworkObserver] (no plugin, zero overhead).
  * @param origin Tags every observed exchange so Steam vs marketplace traffic is never conflated.
+ * @param describeTransportCauses see [sanitizeHttpFailures]. Off by default.
  */
 fun createHttpClient(
     engine: HttpClientEngine = platformHttpEngine(),
@@ -33,8 +34,9 @@ fun createHttpClient(
     observer: NetworkObserver = NoOpNetworkObserver,
     origin: ExchangeOrigin = ExchangeOrigin.MARKETPLACE,
     secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
+    describeTransportCauses: Boolean = false,
 ): HttpClient = HttpClient(engine) {
-    sanitizeHttpFailures(secretParamNames)
+    sanitizeHttpFailures(secretParamNames, describeTransportCauses)
     install(HttpTimeout) {
         requestTimeoutMillis = requestTimeoutMs
     }
@@ -65,7 +67,8 @@ fun createSteamHttpClient(
     requestTimeoutMs: Long = 30_000L,
     observer: NetworkObserver = NoOpNetworkObserver,
     secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
-): HttpClient = createHttpClient(engine, requestTimeoutMs, observer, ExchangeOrigin.STEAM, secretParamNames)
+    describeTransportCauses: Boolean = false,
+): HttpClient = createHttpClient(engine, requestTimeoutMs, observer, ExchangeOrigin.STEAM, secretParamNames, describeTransportCauses)
 
 /**
  * The DMarket-facing transport for [com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient]. Separate from the Steam client (see
@@ -83,4 +86,5 @@ fun createMarketplaceHttpClient(
     requestTimeoutMs: Long = 30_000L,
     observer: NetworkObserver = NoOpNetworkObserver,
     secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
-): HttpClient = createHttpClient(engine, requestTimeoutMs, observer, ExchangeOrigin.MARKETPLACE, secretParamNames)
+    describeTransportCauses: Boolean = false,
+): HttpClient = createHttpClient(engine, requestTimeoutMs, observer, ExchangeOrigin.MARKETPLACE, secretParamNames, describeTransportCauses)

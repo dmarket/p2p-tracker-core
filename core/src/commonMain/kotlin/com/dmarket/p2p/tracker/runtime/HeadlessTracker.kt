@@ -188,8 +188,9 @@ class HeadlessTracker(
     private val storage = AccountScopedStorage(platform.storageFor) { steam.credential?.subjectSteamId }
     private val deviceIds = PersistedDeviceIdStore(storage)
     private val requestTimeoutMs = tunables.http.requestTimeoutMs.toLong()
-    private val marketplaceHttp = platform.httpEngine?.let { createMarketplaceHttpClient(it, requestTimeoutMs) }
-        ?: createMarketplaceHttpClient(requestTimeoutMs = requestTimeoutMs)
+    private val marketplaceHttp =
+        platform.httpEngine?.let { createMarketplaceHttpClient(it, requestTimeoutMs, describeTransportCauses = true) }
+            ?: createMarketplaceHttpClient(requestTimeoutMs = requestTimeoutMs, describeTransportCauses = true)
 
     // Written under cycleMutex only. No @Volatile: JS is single-threaded; JVM callers share one scope.
     private var readySince: Instant? = null
@@ -437,8 +438,9 @@ class HeadlessTracker(
 
     private fun buildLoop(): TradeTrackerLoop {
         val secretParams = NetworkRedaction.plusSecretParam(tunables.steamEndpoints.paramAccessToken)
-        val steamHttp = platform.httpEngine?.let { createSteamHttpClient(it, requestTimeoutMs, secretParamNames = secretParams) }
-            ?: createSteamHttpClient(requestTimeoutMs = requestTimeoutMs, secretParamNames = secretParams)
+        val steamHttp = platform.httpEngine
+            ?.let { createSteamHttpClient(it, requestTimeoutMs, secretParamNames = secretParams, describeTransportCauses = true) }
+            ?: createSteamHttpClient(requestTimeoutMs = requestTimeoutMs, secretParamNames = secretParams, describeTransportCauses = true)
         val community = tunables.steamEndpoints.communityBaseUrl
         val adapter = Cs2GameAdapter(tunables.game)
         val sessionId = steamSessionId

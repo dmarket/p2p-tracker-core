@@ -29,6 +29,12 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Added
 
+- `sanitizeHttpFailures`, `createHttpClient`, `createSteamHttpClient` and `createMarketplaceHttpClient` take a
+  trailing `describeTransportCauses`. On, a failed fetch that Ktor's JS engine reports as a bare `Fail to fetch`
+  throws an `HttpTransportException` whose `detail` is the cause Node's fetch gives (`read ECONNRESET`,
+  `UND_ERR_SOCKET: other side closed`, a DNS error), redacted and capped, ahead of the redacted URL; the message keeps
+  `Fail to fetch`, so it is still a transport failure. Off by default, so the browser's failures read as before;
+  `HeadlessTracker` turns it on.
 - `LoopConfig.checkFailedCancels`: a `cancel_offer` Steam refuses is followed by one read of its offer, and the
   offer's state decides the report (`FailedCancelCheck`). Steam refuses a cancel of an offer that is no longer active
   with an error that alone reads like a network failure. An offer already countered, expired, cancelled, declined,

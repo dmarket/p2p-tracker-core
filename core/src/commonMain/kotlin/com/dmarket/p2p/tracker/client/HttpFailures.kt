@@ -44,12 +44,27 @@ class HttpStatusException internal constructor(
 ) : HttpCallFailureException("HTTP $statusCode on $method $redactedUrl")
 
 /**
- * A transport failure whose upstream message embeds the request URL. Today that is only Ktor's request
- * timeout; the JS engine's own `Fail to fetch` is already clean and diagnostically useful, so it is left
- * alone.
+ * A transport failure, minted where the upstream one would leak or say too little: Ktor's request timeout,
+ * whose message embeds the request URL, and — on a client that asks for it ([sanitizeHttpFailures]'s
+ * `describeTransportCauses`) — the JS engine's `Fail to fetch`, which hides what failed in its `cause`.
+ * [detail] is that cause (`ECONNRESET: read ECONNRESET`), redacted and capped; `null` when there is none.
  */
-class HttpTransportException internal constructor(val kind: String, val method: String, val redactedUrl: String) :
-    HttpCallFailureException("$kind on $method $redactedUrl")
+class HttpTransportException internal constructor(
+    val kind: String,
+    val method: String,
+    val redactedUrl: String,
+    val detail: String? = null,
+) : HttpCallFailureException("$kind${detail?.let { " ($it)" }.orEmpty()} on $method $redactedUrl")
+
+/**
+ * What a transport failure's own message does not say, read off its platform cause: on the JS engine, the
+ * `cause` Node's fetch puts under its `TypeError: fetch failed` (an `ECONNRESET`, an `UND_ERR_*`, a DNS
+ * error). `null` when there is nothing more to say, as for a browser's fetch.
+ */
+internal expect fun Throwable.transportCause(): String?
+
+/** Cap for [HttpTransportException.detail]: the cause goes first in a summary capped at 200 characters. */
+private const val TRANSPORT_DETAIL_MAX_LEN = 120
 
 /** Per-request opt-in: how many characters of the **redacted** error body to keep. See [captureErrorBody]. */
 private val CaptureErrorBodyKey = AttributeKey<Int>("HttpFailureCaptureErrorBody")
@@ -79,8 +94,16 @@ fun HttpRequestBuilder.captureErrorBody(maxLen: Int = 512) {
  *
  * @param secretParamNames redaction set for the URL. A caller that renamed the Steam access-token query
  *   param passes [NetworkRedaction.plusSecretParam] so the renamed param is still scrubbed.
+ * @param describeTransportCauses When `true`, a transport failure whose platform cause says what failed
+ *   ([transportCause]) is re-minted as an [HttpTransportException] carrying it: Ktor's JS engine reports every
+ *   failed fetch as a bare `Fail to fetch`, and on Node the reason is only in its cause. The cause is redacted
+ *   and capped, and the message keeps the original text, so a `fail to fetch` marker still matches. `false` (the
+ *   default) leaves such failures as the engine threw them, as the browser does.
  */
-fun HttpClientConfig<*>.sanitizeHttpFailures(secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES) {
+fun HttpClientConfig<*>.sanitizeHttpFailures(
+    secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
+    describeTransportCauses: Boolean = false,
+) {
     // false so `addDefaultResponseValidation`'s validator early-returns BEFORE it saves the call and reads
     // the body — i.e. the leaky string is never constructed, not merely discarded. Our own validator below
     // runs regardless of this flag. Side effect: that early return logs "Skipping default response
@@ -126,7 +149,16 @@ fun HttpClientConfig<*>.sanitizeHttpFailures(secretParamNames: Set<String> = Net
                     errorBody = null,
                     serverDate = cause.response.headers[HttpHeaders.Date],
                 )
-                else -> return@handleResponseExceptionWithRequest
+                else -> {
+                    if (!describeTransportCauses) return@handleResponseExceptionWithRequest
+                    val detail = cause.transportCause() ?: return@handleResponseExceptionWithRequest
+                    throw HttpTransportException(
+                        kind = cause.message ?: cause::class.simpleName ?: "transport failure",
+                        method = request.method.value,
+                        redactedUrl = redactedUrl(),
+                        detail = NetworkRedaction.redactBody(detail, secretParamNames, TRANSPORT_DETAIL_MAX_LEN),
+                    )
+                }
             }
         }
     }
