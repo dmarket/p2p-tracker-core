@@ -164,6 +164,26 @@ class HeadlessTrackerTest {
     }
 
     @Test
+    fun the_public_key_goes_out_in_the_case_it_was_pushed_in() = runTest {
+        val tracker = tracker(signerFor = ::platformEd25519Signer)
+        val upper = PUBLIC_KEY.uppercase()
+        assertEquals(TradingKeyPushResult.Held(upper, KeyChange.FIRST), tracker.pushTradingApiKey(upper, SECRET_SEED + PUBLIC_KEY))
+        tracker.pushSteamToken(token)
+        tracker.cycle()
+        assertEquals(upper, heartbeats().single().headers[TradingApiSignature.API_KEY], "byte for byte as pushed")
+
+        assertEquals(
+            TradingKeyPushResult.Held(PUBLIC_KEY, KeyChange.SAME),
+            tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED.uppercase()),
+            "the same key in another case is not a rotation",
+        )
+        assertEquals(1, heartbeats().size, "the same key is not checked with a heartbeat")
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(PUBLIC_KEY, heartbeats().last().headers[TradingApiSignature.API_KEY], "the spelling pushed last")
+    }
+
+    @Test
     fun a_malformed_pair_is_refused_and_the_held_key_stays() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)

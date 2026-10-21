@@ -16,7 +16,14 @@ class TradingApiKeyTest {
     fun a_nacl_secret_and_a_bare_seed_both_parse_to_the_seed() {
         assertEquals(seed, TradingApiKey.parse(publicKey, seed + publicKey)?.secretSeed)
         assertEquals(seed, TradingApiKey.parse(publicKey.uppercase(), " ${seed.uppercase()} ")?.secretSeed)
-        assertEquals(publicKey, TradingApiKey.parse(" ${publicKey.uppercase()}", seed)?.publicKey)
+        assertEquals(seed, TradingApiKey.parse(publicKey, seed + publicKey.uppercase())?.secretSeed, "the NaCl tail matches in any case")
+    }
+
+    @Test
+    fun the_public_key_keeps_the_case_it_was_pushed_in() {
+        val mixed = publicKey.take(32).uppercase() + publicKey.drop(32)
+        assertEquals(mixed, TradingApiKey.parse(" $mixed\n", seed)?.publicKey, "only the whitespace goes")
+        assertEquals(publicKey.uppercase(), TradingApiKey.parse(publicKey.uppercase(), seed + publicKey)?.publicKey)
     }
 
     @Test
@@ -42,5 +49,13 @@ class TradingApiKeyTest {
         assertEquals(TradingApiKey.parse(publicKey, seed + publicKey), TradingApiKey.parse(publicKey, seed))
         assertNotEquals(TradingApiKey.parse(publicKey, seed), TradingApiKey.parse(otherPublic, seed))
         assertNotEquals(TradingApiKey.parse(publicKey, seed), TradingApiKey.parse(publicKey, otherPublic))
+    }
+
+    @Test
+    fun a_key_in_another_case_is_the_same_key() {
+        val lower = requireNotNull(TradingApiKey.parse(publicKey, seed))
+        val upper = requireNotNull(TradingApiKey.parse(publicKey.uppercase(), seed.uppercase()))
+        assertEquals(lower, upper)
+        assertEquals(lower.hashCode(), upper.hashCode())
     }
 }

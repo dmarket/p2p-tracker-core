@@ -13,7 +13,7 @@ internal object Ed25519Der {
 
     fun pkcs8(key: TradingApiKey): ByteArray = (PKCS8_PREFIX + key.secretSeed).hexToByteArray()
 
-    fun spki(key: TradingApiKey): ByteArray = (SPKI_PREFIX + key.publicKey).hexToByteArray()
+    fun spki(key: TradingApiKey): ByteArray = (SPKI_PREFIX + key.publicKey.lowercase()).hexToByteArray()
 }
 
 /**

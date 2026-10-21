@@ -13,6 +13,10 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Fixed
 
+- A Trading API key goes out as `X-Api-Key` in the case it was pushed in. `TradingApiKey.publicKey` was
+  lowercased, and DMarket looks a key up by its exact string, so a valid key registered in capitals was refused.
+  Keys are still compared without regard to case: the same key pushed in another case is `KeyChange.SAME`, and
+  requests carry the spelling pushed last.
 - A create whose request Ktor's JS engine rejected (`Error: Fail to fetch`, which is how every create's network
   failure reads, in the browser too) is a transport failure (`SteamCreateFailureCause.TRANSPORT`) rather than an
   unrecognised one: `SteamWriteConfig.transportFailureMarkers` gains `fail to fetch`. Such failures now count

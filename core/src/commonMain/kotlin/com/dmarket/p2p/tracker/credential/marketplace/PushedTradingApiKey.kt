@@ -13,7 +13,10 @@ enum class KeyChange {
     /** No key was held. */
     FIRST,
 
-    /** The same key again: nothing changes. */
+    /**
+     * The same key again, perhaps in another case: the binding stays. Requests carry the public key as it was
+     * pushed last.
+     */
     SAME,
 
     /** A different key for the same DMarket account: its heartbeat named the Steam account the held key is bound to. */
@@ -93,7 +96,7 @@ internal class PushedTradingApiKey(private val signerFor: suspend (TradingApiKey
         return mutex.withLock {
             when (val previous = held) {
                 null -> TradingKeyPushResult.Held(key.publicKey, KeyChange.FIRST).also { held = key }
-                key -> TradingKeyPushResult.Held(key.publicKey, KeyChange.SAME)
+                key -> TradingKeyPushResult.Held(key.publicKey, KeyChange.SAME).also { held = key }
                 else -> vouch(key, previous).also { if (it is TradingKeyPushResult.Held) held = key }
             }
         }
