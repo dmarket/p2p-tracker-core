@@ -12,6 +12,11 @@ version: 2.1
 #                            (no tag / no GitHub Release). Branch: `release/v<x.y.z>-SNAPSHOT`.
 #   - "<x.y.z>"           -> npm "latest" + annotated tag v<x.y.z> + GitHub Release from CHANGELOG.
 #
+# Both come from main: publish_npm refuses a release branch whose commit main does not have. A branch other
+# than main publishes only a snapshot named after it: branch `release/v<x.y.z>-SNAPSHOT-<label>`, where
+# <label> is that branch's name in letters, digits and hyphens -> npm "<x.y.z>-SNAPSHOT-<label>.<commits>"
+# under dist-tag "snapshot-<label>", never "snapshot" or "latest".
+#
 # Why the branch and not the merge: a version bump reaching main used to publish on its own, which
 # made every doc commit on a publish branch a potential npm release and left "[skip publish]" as the
 # only brake. Now the trigger is explicit and revocable — a release branch that is never approved
@@ -153,9 +158,23 @@ jobs:
             # only ways to get here disagreeing are a bump that was forgotten or a branch cut from the
             # wrong place. Both would publish a version nobody proposed.
             BRANCH_VERSION="${CIRCLE_BRANCH#release/v}"
-            if [ "$BRANCH_VERSION" != "$VERSION_NAME" ]; then
+            EXPECTED_VERSION="$VERSION_NAME"
+            if [ -n "${SNAPSHOT_LABEL:-}" ]; then EXPECTED_VERSION="$VERSION_NAME-$SNAPSHOT_LABEL"; fi
+            if [ "$BRANCH_VERSION" != "$EXPECTED_VERSION" ]; then
               echo "ERROR: branch '$CIRCLE_BRANCH' proposes $BRANCH_VERSION but gradle.properties says $VERSION_NAME." >&2
               exit 1
+            fi
+
+            # --- Source: only main releases, or publishes the plain `snapshot`. ---
+            # A commit main does not have publishes only as a labelled snapshot
+            # (`release/v<x.y.z>-SNAPSHOT-<branch>`), under its own dist-tag, so a build of unmerged work can
+            # never become `latest` or the `snapshot` every consumer of the dev line pulls.
+            if [ -z "${SNAPSHOT_LABEL:-}" ]; then
+              git fetch -q origin main
+              if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+                echo "ERROR: $CIRCLE_SHA1 is not on main. A branch other than main publishes only a branch snapshot: VERSION_NAME <x.y.z>-SNAPSHOT on release/v<x.y.z>-SNAPSHOT-<branch>." >&2
+                exit 1
+              fi
             fi
 
             # --- Changelog guard: a stable release must have a matching CHANGELOG section. ---
@@ -251,7 +270,8 @@ workflows:
             branches:
               # `release/v1.0.1`, with an optional prerelease suffix (`release/v1.0.1-SNAPSHOT`,
               # `release/v1.1.0-beta.1`). publish_npm then requires gradle.properties' VERSION_NAME
-              # to be exactly the part after the `v`.
+              # to be exactly the part after the `v` — or, for a branch snapshot
+              # (`release/v1.0.1-SNAPSHOT-development`), that part minus its `-<label>`.
               only: /^release\/v\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/
       - publish_npm:
           requires:

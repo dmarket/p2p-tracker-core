@@ -10,6 +10,8 @@
 # Version rules:
 #   - "<base>-SNAPSHOT"  -> "<base>-SNAPSHOT.<commit-count>" under dist-tag "snapshot"
 #     (unique per commit, so npm never rejects a re-publish).
+#   - "<base>-SNAPSHOT" on `release/v<base>-SNAPSHOT-<label>` (a snapshot of a branch other than main)
+#     -> "<base>-SNAPSHOT-<label>.<commit-count>" under dist-tag "snapshot-<label>".
 #   - "<base>"           -> "<base>" under dist-tag "latest".
 #
 # Opt-out flag:
@@ -66,11 +68,31 @@ $(git -C "$REPO_ROOT" log --pretty=%B 'HEAD^1..HEAD^2' 2>/dev/null || true)"
   fi
 fi
 
+# --- Branch snapshots ------------------------------------------------------------------------------
+# A release branch named after the snapshot version plus a label (`release/v1.0.4-SNAPSHOT-development`)
+# proposes a snapshot of a branch other than main. The label, the source branch's name with anything but
+# letters, digits and hyphens turned into hyphens, goes into the version and the dist-tag, so such a build
+# never takes main's `snapshot` tag. Only a -SNAPSHOT version can carry one: a stable release has no label,
+# and the publish job requires its commit to be on main.
+SNAPSHOT_LABEL=""
+if [[ "$VERSION_NAME" == *-SNAPSHOT && "${CIRCLE_BRANCH:-}" == "release/v${VERSION_NAME}-"* ]]; then
+  SNAPSHOT_LABEL="${CIRCLE_BRANCH#"release/v${VERSION_NAME}-"}"
+  if [[ ! "$SNAPSHOT_LABEL" =~ ^[0-9A-Za-z]([0-9A-Za-z-]*[0-9A-Za-z])?$ ]]; then
+    echo "ERROR: '$SNAPSHOT_LABEL' in $CIRCLE_BRANCH is not a usable snapshot label: letters, digits and inner hyphens only." >&2
+    exit 1
+  fi
+fi
+
 if [[ "$VERSION_NAME" == *-SNAPSHOT ]]; then
   BASE="${VERSION_NAME%-SNAPSHOT}"
   COMMIT_COUNT="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
-  VERSION="${BASE}-SNAPSHOT.${COMMIT_COUNT}"
-  DIST_TAG="snapshot"
+  if [[ -n "$SNAPSHOT_LABEL" ]]; then
+    VERSION="${BASE}-SNAPSHOT-${SNAPSHOT_LABEL}.${COMMIT_COUNT}"
+    DIST_TAG="snapshot-${SNAPSHOT_LABEL}"
+  else
+    VERSION="${BASE}-SNAPSHOT.${COMMIT_COUNT}"
+    DIST_TAG="snapshot"
+  fi
   IS_SNAPSHOT="true"
 else
   VERSION="$VERSION_NAME"
@@ -118,6 +140,8 @@ node -e 'const p=require(process.argv[1]);console.log(JSON.stringify({name:p.nam
   # The declared version, unsuffixed. VERSION carries a snapshot's commit count, so the publish job's
   # branch/version agreement check needs the string a release branch can actually be named after.
   echo "export VERSION_NAME='$VERSION_NAME'"
+  # Empty unless the release branch names a branch snapshot; the publish job checks the branch against it.
+  echo "export SNAPSHOT_LABEL='$SNAPSHOT_LABEL'"
   echo "export DIST_TAG='$DIST_TAG'"
   echo "export IS_SNAPSHOT='$IS_SNAPSHOT'"
   echo "export SKIP_PUBLISH='$SKIP_PUBLISH'"

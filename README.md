@@ -495,7 +495,8 @@ exception living in a dev module.
   plain `npm install` resolves it; because a SemVer prerelease is not matched by a caret range, pin
   it explicitly (`"@dmarket/p2p-tracker-core": "1.0.1-beta"`) rather than `^1.0.1`. Development
   builds continue to publish under the `snapshot` dist-tag
-  (`npm install @dmarket/p2p-tracker-core@snapshot`).
+  (`npm install @dmarket/p2p-tracker-core@snapshot`). A build of a branch not yet merged publishes
+  as `<x.y.z>-SNAPSHOT-<branch>.<n>` under its own dist-tag, `snapshot-<branch>`.
 - **Android / JVM:** `implementation("com.dmarket.p2p:trade-tracker-core:<version>")`
   (`trade-tracker-domain` too) — *planned; Maven Central publishing is not wired yet.*
 - **iOS:** XCFramework via a SwiftPM binary target — *once the iOS target is enabled.*
