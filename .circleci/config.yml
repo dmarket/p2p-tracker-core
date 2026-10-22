@@ -52,10 +52,10 @@ executors:
     docker:
       # Trusted publishing needs Node >= 22.14 and, for the CIRCLECI OIDC provider specifically,
       # npm >= 11.11.0 (npm/cli#8925 — the generic 11.5.1 floor only covers GitHub Actions/GitLab;
-      # older npm silently skips the token exchange and dies with ENEEDAUTH). Node 24.18 bundles
-      # npm 11.16.0, so no in-job npm upgrade is normally needed (a version guard in the publish
+      # older npm silently skips the token exchange and dies with ENEEDAUTH). Node 24.22.1 bundles
+      # npm 11.19.1, so no in-job npm upgrade is normally needed (a version guard in the publish
       # job self-heals if the image's bundled npm ever falls behind).
-      - image: cimg/node:24.18
+      - image: cimg/node:24.22.1
     environment:
       REPO_SLUG: dmarket/p2p-tracker-core
 
