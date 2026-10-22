@@ -71,44 +71,84 @@ private val UNDELIBERATE_CLOSES = setOf(1000, 1005, 1006)
 private val UNEXPECTED_RESPONSE = Regex("""Unexpected server response: (\d{3})""")
 
 /**
- * The prover's target leg: a TCP connection to [address] (`host:port`), as the `IoChannel` the prover reads and
- * writes. The TLS is the prover's own, inside MPC; this is the bare byte stream a browser can only reach through
- * the `wss://` proxy. A failed dial or a reset goes into [record].
+ * The prover's target leg: [connect] dials [address] (`host:port`) and resolves the `IoChannel` the prover reads and
+ * writes. In a prover process [connect] is the transport's own Node connector ([nodeTcpConnector]): a raw TCP socket
+ * with `TCP_NODELAY`, its two directions adapted independently, destroyed when the dial fails. The TLS is the
+ * prover's own, inside MPC; this is the bare byte stream a browser can only reach through the `wss://` proxy.
+ *
+ * What the transport leaves to its host is added here, without touching the socket: a dial that has not connected
+ * within [dialTimeoutMs] fails (and the channel it may still bring is closed), and [record] is told why the leg failed,
+ * from the dial or from the first read or write the socket refused. A failure after the prover closed the channel is
+ * its own doing, not Steam's, and is not recorded.
  */
-internal fun tcpChannel(address: String, record: ProverSessionRecord): Promise<Any?> {
+internal fun recordedTargetChannel(
+    address: String,
+    record: ProverSessionRecord,
+    dialTimeoutMs: Int = TARGET_DIAL_TIMEOUT_MS,
+    connect: (host: String, port: Int) -> Promise<Any?>,
+): Promise<Any?> {
     val host = address.substringBeforeLast(':')
     val port = address.substringAfterLast(':').toInt()
-    val onError = { message: String? -> record.targetError = message ?: "the Steam connection failed" }
+    val onError = { message: String? -> if (record.targetError == null) record.targetError = message ?: "the Steam connection failed" }
     val open: dynamic = js(
         """
-        (function (net, host, port, onError) {
+        (function (dial, host, port, timeoutMs, onError) {
           return new Promise((resolve, reject) => {
-            const socket = net.connect({ host: host, port: port });
-            const chunks = [];
-            const waiters = [];
-            let ended = false;
-            const finish = () => { ended = true; while (waiters.length) waiters.shift()(null); };
-            socket.on('data', (data) => {
-              const bytes = new Uint8Array(data.buffer, data.byteOffset, data.length).slice();
-              const waiter = waiters.shift();
-              if (waiter) waiter(bytes); else chunks.push(bytes);
+            let settled = false;
+            const timer = setTimeout(() => {
+              settled = true;
+              const error = new Error('the Steam connection timed out after ' + timeoutMs + ' ms');
+              onError(error.message);
+              reject(error);
+            }, timeoutMs);
+            dial(host, port).then((io) => {
+              clearTimeout(timer);
+              if (settled) { io.close().catch(() => {}); return; }
+              settled = true;
+              let closed = false;
+              const watch = (promise) => promise.catch((error) => {
+                if (!closed) onError(error && error.message);
+                throw error;
+              });
+              resolve({
+                read: () => watch(io.read()),
+                write: (data) => watch(io.write(data)),
+                close: () => { closed = true; return io.close(); },
+              });
+            }, (error) => {
+              clearTimeout(timer);
+              if (settled) return;
+              settled = true;
+              onError(error && error.message);
+              reject(error);
             });
-            socket.on('end', finish);
-            socket.on('close', finish);
-            socket.on('error', (error) => { onError(error && error.message); finish(); });
-            const channel = {
-              read: () => chunks.length ? Promise.resolve(chunks.shift()) : (ended ? Promise.resolve(null) : new Promise((r) => waiters.push(r))),
-              write: (data) => new Promise((resolve, reject) => {
-                if (ended) { reject(new Error('cannot write: the Steam connection is closed')); return; }
-                socket.write(Buffer.from(data.slice()), (error) => error ? reject(error) : resolve());
-              }),
-              close: () => { if (!socket.destroyed) socket.end(); return Promise.resolve(); },
-            };
-            socket.once('connect', () => resolve(channel));
-            socket.once('error', (error) => reject(error));
           });
         })
         """,
     )
-    return open(NodeModules.net, host, port, onError).unsafeCast<Promise<Any?>>()
+    return open(connect, host, port, dialTimeoutMs, onError).unsafeCast<Promise<Any?>>()
 }
+
+/**
+ * The transport's Node connector, `connectTcp(host, port)` from `transport/dist/node.js` under [assetsDir]: the
+ * module behind `client-wasm-transport`'s `/node` export, imported on the first dial. It imports `node:` built-ins, so
+ * only a Node host loads it; the browser path never reaches this file.
+ */
+internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> Promise<Any?> {
+    val url = NodeModules.url.pathToFileURL(NodeModules.path.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val dial: dynamic = js(
+        """
+        (function (url) {
+          let loading = null;
+          return (host, port) => {
+            if (loading === null) loading = import(url);
+            return loading.then((module) => module.connectTcp(host, port));
+          };
+        })
+        """,
+    )
+    return dial(url).unsafeCast<(String, Int) -> Promise<Any?>>()
+}
+
+/** How long the target's TCP dial may take: Steam answers a connect in well under a second. */
+internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000

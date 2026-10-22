@@ -107,9 +107,12 @@ the presentation is built; throwing refuses the proof, so a host can decline to 
 extension) does not read the status.
 
 This source set ships to the browser as well, so the library contains no Node code for any of these: the host
-builds the socket, the WebSocket and the compiled module and hands them in. The prover's threads are the other
-half of a Node host and are entirely its own: `pkg/`'s spawner starts browser `Worker`s, which Node does not
-have.
+builds the socket, the WebSocket and the compiled module and hands them in. For the target leg the transport
+ships the pieces: `connectTcp(host, port, { connect })` and `TcpIoChannel` adapt a host's socket, and
+`transport/dist/node.js` (its `/node` export) is a ready Node connector with `TCP_NODELAY`, which the SDK's
+prover process uses. Dial timeouts and why the leg failed stay the host's to track. The prover's threads are the
+other half of a Node host and are entirely its own: `pkg/`'s spawner starts browser `Worker`s, which Node does
+not have.
 
 ## Proving from a headless host
 

@@ -24,7 +24,8 @@ import kotlin.js.Promise
  *  - assets: `pkg/` and `transport/` under [ProverSettings.assetsDir], as `file:` URLs;
  *  - the module: `client_wasm_bg.wasm` compiled from disk, handed to the init as `module_or_path`;
  *  - the notary: a `ws` socket with the upgrade headers the SDK signs when asked, and no `bearer.` entry;
- *  - the target: a TCP socket to the target's port 443 ([ProverSettings.targetAddress] on a test stand).
+ *  - the target: the transport's Node `connectTcp` to the target's port 443 ([ProverSettings.targetAddress] on a test
+ *    stand), with a dial timeout and the leg's failure recorded ([recordedTargetChannel]).
  *
  * The prover's threads run as worker threads ([installBrowserWorker]). Its trace goes to stdout, which the SDK
  * logs redacted. A failure is classified from what the sockets saw and the prover's words ([ProofFailures]).
@@ -34,6 +35,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
         installBrowserWorker()
         val settings = proof.settings
         val record = ProverSessionRecord()
+        val targetConnector = nodeTcpConnector(settings.assetsDir)
         val host = WasmProverHost(
             assetUrl = { path -> fileUrl(NodeModules.path.join(settings.assetsDir, path) as String) },
             wasmModule = { compileWasm(NodeModules.path.join(settings.assetsDir, "pkg", "client_wasm_bg.wasm") as String) },
@@ -49,7 +51,9 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
                 }
                 headerWebSocket(signed.values, record)
             },
-            connectTarget = { serverName, port -> tcpChannel(settings.targetAddress ?: "$serverName:$port", record) },
+            connectTarget = { serverName, port ->
+                recordedTargetChannel(settings.targetAddress ?: "$serverName:$port", record, connect = targetConnector)
+            },
             onTargetResponse = { status ->
                 record.targetStatus = status
                 check(status in SUCCESS) { "Steam answered HTTP $status" }
