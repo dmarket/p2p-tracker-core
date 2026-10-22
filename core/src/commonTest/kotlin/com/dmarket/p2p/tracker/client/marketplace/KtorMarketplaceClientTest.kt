@@ -553,7 +553,17 @@ class KtorMarketplaceClientTest {
         assertTrue("P2P" !in refused.message.orEmpty(), "the message still carries no body: ${refused.message}")
 
         val report = assertFailsWith<MarketplaceServerErrorException> { client.reportDirectives(listOf(aDirectiveOutcome())) }
-        assertNull(report.errorCode, "only the heartbeat reads a refusal's body")
+        assertNull(report.errorCode, "a directive report does not read a refusal's body")
+    }
+
+    @Test
+    fun a_refused_proof_carries_the_gateways_code() = runTest {
+        val engine =
+            MockEngine { respond("""{"code":"P2P_DEAL_CLOSED","message":"deal is closed"}""", HttpStatusCode.Conflict, jsonHeaders()) }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        val refused = assertFailsWith<MarketplaceServerErrorException> { client.submitProof(aProofSubmission()) }
+        assertEquals(409, refused.statusCode)
+        assertEquals("P2P_DEAL_CLOSED", refused.errorCode)
     }
 
     @Test

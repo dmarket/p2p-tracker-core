@@ -39,6 +39,9 @@ interface MarketplaceClient {
      * `POST /notary` — a TLSN proof for a decisive transition (decisive set only). The verdict is the
      * backend's alone: a delivered `verified=false` is terminal for that transition, because
      * resubmitting the identical presentation cannot change the answer.
+     *
+     * A refusal by status (the deal closed or gone) throws [MarketplaceServerErrorException] with that status
+     * and the gateway's [MarketplaceServerErrorException.errorCode], rather than folding it into `verified=false`.
      */
     suspend fun submitProof(proof: ProofSubmission): ProofResult
 

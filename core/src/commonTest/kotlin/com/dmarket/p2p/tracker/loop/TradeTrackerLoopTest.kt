@@ -2469,21 +2469,27 @@ class TradeTrackerLoopTest {
 
     @Test
     fun failed_proof_submission_is_retried_next_cycle() = runTest {
-        val offerId = OfferId("offer-1")
-        val reader = FakeSteamReadClient(initialOffers = mapOf(offerId to 3))
-        val notary = FakeNotaryProver()
-        val progress = InMemoryTrackerProgressStore()
-        val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(
-                activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
-                ttlSeconds = 60,
-            ),
-        ).apply { submitProofThrows = true }
-        val l = loop(marketplace = mp, reader = reader, notary = notary, progress = progress)
-        l.runOnce()
-        l.runOnce()
-        assertEquals(2, mp.proofsSubmitted.size, "an undelivered decisive proof must be retried, not deduped away")
+        // Only a refusal is a verdict: a transport failure, a 5xx or a 408 says nothing about the proof.
+        val failures = listOf(simulatedNotaryFailure(), MarketplaceServerErrorException(503), MarketplaceServerErrorException(408))
+        for (failure in failures) {
+            val offerId = OfferId("offer-1")
+            val reader = FakeSteamReadClient(initialOffers = mapOf(offerId to 3))
+            val notary = FakeNotaryProver()
+            val progress = InMemoryTrackerProgressStore()
+            val mp = FakeMarketplaceClient(
+                heartbeatResponse = HeartbeatResponse(
+                    activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
+                    ttlSeconds = 60,
+                ),
+            ).apply { submitProofThrowable = failure }
+            val l = loop(marketplace = mp, reader = reader, notary = notary, progress = progress)
+            l.runOnce()
+            l.runOnce()
+            assertEquals(2, mp.proofsSubmitted.size, "an undelivered decisive proof must be retried, not deduped away: $failure")
+        }
     }
+
+    private fun simulatedNotaryFailure() = IllegalStateException("simulated /notary failure")
 
     @Test
     fun delivered_but_unverified_proof_is_not_retried() = runTest {
@@ -2997,6 +3003,31 @@ class TradeTrackerLoopTest {
 
         assertEquals(2, notary.proven.size, "two slow failures must park the third deal")
         assertEquals(1, parkedSuppressions(events).size)
+    }
+
+    @Test
+    fun a_refused_submission_is_a_verdict_not_a_prover_failure() = runTest {
+        // Seen on stage-01 on 2026-10-22: `/notary` answered a closed deal with a 4xx (`P2P_DEAL_CLOSED`,
+        // `404 P2P_DEAL_NOT_FOUND`), and the loop read it as a proof the backend never saw. So the transition
+        // was re-proven on every wake while the deal stayed tracked, and each refusal counted towards parking the
+        // prover for every other deal. The prover did its part and the backend has ruled.
+        val clock = FakeClock()
+        val notary = FakeNotaryProver().apply { onProve = { clock.advance(2.seconds) } } // above the 1 s floor
+        val events = RecordingEventObserver()
+        val mp = threeProofDeals().apply { submitProofThrowable = MarketplaceServerErrorException(404, "P2P_DEAL_NOT_FOUND") }
+        val l = threeProofLoop(notary, clock, events = events, marketplace = mp)
+
+        l.runOnce()
+        assertEquals(3, notary.proven.size, "a refusal must not park the deals behind it")
+        assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
+        assertTrue(events.events.none { it is LifecycleEvent.ProofFailed }, "a refusal is not a failed proof")
+        val verdicts = events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>()
+        assertEquals(listOf(false, false, false), verdicts.map { it.verified })
+        assertTrue(verdicts.all { it.reason.orEmpty().contains("P2P_DEAL_NOT_FOUND") }, "the code names the refusal: $verdicts")
+
+        clock.advance(1.minutes)
+        l.runOnce()
+        assertEquals(3, notary.proven.size, "a refused transition must not buy another MPC session")
     }
 
     @Test
@@ -3920,7 +3951,7 @@ class TradeTrackerLoopTest {
                 activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
                 ttlSeconds = 60,
             ),
-        ).apply { submitProofThrows = true }
+        ).apply { submitProofThrowable = simulatedNotaryFailure() }
         loop(marketplace = mp, reader = reader, eventObserver = events).runOnce()
 
         assertEquals(1, events.events.filterIsInstance<LifecycleEvent.ProofFailed>().size)

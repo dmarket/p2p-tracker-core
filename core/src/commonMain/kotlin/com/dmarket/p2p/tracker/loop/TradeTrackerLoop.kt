@@ -58,6 +58,7 @@ import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.InventoryReport
 import com.dmarket.p2p.tracker.model.marketplace.ProofResult
+import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
@@ -2772,6 +2773,8 @@ class TradeTrackerLoop(
      *
      * [now] is the caller's pre-attempt clock reading, and it is used only for the success fold. The failure
      * fold re-reads the clock on purpose: it has to *measure* the attempt, and [now] predates it.
+     *
+     * A 4xx refusal of the submission is the backend's verdict, not a delivery failure: see [submitForVerdict].
      */
     private suspend fun mintAndSubmit(
         binding: ProvenReadBinding,
@@ -2787,7 +2790,7 @@ class TradeTrackerLoop(
         // naming the exact defect — invisible to every consumer of the event stream.
         val outcome = runCatching {
             val proof = notary.proveTransition(binding, source, credential)
-            marketplace.submitProof(proof)
+            submitForVerdict(proof)
         }
         // Generation or delivery failed — the backend never saw the proof: retry next tick.
         val result = outcome.getOrElse { failure ->
@@ -2823,6 +2826,22 @@ class TradeTrackerLoop(
         // proofs must not park the client's ability to make them.
         notaryThrottle.onResult(generated = true, now = now)
         return result
+    }
+
+    /**
+     * Submit [proof] and return the backend's verdict on it, counting a **4xx refusal as that verdict**.
+     *
+     * A 4xx means the backend heard the proof and refused it (`P2P_DEAL_CLOSED`, `404 P2P_DEAL_NOT_FOUND`), a
+     * terminal answer like a delivered `verified = false`: the caller latches the transition, and the prover's
+     * breaker folds a success, because the prover did its part. Anything else, a 5xx or a `408` included,
+     * propagates unchanged and stays a delivery failure.
+     */
+    private suspend fun submitForVerdict(proof: ProofSubmission): ProofResult = try {
+        marketplace.submitProof(proof)
+    } catch (e: MarketplaceServerErrorException) {
+        // 408 Request Timeout: the proof was not refused, only not answered.
+        if (e.statusCode !in 400..499 || e.statusCode == 408) throw e
+        ProofResult(proof.dealId, verified = false, reason = listOfNotNull("HTTP ${e.statusCode}", e.errorCode).joinToString(" "))
     }
 
     /**

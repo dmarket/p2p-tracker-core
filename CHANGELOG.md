@@ -13,6 +13,11 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Fixed
 
+- A proof `/notary` refuses with a 4xx, for a deal that has closed or is gone, is that transition's verdict, like
+  a delivered `verified: false`. It was read as a proof the backend never saw: the transition was proven again on
+  every wake while the deal stayed tracked, and each refusal counted towards parking the prover for every deal.
+  The `ProofSubmitted` event carries the status and the gateway's code (`HTTP 409 P2P_DEAL_CLOSED`). A 5xx, a
+  `408` or a transport failure is still retried.
 - A Trading API key goes out as `X-Api-Key` in the case it was pushed in. `TradingApiKey.publicKey` was
   lowercased, and DMarket looks a key up by its exact string, so a valid key registered in capitals was refused.
   Keys are still compared without regard to case: the same key pushed in another case is `KeyChange.SAME`, and

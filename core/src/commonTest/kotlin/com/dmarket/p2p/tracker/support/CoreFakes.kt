@@ -118,7 +118,9 @@ class FakeMarketplaceClient(
 
     /** The backend's rejection string, as `/notary` really returns alongside `verified: false`. */
     var proofReason: String? = null
-    var submitProofThrows: Boolean = false
+
+    /** When set, `submitProof()` throws this exact throwable (e.g. a `MarketplaceServerErrorException` refusal). */
+    var submitProofThrowable: Throwable? = null
     var reportTradeStatusThrows: Boolean = false
     var getDealThrows: Boolean = false
 
@@ -145,7 +147,7 @@ class FakeMarketplaceClient(
 
     override suspend fun submitProof(proof: ProofSubmission): ProofResult {
         proofsSubmitted += proof
-        if (submitProofThrows) error("simulated /notary failure")
+        submitProofThrowable?.let { throw it }
         return ProofResult(dealId = proof.dealId, verified = proofVerified, reason = proofReason)
     }
 

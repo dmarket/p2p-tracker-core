@@ -80,9 +80,10 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * [onServerDate] hears the `Date` of every reply that carries one, a refusal included, so a host whose requests
  * are signed over its own clock can tell a skewed clock from a refused key. `null` (the default) reads none.
  *
- * A failed heartbeat's body is read for the gateway's machine code (at most [ERROR_BODY_CHARS], redacted) and carried
- * as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's to fix, not the
- * gateway's. See [gatewayErrorCode] for where the code is read from.
+ * A failed heartbeat's or proof submission's body is read for the gateway's machine code (at most [ERROR_BODY_CHARS],
+ * redacted) and carried as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's
+ * to fix, not the gateway's, and a `/notary` 409 `P2P_DEAL_CLOSED` names why a proof was refused. See
+ * [gatewayErrorCode] for where the code is read from.
  *
  * Audit boundary: no method here accepts a Steam credential — by construction the Steam JWT can never
  * be sent to the marketplace. The client also uses a DMarket-only [HttpClient], physically separate
@@ -141,7 +142,7 @@ class KtorMarketplaceClient(
     }
 
     override suspend fun submitProof(proof: ProofSubmission): ProofResult {
-        val text = postJson("$baseUrl$extPath/notary", TrackerJson.encodeToString(proof.toDto()))
+        val text = postJson("$baseUrl$extPath/notary", TrackerJson.encodeToString(proof.toDto()), readErrorCode = true)
         return TrackerJson.decodeFromString<SubmitProofResponseDto>(text).toDomain()
     }
 
