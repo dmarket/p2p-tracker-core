@@ -12,9 +12,9 @@ plugins {
 // was built from — the prover and the notary must share a dep/tlsn pin, and a mismatch fails as an opaque MPC
 // error, never as a version error. Bump procedure: core/PROVER.md.
 //
-// EXACT, never a range or a dist-tag: `^0.1.0-SNAPSHOT.30` would also match every later snapshot.
+// EXACT, never a range or a dist-tag: `^1.0.1` would also match every later release.
 val tlsnProverPackage = "@dmarket/steam-provenance"
-val tlsnProverVersion = "0.1.0-SNAPSHOT.30"
+val tlsnProverVersion = "1.0.1"
 
 // The registry's `dist.integrity` for that version (`npm view <package>@<version> dist.integrity`): the
 // committed anchor for every byte the prover puts into our tarball, checked by copyTlsnProver against the
@@ -22,7 +22,7 @@ val tlsnProverVersion = "0.1.0-SNAPSHOT.30"
 // kotlin-js-store/ is not tracked, and tracking it would freeze every transitive npm dependency of the
 // Kotlin/JS toolchain too — this pins the one npm input that ships, and nothing else.
 val tlsnProverIntegrity =
-    "sha512-VO4RB9/UpK4dVKs8Ubm+9s7aYvFD0jGWwxir6CXcJhf+G5t+yT19Vumf7HPc5EDzsDjEH/GIUSBuHX8Xnlq27Q=="
+    "sha512-aXybXjvXMukEqpFTqnQtSS2SHQVwb9Wnvr/kb7IH/3hU8EtCc5fdloErRhbSMHsVyJO+jPnxGg3CCzP81NxhLQ=="
 
 kotlin {
     js {

@@ -201,6 +201,14 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   root, and the prover package is not added to `dependencies`. The build verifies the pin, the package's
   `SHA256SUMS` and `WASM_SHA256` before it copies anything. Deploy against a notary built from `ac583a4`'s
   `dep/tlsn` pin.
+- The TLSN prover moves to `@dmarket/steam-provenance@1.0.1`, steam-provenance commit `3fe3354`
+  (`3fe335478bb7078372900de7fd0dee481bc8fdb3`). It embeds the same TLSNotary revision as `ac583a4`
+  (`dep/tlsn` `0231612`) and speaks the same `tlsn.notary.v2` subprotocol, so it works against the same
+  notaries. Its built-in root set no longer trusts the compromised eMudhra and AAA Certificate Services
+  roots; Steam's hosts chain to ISRG Root X1 and are unaffected. `transport/` gains `connectTcp` and
+  `TcpIoChannel` (direct TCP for the target leg through a host connector) and a Node-only `dist/node.js`,
+  which imports `node:` built-ins and is reachable only through the transport's `/node` export: nothing in
+  the browser path loads it.
 
 ## [1.0.3-beta] - 2026-09-23
 

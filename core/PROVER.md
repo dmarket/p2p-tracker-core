@@ -13,7 +13,7 @@ and they live next to each other at the top of that file:
 
 | Value | What it pins |
 |---|---|
-| `tlsnProverVersion` | the exact npm version, never a range or a dist-tag (`^0.1.0-SNAPSHOT.30` would also match every later snapshot) |
+| `tlsnProverVersion` | the exact npm version, never a range or a dist-tag (`^1.0.1` would also match every later release) |
 | `tlsnProverIntegrity` | the registry's `dist.integrity` for that version: a sha512 over the whole npm tarball |
 
 The package is installed, never imported. No Kotlin code names it, so no bundler, ours or a host's, ever
