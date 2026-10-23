@@ -26,6 +26,13 @@ kotlin {
             // The test-only factory takes a Ktor engine; :core keeps Ktor as an `implementation` dependency, so it
             // is declared here for that type to resolve.
             implementation(libs.ktor.client.core)
+            // The prover processes' IPC messages.
+            implementation(libs.kotlinx.serialization.json)
+        }
+        jsMain.dependencies {
+            // The notary socket of a prover process: sends the signed upgrade headers and names a refused upgrade's
+            // status. The version Ktor's JS client already brings, so the lock does not move.
+            implementation(npm("ws", "8.20.1"))
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

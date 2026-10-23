@@ -1,7 +1,7 @@
 package com.dmarket.p2p.sdk.health
 
+import com.dmarket.p2p.headless.prover.ProverOutput
 import com.dmarket.p2p.sdk.prover.ProofProblems
-import com.dmarket.p2p.sdk.prover.ProverOutput
 import com.dmarket.p2p.tracker.engine.FailedCancelKind
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED

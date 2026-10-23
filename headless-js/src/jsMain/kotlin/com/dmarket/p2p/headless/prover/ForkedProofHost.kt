@@ -1,7 +1,7 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.SdkLog
-import com.dmarket.p2p.sdk.node.NodeModules
+import com.dmarket.p2p.headless.node.nodeChildProcess
+import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.KillCause
@@ -39,7 +39,7 @@ class ProverLimits(
 
     companion object {
         /** The extension recycles its prover after this many proofs; a child never serves more. */
-        const val MAX_PROOFS_PER_CHILD: Int = 5
+        const val MAX_PROOFS_PER_CHILD: Int = ProverSettings.MAX_PROOFS_PER_CHILD
     }
 }
 
@@ -55,23 +55,25 @@ class ProverLimits(
  * One killed by a signal the SDK did not send died for memory ([KillCause.OUT_OF_MEMORY]).
  *
  * The child is forked with [env] only (no secret, no config path), no inherited `execArgv`, and nothing secret in
- * its argv. Its stdout and stderr go to [log] line by line, redacted ([ProverOutput]); nothing the IPC carries is
- * ever logged.
+ * its argv. Its stdout and stderr go to [onLine] line by line, redacted ([ProverOutput]), with the child's pid and
+ * the stream; the host's own lines (a proof started, made or failed, a child exited) go to [onNotice], with whether
+ * each is a warning and its fields. Nothing the IPC carries is ever passed to either.
  *
- * A failure [ProofProblems] makes wait holds the next proofs back ([backoff]) without forking: they fail at once as
- * [ProofFailure.NotStarted]. Every finished proof is reported to [onOutcome] (`null`: proved).
+ * A failure [ProverBackoff.waitAfter] makes wait holds the next proofs back ([backoff]) without forking: they fail at
+ * once as [ProofFailure.NotStarted]. Every finished proof is reported to [onOutcome] (`null`: proved).
  */
 class ForkedProofHost(
     private val script: String,
     private val args: List<String>,
     private val settings: ProverSettings,
-    private val log: SdkLog,
     private val clock: Clock,
     private val limits: ProverLimits = ProverLimits(),
     private val env: Map<String, String> = minimalProverEnv(),
     private val backoff: ProverBackoff = ProverBackoff(),
+    private val onLine: (pid: String, stream: String, line: String) -> Unit = { _, _, _ -> },
+    private val onNotice: (message: String, warning: Boolean, fields: List<Pair<String, String?>>) -> Unit = { _, _, _ -> },
     private val onOutcome: (dealId: String, failure: ProofFailure?) -> Unit = { _, _ -> },
-) : SdkProofHost {
+) : NodeProofHost {
     private val lock = Mutex()
     private val idle = ArrayDeque<ForkedChild>()
     private val live = mutableSetOf<ForkedChild>()
@@ -89,7 +91,7 @@ class ForkedProofHost(
             return HostedProofOutcome.Failed(held)
         }
         val (child, id) = lock.withLock { (takeIdle() ?: fork()) to nextProofId++ }
-        log.info("proof started", "dealId" to dealId, "pid" to child.pid)
+        onNotice("proof started", false, listOf("dealId" to dealId, "pid" to child.pid))
         val outcome = try {
             run(child, id, proof, upgrade)
         } catch (e: CancellationException) {
@@ -100,12 +102,16 @@ class ForkedProofHost(
         when (outcome) {
             is HostedProofOutcome.Proved -> {
                 backoff.succeeded()
-                log.info("proof made", "dealId" to dealId, "pid" to child.pid)
+                onNotice("proof made", false, listOf("dealId" to dealId, "pid" to child.pid))
                 onOutcome(dealId, null)
             }
             is HostedProofOutcome.Failed -> {
                 backoff.failed(outcome.failure, clock.now())
-                log.warn("proof failed", "dealId" to dealId, "pid" to child.pid, "reason" to ProverOutput.redact(outcome.failure.summary))
+                onNotice(
+                    "proof failed",
+                    true,
+                    listOf("dealId" to dealId, "pid" to child.pid, "reason" to ProverOutput.redact(outcome.failure.summary)),
+                )
                 onOutcome(dealId, outcome.failure)
             }
         }
@@ -185,9 +191,9 @@ class ForkedProofHost(
         options.execArgv = emptyArray<String>()
         options.stdio = arrayOf("ignore", "pipe", "pipe", "ipc")
         options.serialization = "json"
-        val process = NodeModules.childProcess.fork(script, args.toTypedArray(), options)
+        val process = nodeChildProcess.fork(script, args.toTypedArray(), options)
         forks++
-        return ForkedChild(process, log).also { live += it }
+        return ForkedChild(process, onLine, onNotice).also { live += it }
     }
 }
 
@@ -195,7 +201,7 @@ class ForkedProofHost(
  * The environment a prover process gets: the few variables a Node process and its locale need, never the SDK's own
  * (no management secret, no config path, no `NODE_OPTIONS`).
  */
-internal fun minimalProverEnv(from: dynamic = NodeModules.process.env): Map<String, String> =
+internal fun minimalProverEnv(from: dynamic = nodeProcess.env): Map<String, String> =
     PROVER_ENV_ALLOWED.mapNotNull { name -> (from[name] as? String)?.let { name to it } }.toMap()
 
 private val PROVER_ENV_ALLOWED = listOf("PATH", "TZ", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT")
@@ -217,8 +223,12 @@ private sealed interface ChildEvent {
     }
 }
 
-/** One forked prover process: its IPC messages and its end as [events], its output into the log. */
-private class ForkedChild(private val process: dynamic, private val log: SdkLog) {
+/** One forked prover process: its IPC messages and its end as [events], its output to [onLine]. */
+private class ForkedChild(
+    private val process: dynamic,
+    private val onLine: (pid: String, stream: String, line: String) -> Unit,
+    private val onNotice: (message: String, warning: Boolean, fields: List<Pair<String, String?>>) -> Unit,
+) {
     val events = Channel<ChildEvent>(Channel.UNLIMITED)
     val pid: String = (process.pid as? Number)?.toString() ?: "?"
     var served = 0
@@ -233,12 +243,15 @@ private class ForkedChild(private val process: dynamic, private val log: SdkLog)
         process.on("exit") { code: dynamic, signal: dynamic ->
             gone = true
             val exit = ChildEvent.Exited((code as? Number)?.toInt(), signal as? String)
-            log.info(
+            onNotice(
                 "prover exited",
-                "pid" to pid,
-                "code" to exit.code?.toString(),
-                "signal" to exit.signal,
-                "killedBySdk" to killedBySdk.toString(),
+                false,
+                listOf(
+                    "pid" to pid,
+                    "code" to exit.code?.toString(),
+                    "signal" to exit.signal,
+                    "killedBySdk" to killedBySdk.toString(),
+                ),
             )
             events.trySend(exit)
         }
@@ -299,7 +312,6 @@ private class ForkedChild(private val process: dynamic, private val log: SdkLog)
     private fun emit(stream: String, line: String) {
         val text = line.trimEnd('\r')
         if (text.isBlank()) return
-        val fields = arrayOf("pid" to pid, "stream" to stream, "line" to ProverOutput.redact(text))
-        if (stream == "stderr") log.warn("prover output", *fields) else log.info("prover output", *fields)
+        onLine(pid, stream, ProverOutput.redact(text))
     }
 }

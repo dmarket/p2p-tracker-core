@@ -1,6 +1,9 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.node.NodeModules
+import com.dmarket.p2p.headless.node.nodePath
+import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.nodeUrl
+import com.dmarket.p2p.headless.node.wsWebSocket
 import kotlin.js.Promise
 
 /**
@@ -33,7 +36,7 @@ internal fun headerWebSocket(headers: Map<String, String>, record: ProverSession
     val onOpen = {
         record.notaryOpened = true
         // What a child holds while the notary queues it after the 101: the wasm initialised, no MPC yet.
-        println("prover: notary connected rssMb=${(NodeModules.process.memoryUsage().rss as Number).toLong() / BYTES_PER_MB}")
+        println("prover: notary connected rssMb=${(nodeProcess.memoryUsage().rss as Number).toLong() / BYTES_PER_MB}")
     }
     val onError = { message: String? ->
         UNEXPECTED_RESPONSE.find(message.orEmpty())?.groupValues?.get(1)?.toIntOrNull()?.let { record.upgradeStatus = it }
@@ -45,7 +48,7 @@ internal fun headerWebSocket(headers: Map<String, String>, record: ProverSession
             if (code !in UNDELIBERATE_CLOSES) record.onDeliberateClose?.invoke(code, record.closeReason)
         }
     }
-    val ws = NodeModules.ws
+    val ws = wsWebSocket
     val factory: dynamic = js(
         """
         (function (WebSocket, headers, onOpen, onError, onClose) {
@@ -135,7 +138,7 @@ internal fun recordedTargetChannel(
  * only a Node host loads it; the browser path never reaches this file.
  */
 internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> Promise<Any?> {
-    val url = NodeModules.url.pathToFileURL(NodeModules.path.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val url = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
     val dial: dynamic = js(
         """
         (function (url) {

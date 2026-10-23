@@ -1,10 +1,13 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.STEAM_ID
-import com.dmarket.p2p.sdk.SdkLog
-import com.dmarket.p2p.sdk.TestClock
-import com.dmarket.p2p.sdk.node.NodeModules
-import com.dmarket.p2p.sdk.steamToken
+import com.dmarket.p2p.headless.STEAM_ID
+import com.dmarket.p2p.headless.TestClock
+import com.dmarket.p2p.headless.node.join
+import com.dmarket.p2p.headless.node.nodeFs
+import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.readFile
+import com.dmarket.p2p.headless.node.tempDir
+import com.dmarket.p2p.headless.steamToken
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.KillCause
@@ -29,14 +32,14 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 
 /**
- * The SDK's side of a prover process, against a fake child: a Node script that speaks the IPC and, depending on
+ * The host's side of a prover process, against a fake child: a Node script that speaks the IPC and, depending on
  * its mode, proves, refuses, wedges, exits or kills itself. It also prints what it was sent, as a careless prover's
- * trace would, so the log redaction is tested on the real output path.
+ * trace would, so the redaction is tested on the real output path. [lines] is everything the host hands on: the
+ * child's output and its own notices.
  */
 class ForkedProofHostTest {
     private val clock = TestClock()
     private val lines = mutableListOf<String>()
-    private val log = SdkLog(clock) { lines += it }
     private val token = steamToken()
     private val signature = "dmar ed25519 " + "ef".repeat(64)
     private val upgrade = NotaryUpgradeSigner {
@@ -50,11 +53,6 @@ class ForkedProofHostTest {
     )
     private val settings = ProverSettings(notaryUrl = "wss://notary.test/provenance/v1/", threadCount = 2, assetsDir = "/nowhere")
 
-    private suspend fun tempDir(): String {
-        val prefix = NodeModules.path.join(NodeModules.os.tmpdir(), "sdk-prover-test-") as String
-        return NodeModules.fs.mkdtemp(prefix).unsafeCast<Promise<String>>().await()
-    }
-
     private val hosts = mutableListOf<ForkedProofHost>()
 
     @AfterTest
@@ -64,13 +62,12 @@ class ForkedProofHostTest {
 
     private suspend fun host(mode: String, report: String = "", proofsPerChild: Int = 1, deadline: Long = 1_500): ForkedProofHost {
         val dir = tempDir()
-        val script = NodeModules.path.join(dir, "fake-prover.js") as String
-        NodeModules.fs.writeFile(script, FAKE_CHILD).unsafeCast<Promise<Any?>>().await()
+        val script = join(dir, "fake-prover.js")
+        nodeFs.promises.writeFile(script, FAKE_CHILD).unsafeCast<Promise<Any?>>().await()
         return ForkedProofHost(
             script = script,
             args = listOf(mode, report),
             settings = settings,
-            log = log,
             clock = clock,
             limits = ProverLimits(
                 connectDeadline = deadline.milliseconds,
@@ -78,6 +75,8 @@ class ForkedProofHostTest {
                 proofsPerChild = proofsPerChild,
                 exitGrace = 500.milliseconds,
             ),
+            onLine = { pid, stream, line -> lines += "prover output pid=$pid stream=$stream line=$line" },
+            onNotice = { message, warning, fields -> lines += "$message warning=$warning $fields" },
             onOutcome = { deal, failure -> outcomes += deal to failure },
         ).also { hosts += it }
     }
@@ -100,23 +99,23 @@ class ForkedProofHostTest {
         val proved = assertIs<HostedProofOutcome.Proved>(outcome)
         assertTrue(proved.presentation.startsWith("cHJvb2Y=:"))
         assertTrue(lines.any { "prover output" in it && "<redacted>" in it }, "the child's output is logged, redacted: $lines")
-        assertTrue(lines.any { "\"stream\":\"stderr\"" in it })
+        assertTrue(lines.any { "prover output" in it && "stream=stderr" in it })
         assertNoSecretLogged()
         assertEquals(listOf<Pair<String, ProofFailure?>>("deal-1" to null), outcomes)
     }
 
     @Test
     fun the_child_gets_no_secret_in_argv_or_env_and_no_exec_argv() = runTest {
-        val report = NodeModules.path.join(tempDir(), "report.json") as String
-        NodeModules.process.env.DMARKET_SDK_CONFIG = "/etc/sdk/config.json"
-        NodeModules.process.env.SDK_MANAGEMENT_SECRET = "management-secret-value"
+        val report = join(tempDir(), "report.json")
+        nodeProcess.env.DMARKET_SDK_CONFIG = "/etc/sdk/config.json"
+        nodeProcess.env.SDK_MANAGEMENT_SECRET = "management-secret-value"
         try {
             host("prove", report).proveNow()
         } finally {
             js("delete process.env.DMARKET_SDK_CONFIG")
             js("delete process.env.SDK_MANAGEMENT_SECRET")
         }
-        val seen = NodeModules.fs.readFile(report, "utf8").unsafeCast<Promise<String>>().await()
+        val seen = readFile(report, "utf8").await()
         for (secret in listOf(token, SESSION_ID, API_KEY, "management-secret-value", "DMARKET_SDK_CONFIG", "NODE_OPTIONS")) {
             assertFalse(secret in seen, "the child sees $secret: $seen")
         }
@@ -172,7 +171,7 @@ class ForkedProofHostTest {
 
     @Test
     fun an_ended_child_exits() = runTest {
-        val report = NodeModules.path.join(tempDir(), "report.json") as String
+        val report = join(tempDir(), "report.json")
         host("prove", report).proveNow()
         withContext(Dispatchers.Default) { delay(1.seconds) }
         assertTrue(lines.any { "prover exited" in it }, "$lines")

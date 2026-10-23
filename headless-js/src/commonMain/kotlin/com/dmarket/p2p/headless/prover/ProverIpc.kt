@@ -1,4 +1,4 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.tracker.notary.NotaryProofRequest
 import com.dmarket.p2p.tracker.notary.ProofFailure
@@ -23,7 +23,18 @@ data class ProverSettings(
     @SerialName("assetsDir") val assetsDir: String,
     @SerialName("rootStorePem") val rootStorePem: String? = null,
     @SerialName("targetAddress") val targetAddress: String? = null,
-)
+) {
+    companion object {
+        /** The prover's MPC threads per process, unless a host sets its own. */
+        const val DEFAULT_THREADS: Int = 4
+
+        /** The most MPC threads a prover process runs. */
+        const val MAX_THREADS: Int = 16
+
+        /** The extension recycles its prover after this many proofs; a prover process never serves more. */
+        const val MAX_PROOFS_PER_CHILD: Int = 5
+    }
+}
 
 /**
  * The messages between the SDK and a prover process, one JSON object per IPC message.

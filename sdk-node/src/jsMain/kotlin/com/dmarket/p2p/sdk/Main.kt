@@ -1,20 +1,22 @@
 package com.dmarket.p2p.sdk
 
 import com.dmarket.p2p.headless.node.AccountDirectories
+import com.dmarket.p2p.headless.prover.ForkedProofHost
+import com.dmarket.p2p.headless.prover.NodeProofHostFactory
+import com.dmarket.p2p.headless.prover.NodeWasmProver
+import com.dmarket.p2p.headless.prover.PROVER_CHILD_ARG
+import com.dmarket.p2p.headless.prover.ProverLimits
+import com.dmarket.p2p.headless.prover.ProverSettings
+import com.dmarket.p2p.headless.prover.proverAssetsDir
+import com.dmarket.p2p.headless.prover.runProverChild
 import com.dmarket.p2p.sdk.api.ManagementApi
 import com.dmarket.p2p.sdk.node.NodeManagementServer
 import com.dmarket.p2p.sdk.node.NodeModules
-import com.dmarket.p2p.sdk.prover.ForkedProofHost
-import com.dmarket.p2p.sdk.prover.NodeWasmProver
-import com.dmarket.p2p.sdk.prover.PROVER_CHILD_ARG
-import com.dmarket.p2p.sdk.prover.ProverLimits
 import com.dmarket.p2p.sdk.prover.ProverMemory
-import com.dmarket.p2p.sdk.prover.ProverSettings
-import com.dmarket.p2p.sdk.prover.SdkProofHostFactory
 import com.dmarket.p2p.sdk.prover.cgroupMemoryLimit
-import com.dmarket.p2p.sdk.prover.proverAssetsDir
+import com.dmarket.p2p.sdk.prover.proverLine
+import com.dmarket.p2p.sdk.prover.proverNotice
 import com.dmarket.p2p.sdk.prover.residentBytes
-import com.dmarket.p2p.sdk.prover.runProverChild
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.port.host.Clock
 import kotlinx.coroutines.CoroutineScope
@@ -82,7 +84,7 @@ fun main() {
  * The host that forks this same script as a prover process per proof, or `null` (and a logged reason) when the
  * prover's files cannot be found.
  */
-private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): SdkProofHostFactory? {
+private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): NodeProofHostFactory? {
     val assets = proverAssetsDir(config.prover.assetsDir) ?: run {
         log.error("prover files not found: no proofs will be made", "assetsDir" to config.prover.assetsDir)
         return null
@@ -90,8 +92,17 @@ private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): SdkP
     val settings = ProverSettings(notaryUrl = config.prover.notaryUrl, threadCount = config.prover.threadCount, assetsDir = assets)
     val script = NodeModules.process.argv[1] as String
     val limits = ProverLimits(proofsPerChild = config.prover.proofsPerChild)
-    return SdkProofHostFactory { onOutcome ->
-        ForkedProofHost(script, listOf(PROVER_CHILD_ARG), settings, log, clock, limits, onOutcome = onOutcome)
+    return NodeProofHostFactory { onOutcome ->
+        ForkedProofHost(
+            script,
+            listOf(PROVER_CHILD_ARG),
+            settings,
+            clock,
+            limits,
+            onLine = log::proverLine,
+            onNotice = log::proverNotice,
+            onOutcome = onOutcome,
+        )
     }
 }
 

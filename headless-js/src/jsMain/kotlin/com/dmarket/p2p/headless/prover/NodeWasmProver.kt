@@ -1,6 +1,9 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.node.NodeModules
+import com.dmarket.p2p.headless.node.nodeFs
+import com.dmarket.p2p.headless.node.nodePath
+import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
@@ -37,8 +40,8 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
         val record = ProverSessionRecord()
         val targetConnector = nodeTcpConnector(settings.assetsDir)
         val host = WasmProverHost(
-            assetUrl = { path -> fileUrl(NodeModules.path.join(settings.assetsDir, path) as String) },
-            wasmModule = { compileWasm(NodeModules.path.join(settings.assetsDir, "pkg", "client_wasm_bg.wasm") as String) },
+            assetUrl = { path -> fileUrl(nodePath.join(settings.assetsDir, path) as String) },
+            wasmModule = { compileWasm(nodePath.join(settings.assetsDir, "pkg", "client_wasm_bg.wasm") as String) },
             notaryWebSocket = {
                 record.notaryAttempted = true
                 val signed = try {
@@ -62,7 +65,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
         val config = TrackerConfig(
             notary = NotaryConfig(notaryUrl = settings.notaryUrl, threadCount = settings.threadCount, rootStorePem = settings.rootStorePem),
         )
-        val started = NodeModules.process.cpuUsage()
+        val started = nodeProcess.cpuUsage()
         // The wasm does not return when the notary ends the session on purpose (a close 1013 after the 101 left it
         // waiting until the deadline): the close itself is the answer.
         val refused = CompletableDeferred<ProofFailure>()
@@ -97,8 +100,8 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
 
     /** What the proof cost this process: its peak resident memory and the CPU its threads spent. */
     private fun printStats(started: dynamic) {
-        val cpu: dynamic = NodeModules.process.cpuUsage(started)
-        val peakKb = (NodeModules.process.resourceUsage().maxRSS as Number).toLong()
+        val cpu: dynamic = nodeProcess.cpuUsage(started)
+        val peakKb = (nodeProcess.resourceUsage().maxRSS as Number).toLong()
         val cpuMs = ((cpu.user as Number).toLong() + (cpu.system as Number).toLong()) / MICROS_PER_MILLI
         println("prover: stats peakRssMb=${peakKb / KB_PER_MB} cpuMs=$cpuMs")
     }
@@ -125,10 +128,10 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
     }
 }
 
-private fun fileUrl(path: String): String = NodeModules.url.pathToFileURL(path).href as String
+private fun fileUrl(path: String): String = nodeUrl.pathToFileURL(path).href as String
 
 private suspend fun compileWasm(path: String): Any {
-    val bytes: dynamic = NodeModules.fs.readFile(path).unsafeCast<Promise<dynamic>>().await()
+    val bytes: dynamic = nodeFs.promises.readFile(path).unsafeCast<Promise<dynamic>>().await()
     val webAssembly: dynamic = js("WebAssembly")
     return webAssembly.compile(bytes).unsafeCast<Promise<Any>>().await()
 }

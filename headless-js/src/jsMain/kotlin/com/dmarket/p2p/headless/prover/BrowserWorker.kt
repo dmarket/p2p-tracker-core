@@ -1,4 +1,7 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
+
+import com.dmarket.p2p.headless.node.nodeBuffer
+import com.dmarket.p2p.headless.node.nodeWorkerThreads
 
 /**
  * Installs a browser `Worker` over `worker_threads` as the global `Worker`, once per process.
@@ -35,8 +38,18 @@ internal fun installBrowserWorker() {
     val workerClass = WORKER_CLASS.trim()
     val bootstrap = BOOTSTRAP
     val make: dynamic = js("new Function('return ' + workerClass)()")
-    global.Worker = make(js("require"), bootstrap, workerClass)
+    global.Worker = make(::mainThreadModule, bootstrap, workerClass)
     global.__dmarketBrowserWorker = true
+}
+
+/**
+ * The two modules [WORKER_CLASS] asks for on the main thread, where an ES module has no `require`. In a worker
+ * thread it gets the thread's own `require`: [BOOTSTRAP] runs as a CommonJS script there.
+ */
+private fun mainThreadModule(name: String): dynamic = when (name) {
+    "node:worker_threads" -> nodeWorkerThreads
+    "node:buffer" -> nodeBuffer
+    else -> error("no module $name for the prover's worker")
 }
 
 /** `(require, boot, cls) => class`: the browser `Worker`, starting a thread that runs [BOOTSTRAP]. */

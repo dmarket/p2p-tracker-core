@@ -1,6 +1,6 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.node.NodeModules
+import com.dmarket.p2p.headless.node.nodeNet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.await
 import kotlinx.coroutines.test.runTest
@@ -35,7 +35,7 @@ class ProverChannelsTest {
 
     /** A loopback server calling [onConnection] with each accepted socket; answers its port. */
     private suspend fun listen(onConnection: (dynamic) -> Unit = {}): Int {
-        val server: dynamic = NodeModules.net.createServer { socket: dynamic ->
+        val server: dynamic = nodeNet.createServer { socket: dynamic ->
             accepted.add(socket)
             onConnection(socket)
         }
@@ -83,7 +83,7 @@ class ProverChannelsTest {
     @Test
     fun a_refused_dial_is_recorded() = runTest {
         withContext(Dispatchers.Default) {
-            val server: dynamic = NodeModules.net.createServer()
+            val server: dynamic = nodeNet.createServer()
             Promise<Unit> { resolve, _ -> server.listen(0, "127.0.0.1") { resolve(Unit) } }.await()
             val port = server.address().port as Int
             Promise<Unit> { resolve, _ -> server.close { resolve(Unit) } }.await()

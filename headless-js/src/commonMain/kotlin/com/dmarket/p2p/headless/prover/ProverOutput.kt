@@ -1,4 +1,4 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.tracker.client.marketplace.TradingApiSignature
 import com.dmarket.p2p.tracker.net.NetworkRedaction

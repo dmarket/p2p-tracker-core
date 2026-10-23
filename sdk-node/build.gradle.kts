@@ -5,7 +5,8 @@
 //   commonMain — the product shell over :core's headless tracker: config, health, the log and the management
 //                API's routing. The tracker itself (the loop, the pushed secrets, request signing) is :core's.
 //                Unit-tested on the JVM and on Node (commonTest).
-//   jsMain     — the Node actuals: file-backed storage, the HTTP listener and the process entry point.
+//   jsMain     — the Node actuals: the HTTP listener, the cgroup reads and the process entry point. File-backed
+//                storage and the prover processes are the headless JS library's (:headless-js).
 //
 // Not published yet: packaging (the Node single-executable build, the container image) comes with the
 // distribution work.
@@ -42,9 +43,6 @@ kotlin {
         }
         jsMain.dependencies {
             implementation(libs.ktor.client.js)
-            // The notary socket of a prover process: sends the signed upgrade headers and names a refused upgrade's
-            // status. The version Ktor's JS client already brings, so the lock does not move.
-            implementation(npm("ws", "8.20.1"))
         }
     }
 }

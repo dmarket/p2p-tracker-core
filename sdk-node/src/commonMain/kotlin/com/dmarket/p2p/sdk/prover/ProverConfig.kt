@@ -1,9 +1,8 @@
 package com.dmarket.p2p.sdk.prover
 
+import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
-import com.dmarket.p2p.tracker.notary.ProofFailure
-import com.dmarket.p2p.tracker.notary.ProofHost
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -42,9 +41,9 @@ data class ProverConfig(
     val peakMemoryBytes: Long get() = peakMemoryMb.toLong() * 1024L * 1024L
 
     companion object {
-        const val DEFAULT_THREADS: Int = 4
-        const val MAX_THREADS: Int = 16
-        const val MAX_PROOFS_PER_CHILD: Int = 5
+        const val DEFAULT_THREADS: Int = ProverSettings.DEFAULT_THREADS
+        const val MAX_THREADS: Int = ProverSettings.MAX_THREADS
+        const val MAX_PROOFS_PER_CHILD: Int = ProverSettings.MAX_PROOFS_PER_CHILD
 
         /**
          * One prover process's peak, with the tracker's bundle loaded: 525–570 MB measured on a local notary in a
@@ -53,16 +52,4 @@ data class ProverConfig(
          */
         const val DEFAULT_PEAK_MB: Int = 640
     }
-}
-
-/** The SDK's proof host: proves, and hears when a new key may answer an earlier refusal, and when to stop. */
-interface SdkProofHost : ProofHost {
-    fun keyChanged()
-
-    fun close()
-}
-
-/** Builds the proof host, given where its outcomes go (`null`: proved). */
-fun interface SdkProofHostFactory {
-    fun create(onOutcome: (dealId: String, failure: ProofFailure?) -> Unit): SdkProofHost
 }

@@ -1,6 +1,7 @@
-package com.dmarket.p2p.sdk.prover
+package com.dmarket.p2p.headless.prover
 
-import com.dmarket.p2p.sdk.node.NodeModules
+import com.dmarket.p2p.headless.node.nodeFs
+import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeHeaders
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import kotlinx.coroutines.CompletableDeferred
@@ -38,7 +39,7 @@ fun runProverChild(prover: ChildProver) {
     markFirstToKill()
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val waiting = mutableMapOf<Int, CompletableDeferred<ToChild.Headers>>()
-    val process = NodeModules.process
+    val process = nodeProcess
     process.on("message") { raw: dynamic ->
         if (jsTypeOf(raw) != "string") return@on
         when (val message = runCatching { ProverIpc.toChild(raw.unsafeCast<String>()) }.getOrNull()) {
@@ -79,7 +80,7 @@ fun runProverChild(prover: ChildProver) {
 private const val EXIT_FLUSH_MS = 200
 
 private fun send(text: String) {
-    runCatching { NodeModules.process.send(text) }
+    runCatching { nodeProcess.send(text) }
 }
 
 /**
@@ -87,6 +88,6 @@ private fun send(text: String) {
  * Linux only; elsewhere, or without permission, nothing happens.
  */
 private fun markFirstToKill() {
-    if (NodeModules.process.platform != "linux") return
-    runCatching { js("require('node:fs')").writeFileSync("/proc/self/oom_score_adj", "1000") }
+    if (nodeProcess.platform != "linux") return
+    runCatching { nodeFs.writeFileSync("/proc/self/oom_score_adj", "1000") }
 }

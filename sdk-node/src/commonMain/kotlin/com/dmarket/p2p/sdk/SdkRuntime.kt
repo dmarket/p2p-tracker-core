@@ -1,10 +1,10 @@
 package com.dmarket.p2p.sdk
 
+import com.dmarket.p2p.headless.prover.NodeProofHostFactory
 import com.dmarket.p2p.sdk.api.ManagementActions
 import com.dmarket.p2p.sdk.api.PushOutcome
 import com.dmarket.p2p.sdk.health.Health
 import com.dmarket.p2p.sdk.health.HealthTracker
-import com.dmarket.p2p.sdk.prover.SdkProofHostFactory
 import com.dmarket.p2p.tracker.client.marketplace.platformEd25519Signer
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
@@ -40,7 +40,7 @@ class SdkPlatform(
     val log: SdkLog,
     val httpEngine: HttpClientEngine? = null,
     val signerFor: suspend (TradingApiKey) -> Ed25519Signer = ::platformEd25519Signer,
-    val proofHost: SdkProofHostFactory? = null,
+    val proofHost: NodeProofHostFactory? = null,
 )
 
 /**
