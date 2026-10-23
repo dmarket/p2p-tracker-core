@@ -23,10 +23,23 @@ kotlin {
             implementation(project(":core"))
             implementation(project(":domain"))
             implementation(libs.kotlinx.coroutines.core)
+            // The test-only factory takes a Ktor engine; :core keeps Ktor as an `implementation` dependency, so it
+            // is declared here for that type to resolve.
+            implementation(libs.ktor.client.core)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
+            implementation(libs.ktor.client.mock)
         }
     }
+}
+
+// The contract tests read the built package (its entry and its .d.mts) and their golden files by absolute path:
+// the test bundle is an ES module, which has no __dirname to find them from.
+tasks.named<org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest>("jsNodeTest") {
+    val distribution = tasks.named("jsNodeProductionLibraryDistribution")
+    inputs.files(distribution).withPropertyName("headlessDistribution")
+    environment("HEADLESS_DIST_DIR", layout.buildDirectory.dir("dist/js/productionLibrary").get().asFile.absolutePath)
+    environment("HEADLESS_TEST_RESOURCES", layout.projectDirectory.dir("src/jsTest/resources").asFile.absolutePath)
 }

@@ -1,0 +1,21 @@
+{"event":"CycleStarted"}
+{"event":"HeartbeatSent","ttlSeconds":100,"tracking":2,"directives":1}
+{"event":"DirectiveDropped","kind":"cancel_offer","directiveId":"dir-2","reason":"not run: no usable Steam session on this client","dealId":"deal-1"}
+{"event":"ReLoginNeeded","axis":"steam"}
+{"event":"MarketplaceServerError","endpoint":"heartbeat","statusCode":502}
+{"event":"LinkedSteamIdMismatch","linkedSteamId":"76561198000000001","tokenSteamId":"76561198000000099"}
+{"event":"SteamReadFailed","axis":"offers","reason":"HTTP 429"}
+{"event":"SteamWriteDeferred","kind":"create_offer","directiveId":"dir-1","reason":"the Steam token expires before a create could be confirmed","dealId":"deal-1","retryAfterSeconds":60}
+{"event":"CycleCompleted","directivesExecuted":1,"reportsSent":2,"proofsSubmitted":1,"watching":3}
+{"event":"DirectiveExecuted","kind":"cancel_offer","status":"failed","steamOfferId":"555","dealId":"deal-1","error":"Steam refused it"}
+{"event":"FailedCancelChecked","dealId":"deal-1","steamOfferId":"555","kind":"already_traded","offerState":3}
+{"event":"ProofFailed","dealId":"deal-1","source":"offer","reason":"proof failed: the Steam token is too close to its expiry to start a proof","demanded":true}
+{"event":"ProofSubmitted","dealId":"deal-1","source":"offer","verified":false,"reason":"refused","prover":"wasm","demanded":true}
+{"event":"ProofSuppressed","dealId":"deal-1","source":"offer","reason":"no notary prover is configured on this host","retryAfterSeconds":30}
+{"event":"TradeStatusReported","dealId":"deal-1","source":"offer","steamStatusCode":2}
+{"event":"DuplicateWriteSuppressed","kind":"create_offer","dealId":"deal-1","directiveId":"dir-3","phase":"completed","steamOfferId":"777"}
+{"event":"CreateUnanswered","dealId":"deal-1","directiveId":"dir-1","error":"timeout"}
+{"event":"CycleFailed","reason":"boom"}
+{"event":"DirectiveReportFailed","kind":"create_offer","directiveId":"dir-1","reason":"HTTP 500"}
+{"event":"TradeStatusReportFailed","dealId":"deal-1","source":"offer","steamStatusCode":3,"reason":"HTTP 500"}
+{"event":"LinkedSteamIdUnknown","tokenSteamId":"76561198000000001"}

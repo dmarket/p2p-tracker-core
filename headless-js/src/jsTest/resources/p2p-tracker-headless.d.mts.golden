@@ -1,0 +1,16 @@
+export declare function createHeadlessTracker(options: any): any;
+export declare function cycle(handle: any): Promise<void>;
+export declare function defaultBaseUrl(): string;
+export declare function defaultNotaryUrl(): string;
+export declare function directiveActions(): any;
+export declare function failedCancelKinds(): any;
+export declare function headlessVersion(): string;
+export declare function maxClockSkewMs(): number;
+export declare function minWriteTokenLifetimeMs(): number;
+export declare function pushSteamToken(handle: any, accessToken: string): Promise<any>;
+export declare function pushTradingApiKey(handle: any, publicKey: string, secretKey: string): Promise<any>;
+export declare function reasons(): any;
+export declare function start(handle: any): void;
+export declare function steamNotLinkedCode(): string;
+export declare function stop(handle: any): Promise<void>;
+export declare function trackerState(handle: any): any;
