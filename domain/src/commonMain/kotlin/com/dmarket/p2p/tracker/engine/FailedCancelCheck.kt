@@ -17,6 +17,33 @@ enum class FailedCancelKind(val wireName: String) {
     UNREAD("unread"),
 }
 
+/** What Steam's answer said about a cancel that did not plainly land. */
+enum class CancelWrite {
+    /** EResult `11`: the offer was no longer outstanding. Not a cancellation — it says nothing about why. */
+    NOT_LIVE,
+
+    /** No response, or EResult `16`: whether the write landed is unknown. */
+    UNANSWERED,
+
+    /** Steam refused it: the write did not land. */
+    REFUSED,
+}
+
+/** What a cancel that did not plainly land reports, once its offer has been read (or could not be). */
+sealed interface CancelDecision {
+    /**
+     * Report [status] with [error]. [settled]: the cancel is over for this device — marked handled and its claim
+     * completed, so a re-lease is answered with this outcome rather than another write.
+     */
+    data class Report(val status: DirectiveStatus, val error: String?, val settled: Boolean) : CancelDecision
+
+    /**
+     * Report nothing and keep the directive: whether the write landed is unknown and the read did not tell. A
+     * `failed` here would be an instruction to write again; the lease lapses and the backend issues it again.
+     */
+    data object Hold : CancelDecision
+}
+
 /**
  * [kind] of a failed cancel, read off its offer's raw `ETradeOfferState` [offerState] (`null`: not read).
  *
@@ -58,6 +85,45 @@ object FailedCancelCheck {
 
     private val INACTIVE = setOf(4, 5, 6, 7, 8, 10)
     private val TRADED = setOf(3, 11)
+    private val LIVE = setOf(2, 9)
+    private const val STATE_CANCELED = 6
+
+    /**
+     * What a cancel whose write went [write] (with Steam's or the transport's [writeError]) reports, given the read
+     * of its offer: [verdict], `null` when no read was made.
+     *
+     * With [reportNotActionable] off, as before: an offer already inactive reports [ALREADY_INACTIVE_STATUS] and is
+     * settled; any other failure reports `failed` with the state or Steam's error. One thing is new and holds either
+     * way: an unanswered write whose offer could not be read reports nothing.
+     *
+     * With it on, the offer's state decides: `2`/`9` (live) is `failed`, and the cancel runs again; every terminal
+     * state — `4`, `5`, `6`, `7`, `8`, `10`, and `3`, `11` (traded) — is `not_actionable` and settled. One exception:
+     * an unanswered write that finds the offer `6` (cancelled) reports `success`, because Steam's own state confirms
+     * the cancellation the write was for, and the write may well have made it. An unread offer leaves an EResult `11`
+     * `not_actionable` on its own word, holds an unanswered write, and leaves a refusal `failed`; so does a state this
+     * build does not know.
+     */
+    fun decide(write: CancelWrite, writeError: String, verdict: FailedCancelVerdict?, reportNotActionable: Boolean): CancelDecision {
+        val unread = verdict == null || verdict.kind == FailedCancelKind.UNREAD
+        if (!reportNotActionable) {
+            if (verdict != null && unread && write == CancelWrite.UNANSWERED) return CancelDecision.Hold
+            if (verdict == null) return CancelDecision.Report(DirectiveStatus.FAILED, writeError, settled = false)
+            return CancelDecision.Report(verdict.status, verdict.error(writeError), verdict.settled)
+        }
+        val state = verdict?.offerState
+        return when {
+            state != null && (state in INACTIVE || state in TRADED) ->
+                if (write == CancelWrite.UNANSWERED && state == STATE_CANCELED) {
+                    CancelDecision.Report(DirectiveStatus.SUCCESS, null, settled = true)
+                } else {
+                    CancelDecision.Report(DirectiveStatus.NOT_ACTIONABLE, describe(state), settled = true)
+                }
+            state != null && state in LIVE -> CancelDecision.Report(DirectiveStatus.FAILED, writeError, settled = false)
+            write == CancelWrite.NOT_LIVE -> CancelDecision.Report(DirectiveStatus.NOT_ACTIONABLE, writeError, settled = true)
+            write == CancelWrite.UNANSWERED && verdict != null -> CancelDecision.Hold
+            else -> CancelDecision.Report(DirectiveStatus.FAILED, writeError, settled = false)
+        }
+    }
 
     /** The verdict for an offer read in [offerState]; `null` when it could not be read. */
     fun verdict(offerState: Int?): FailedCancelVerdict {

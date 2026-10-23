@@ -53,6 +53,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
 import com.dmarket.p2p.tracker.port.steam.SteamNotificationReader
@@ -181,6 +182,7 @@ class TradeTrackerLoopTest {
         foregroundMinTokenLifetime: Duration? = null,
         unansweredCreateGrace: Duration? = null,
         checkFailedCancels: Boolean = false,
+        reportNotActionable: Boolean = false,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -201,6 +203,7 @@ class TradeTrackerLoopTest {
                 reportUnsentCreates = reportUnsentCreates,
                 unansweredCreateGrace = unansweredCreateGrace,
                 checkFailedCancels = checkFailedCancels,
+                reportNotActionable = reportNotActionable,
             ),
             marketplace = marketplace,
             steamReader = reader,
@@ -2140,6 +2143,7 @@ class TradeTrackerLoopTest {
         events: EventObserver = NoOpEventObserver,
         clock: FakeClock = FakeClock(),
         checkFailedCancels: Boolean = true,
+        reportNotActionable: Boolean = false,
     ) = loop(
         marketplace = mp,
         canceller = canceller,
@@ -2149,6 +2153,7 @@ class TradeTrackerLoopTest {
         clock = clock,
         directivesEnabled = true,
         checkFailedCancels = checkFailedCancels,
+        reportNotActionable = reportNotActionable,
     )
 
     private fun cancelHeartbeat() = FakeMarketplaceClient(
@@ -2286,6 +2291,94 @@ class TradeTrackerLoopTest {
 
         assertEquals("IllegalStateException: HTTP 500", mp.directiveOutcomes.single().error)
         assertEquals("unread", events.events.filterIsInstance<LifecycleEvent.FailedCancelChecked>().single().kind)
+    }
+
+    @Test
+    fun with_not_actionable_on_an_offer_no_longer_live_spends_the_cancel_for_good() = runTest {
+        for (state in listOf(3, 4, 5, 6, 7, 8, 10, 11)) {
+            val mp = cancelHeartbeat()
+            val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotLive)
+            val progress = InMemoryTrackerProgressStore()
+            val clock = FakeClock()
+            val l = failedCancelLoop(state, mp, canceller = canceller, progress = progress, clock = clock, reportNotActionable = true)
+            l.runOnce()
+
+            val outcome = mp.directiveOutcomes.single()
+            assertEquals(DirectiveStatus.NOT_ACTIONABLE, outcome.status, "state $state")
+            assertTrue(outcome.error.orEmpty().endsWith("(state $state)"), "state $state: ${outcome.error}")
+            assertEquals(setOf(DirectiveId("dir-c1")), progress.loadHandledDirectives(), "state $state")
+
+            clock.advance(61.seconds)
+            l.runOnce()
+            assertEquals(1, canceller.attempts, "state $state: a re-lease is answered, not re-cancelled")
+        }
+    }
+
+    @Test
+    fun with_not_actionable_on_an_eresult_11_stands_on_its_own_when_the_offer_cannot_be_read() = runTest {
+        val mp = cancelHeartbeat()
+        val reader = FakeSteamReadClient().apply { offerStatusesThrows = true }
+        val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotLive)
+        failedCancelLoop(null, mp, canceller = canceller, reader = reader, reportNotActionable = true).runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.NOT_ACTIONABLE, outcome.status)
+        assertEquals(CANCEL_NOT_LIVE_ERROR, outcome.error)
+    }
+
+    @Test
+    fun with_not_actionable_off_an_eresult_11_reports_failed_as_before() = runTest {
+        val mp = cancelHeartbeat()
+        val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotLive)
+        failedCancelLoop(3, mp, canceller = canceller).runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.FAILED, outcome.status)
+        assertEquals("offer already accepted (state 3)", outcome.error)
+    }
+
+    @Test
+    fun an_unanswered_cancel_whose_offer_reads_cancelled_is_a_success() = runTest {
+        val mp = cancelHeartbeat()
+        val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.Unanswered("HttpTransportException: timeout"))
+        failedCancelLoop(6, mp, canceller = canceller, reportNotActionable = true).runOnce()
+
+        val outcome = mp.directiveOutcomes.single()
+        assertEquals(DirectiveStatus.SUCCESS, outcome.status)
+        assertNull(outcome.error)
+    }
+
+    @Test
+    fun an_unanswered_cancel_whose_offer_cannot_be_read_reports_nothing_and_runs_again() = runTest {
+        for (flag in listOf(false, true)) {
+            val mp = cancelHeartbeat()
+            val events = RecordingEventObserver()
+            val progress = InMemoryTrackerProgressStore()
+            val clock = FakeClock()
+            val reader = FakeSteamReadClient().apply { offerStatusesThrows = true }
+            val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.Unanswered("Steam cancel answered EResult 16 (Timeout)"))
+            val l = failedCancelLoop(
+                null,
+                mp,
+                canceller = canceller,
+                reader = reader,
+                progress = progress,
+                events = events,
+                clock = clock,
+                reportNotActionable = flag,
+            )
+            l.runOnce()
+
+            assertTrue(mp.directiveOutcomes.isEmpty(), "flag $flag: a failed here would cancel again on nothing")
+            assertTrue(progress.loadHandledDirectives().isEmpty(), "flag $flag")
+            val dropped = events.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().single()
+            assertEquals(CANCEL_UNANSWERED_UNREAD, dropped.reason)
+            assertEquals("deal-1", dropped.dealId)
+
+            clock.advance(61.seconds)
+            l.runOnce()
+            assertEquals(2, canceller.attempts, "flag $flag: the next issue runs it again")
+        }
     }
 
     // ---- report_inventory ------------------------------------------------------------------

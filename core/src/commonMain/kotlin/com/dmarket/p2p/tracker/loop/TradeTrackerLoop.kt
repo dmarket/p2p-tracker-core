@@ -13,6 +13,8 @@ import com.dmarket.p2p.tracker.engine.AccountBinding
 import com.dmarket.p2p.tracker.engine.AccountBindingStatus
 import com.dmarket.p2p.tracker.engine.BaselineSeed
 import com.dmarket.p2p.tracker.engine.BlockingState
+import com.dmarket.p2p.tracker.engine.CancelDecision
+import com.dmarket.p2p.tracker.engine.CancelWrite
 import com.dmarket.p2p.tracker.engine.ClaimVerdict
 import com.dmarket.p2p.tracker.engine.DealRoleBinding
 import com.dmarket.p2p.tracker.engine.DealWriteGuard
@@ -170,6 +172,12 @@ internal const val UNANSWERED_CREATE_UNSETTLED = "unanswered: steam could not be
 
 /** A cancel Steam answered EResult `11` (InvalidState): the offer was no longer outstanding. */
 internal const val CANCEL_NOT_LIVE_ERROR = "Steam cancel refused with EResult 11 (offer not active)"
+
+/**
+ * Why a cancel is answered with nothing: Steam did not answer it (no response, or EResult `16`) and its offer could not
+ * be read, so whether it landed is unknown. The lease lapses and the backend issues the cancel again.
+ */
+internal const val CANCEL_UNANSWERED_UNREAD = "unanswered: steam did not answer the cancel and its offer could not be read"
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
@@ -2237,14 +2245,29 @@ class TradeTrackerLoop(
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
             val result = runCatching { offerCanceller.cancelOffer(credential, offerId) }
                 .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
-            val failure = result.error()
-            val cancelled = result == CancelOfferResult.Cancelled
-            val verdict = if (cancelled || !config.checkFailedCancels) null else checkFailedCancel(credential, offerId)
-            val status = if (cancelled) DirectiveStatus.SUCCESS else verdict?.status ?: DirectiveStatus.FAILED
-            val outcome = directive.outcome(status, error = verdict?.error(failure) ?: failure)
+            val write = result.write()
+            // One read of the offer for any cancel that did not plainly land ([LoopConfig.checkFailedCancels]): its
+            // state is what tells a live offer from one already gone, and an unanswered write from a landed one.
+            val verdict = if (write == null || !config.checkFailedCancels) null else checkFailedCancel(credential, offerId)
+            val decision = if (write == null) {
+                CancelDecision.Report(DirectiveStatus.SUCCESS, null, settled = true)
+            } else {
+                FailedCancelCheck.decide(write, result.error().orEmpty(), verdict, config.reportNotActionable)
+            }
+            val checked = verdict?.let {
+                LifecycleEvent.FailedCancelChecked(directive.dealId?.value, offerId.value, it.kind.wireName, it.offerState)
+            }
+            if (decision !is CancelDecision.Report) {
+                // Whether the write landed is unknown and the read did not tell: report nothing, keep nothing, and let
+                // the lease lapse. A `failed` would be an instruction to cancel again on the strength of nothing.
+                emitDropped(directive, CANCEL_UNANSWERED_UNREAD)
+                checked?.let { emit(it) }
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
+            val outcome = directive.outcome(decision.status, error = decision.error)
             // Over for this device: the offer is gone, or can never be active again, so a re-lease is answered
             // with this outcome rather than another write.
-            val settled = cancelled || verdict?.settled == true
+            val settled = decision.settled
             // Marked handled before the report leaves, which is what makes the deferred (batched) report safe:
             // a worker that dies in between re-sends the stored outcome instead of re-cancelling.
             //
@@ -2255,13 +2278,21 @@ class TradeTrackerLoop(
             // A cancelled offer is gone, so the create claim for this deal has nothing left to protect — and
             // a re-create is now the expected next step. Release it causally rather than making the deal wait
             // out the TTL: this, not the tracking heuristic, is what unblocks a legitimate cancel-then-recreate.
-            if (cancelled) directive.dealId?.let { claims.release(setOf(DealWriteKey(it, DirectiveAction.CREATE_OFFER))) }
-            emitExecuted(outcome)
-            verdict?.let {
-                emit(LifecycleEvent.FailedCancelChecked(directive.dealId?.value, offerId.value, it.kind.wireName, it.offerState))
+            if (decision.status == DirectiveStatus.SUCCESS) {
+                directive.dealId?.let { claims.release(setOf(DealWriteKey(it, DirectiveAction.CREATE_OFFER))) }
             }
+            emitExecuted(outcome)
+            checked?.let { emit(it) }
             WriteAttempt(outcome = outcome, wroteToSteam = settled) to outcome.takeIf { settled }.claimEnd()
         }
+    }
+
+    /** What Steam's answer said about a write that did not plainly land; `null` for one that did. */
+    private fun CancelOfferResult.write(): CancelWrite? = when (this) {
+        CancelOfferResult.Cancelled -> null
+        CancelOfferResult.NotLive -> CancelWrite.NOT_LIVE
+        is CancelOfferResult.Unanswered -> CancelWrite.UNANSWERED
+        is CancelOfferResult.Refused -> CancelWrite.REFUSED
     }
 
     /** The text a cancel that did not land reports; `null` for one that did. */

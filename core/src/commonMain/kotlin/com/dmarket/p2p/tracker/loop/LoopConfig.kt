@@ -52,6 +52,14 @@ import kotlin.time.Duration
  *   the cancel is marked handled, since another attempt could only fail the same way; an accepted or escrowed offer
  *   reports `FAILED` with that state; an open or unread one reports `FAILED` with Steam's error, as before. `false` (the
  *   default) reports Steam's error without the read, as the browser does.
+ *   Whichever way, a cancel Steam did not answer (no response, or EResult `16`) whose offer could not be read reports
+ *   nothing: whether it landed is unknown, and `failed` would have it written again.
+ * @param reportNotActionable When `true`, a cancel whose offer is no longer live reports `not_actionable`
+ *   ([com.dmarket.p2p.tracker.engine.FailedCancelCheck.decide]): an EResult `11`, or a read of the offer in a terminal
+ *   state (`3`–`8`, `10`, `11`), is the command spent without a confirmed cancellation; the cancel is marked handled. A
+ *   cancel Steam did not answer whose offer reads `6` reports `success`. Each read that settles a cancel also reports the
+ *   offer's own code on `/trade-events`, for a deal this heartbeat does not track. `false` (the default, everywhere)
+ *   until DMarket accepts the status: the reports are as before.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -66,4 +74,5 @@ data class LoopConfig(
     val reportUnsentCreates: Boolean = true,
     val unansweredCreateGrace: Duration? = null,
     val checkFailedCancels: Boolean = false,
+    val reportNotActionable: Boolean = false,
 )
