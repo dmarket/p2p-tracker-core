@@ -62,7 +62,7 @@ class HeaderSessionSteamOfferCreator(
         SteamOfferWire.parseCreate(response.bodyAsText())
     }.getOrElse { e ->
         if (e is HttpStatusException) {
-            CreateOfferResult.Failed("Steam create returned HTTP ${e.statusCode}${e.errorBody?.let { ": $it" }.orEmpty()}")
+            SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
         } else {
             CreateOfferResult.Failed(e.redactedSummary())
         }

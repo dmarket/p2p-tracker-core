@@ -1,11 +1,14 @@
 package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.client.createHttpClient
+import com.dmarket.p2p.tracker.config.SteamWriteConfig
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.policy.SteamWriteThrottle
 import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import io.ktor.client.engine.mock.MockEngine
@@ -113,6 +116,23 @@ class HeaderSessionSteamWritersTest {
         assertTrue(result is CreateOfferResult.Failed)
         assertTrue("500" in result.error && "(26)" in result.error, result.error)
         assertTrue("header-session" !in result.error, "the token must not leak into the outcome")
+    }
+
+    @Test
+    fun a_create_answered_eresult_16_on_any_status_reads_as_unanswered() = runTest {
+        for (status in listOf(HttpStatusCode.OK, HttpStatusCode.InternalServerError)) {
+            val creator = HeaderSessionSteamOfferCreator(
+                createHttpClient(engine(mutableListOf()) { respond("""{"success":16}""", status, json) }),
+                sessionId = "s",
+            )
+            val result = assertIs<CreateOfferResult.Failed>(creator.createOffer(credential, draft), "$status")
+            assertEquals(SteamOfferWire.CREATE_TIMEOUT, result.error)
+            assertEquals(
+                SteamCreateFailureCause.TRANSPORT,
+                SteamWriteThrottle.classifyCause(result.error, SteamWriteConfig()),
+                "the same path as no answer at all",
+            )
+        }
     }
 
     @Test

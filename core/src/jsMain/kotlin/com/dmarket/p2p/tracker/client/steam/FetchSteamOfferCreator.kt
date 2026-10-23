@@ -139,9 +139,7 @@ class FetchSteamOfferCreator(
                 captureErrorBody(STEAM_CREATE_ERROR_BODY_MAX)
             }
         } catch (e: HttpStatusException) {
-            return CreateOfferResult.Failed(
-                "Steam create returned HTTP ${e.statusCode}${e.errorBody?.let { ": $it" }.orEmpty()}",
-            )
+            return SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
         }
         return SteamOfferWire.parseCreate(response.bodyAsText())
     }

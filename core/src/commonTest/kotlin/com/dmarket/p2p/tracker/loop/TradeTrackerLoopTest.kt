@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamInventoryReader
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamNotificationReader
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
+import com.dmarket.p2p.tracker.client.steam.SteamOfferWire
 import com.dmarket.p2p.tracker.config.CadenceConfig
 import com.dmarket.p2p.tracker.config.NotaryBreakerConfig
 import com.dmarket.p2p.tracker.config.SteamWriteConfig
@@ -6072,6 +6073,18 @@ class TradeTrackerLoopTest {
         val event = observer.events.filterIsInstance<LifecycleEvent.CreateUnanswered>().single()
         assertEquals("deal-1" to "dir-1", event.dealId to event.directiveId)
         assertTrue(observer.events.filterIsInstance<LifecycleEvent.DirectiveExecuted>().isEmpty())
+    }
+
+    @Test
+    fun a_create_steam_answered_eresult_16_is_held_like_one_it_did_not_answer() = runTest {
+        val claims = PersistedDealWriteClaimStore()
+        val mp = createLease(createDirective())
+        val creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed(SteamOfferWire.CREATE_TIMEOUT))
+        loop(marketplace = mp, creator = creator, claims = claims, directivesEnabled = true, unansweredCreateGrace = 2.minutes)
+            .runOnce()
+
+        assertTrue(mp.directiveOutcomes.isEmpty(), "no FAILED: the offer may exist")
+        assertEquals(ClaimPhase.IN_FLIGHT, claims.all().single().phase)
     }
 
     @Test

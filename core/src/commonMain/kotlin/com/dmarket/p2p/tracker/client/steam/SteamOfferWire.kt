@@ -81,11 +81,28 @@ internal object SteamOfferWire {
      */
     fun parseCreate(body: String): CreateOfferResult {
         val parsed = parseObject(body) ?: return CreateOfferResult.Failed("Steam create response is not JSON")
+        if (parsed.eresult() == ERESULT_TIMEOUT) return CreateOfferResult.Failed(CREATE_TIMEOUT)
         val offerId = (parsed["tradeofferid"] as? JsonPrimitive)?.takeIf { it.isString }?.content
             ?: return CreateOfferResult.Failed("Steam create response missing tradeofferid")
         val needsConfirmation = parsed.isTrue("needs_mobile_confirmation") || parsed.isTrue("needs_email_confirmation")
         return if (needsConfirmation) CreateOfferResult.NeedsConfirmation(OfferId(offerId)) else CreateOfferResult.Created(OfferId(offerId))
     }
+
+    /**
+     * A create Steam answered with a non-2xx [status], carrying [errorBody] (redacted and capped, or `null`). An
+     * EResult `16` (Timeout) is [CREATE_TIMEOUT] on any status: whether Steam made the offer is as unknown as after no
+     * answer at all, so it reads as one (its `timeout` is a transport marker) and is settled from the sent offers.
+     */
+    fun createRefusal(status: Int, errorBody: String?): CreateOfferResult.Failed {
+        if (errorBody?.let(::parseObject)?.eresult() == ERESULT_TIMEOUT) return CreateOfferResult.Failed(CREATE_TIMEOUT)
+        return CreateOfferResult.Failed("Steam create returned HTTP $status${errorBody?.let { ": $it" }.orEmpty()}")
+    }
+
+    /** A create Steam answered EResult `16`: worded so the default transport markers (`timeout`) read it as unanswered. */
+    const val CREATE_TIMEOUT = "Steam create answered EResult 16 (Timeout)"
+
+    private fun JsonObject.eresult(): String? =
+        get("success")?.takeUnless { it is JsonNull }?.let { (it as? JsonPrimitive)?.content ?: it.toString() }
 
     /**
      * Reads a cancel's answer: its HTTP [status] and its [body] (`null` when none could be read). The body is read on
