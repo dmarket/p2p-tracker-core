@@ -1,13 +1,14 @@
 # Third-party notices
 
-This project is licensed under the [MIT License](LICENSE). Its npm package additionally
-**redistributes** a prebuilt third-party artifact that is licensed separately from this repository.
+This project is licensed under the [MIT License](LICENSE). Both of its npm packages additionally
+**redistribute** a prebuilt third-party artifact that is licensed separately from this repository.
 That artifact, its provenance, and its license are listed below.
 
 > The artifact is **not** in this source tree. The build takes it from an exact-pinned npm release of
-> [`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance) and copies it
-> into the published package (`@dmarket/p2p-tracker-core`), because the library loads it at runtime from
-> the host extension's root. Installing the package therefore also installs the artifact below.
+> [`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance) and copies the
+> same bytes into both published packages: `@dmarket/p2p-tracker-core`, whose library loads it at runtime
+> from the host extension's root, and `@dmarket/p2p-tracker-headless`, whose prover processes load it from
+> the installed package. Installing either package therefore also installs the artifact below.
 
 ---
 
@@ -16,7 +17,7 @@ That artifact, its provenance, and its license are listed below.
 Prebuilt WebAssembly prover, plus its TypeScript WebSocket transport and prover façade, used by the
 optional TLSNotary proof path.
 
-| Path in our package | Upstream name | Contents |
+| Path in each package | Upstream name | Contents |
 |---|---|---|
 | `pkg/` | `client-wasm` | `wasm-pack` output: `client_wasm_bg.wasm` (~10 MB) + JS/TS glue + the rayon worker snippets |
 | `transport/` | `client-wasm-transport` | compiled WebSocket and TCP transports + `createProver` façade (`tsc` output) |
@@ -30,18 +31,19 @@ agree with the deployed notary, so correlate the two by `GIT_SHA`.
 
 | Field | Value |
 |---|---|
-| npm package | `@dmarket/steam-provenance@1.0.1` (pinned in [`core/build.gradle.kts`](core/build.gradle.kts)) |
+| npm package | `@dmarket/steam-provenance@1.0.1` (pinned in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt)) |
 | `GIT_SHA` / npm `gitHead` | `3fe335478bb7078372900de7fd0dee481bc8fdb3` |
 | `BUILD_NUM` / `BUILD_URL` | `1539` / `https://circleci.com/gh/dmarket/steam-provenance/1539` |
 | `TLSN_SUBMODULE_SHA` | `unknown` — the CI packaging does not record it; read the pinned `dep/tlsn` revision from that commit |
 | `CLIENT_WASM_VERSION` / `TRANSPORT_VERSION` | `0.1.0` / `0.2.0` |
 | Notary subprotocol | `tlsn.notary.v2` |
 
-The full manifest ships in our package as `VERSION`, and the artifact's own documentation in the
+The full manifest ships in each package as `VERSION`, and the artifact's own documentation in the
 `@dmarket/steam-provenance` package as its `README.md`.
 
-**Integrity.** The pin is the npm version plus its registry `dist.integrity`, committed in
-[`core/build.gradle.kts`](core/build.gradle.kts). Every build checks, before it copies a byte, that the
+**Integrity.** The pin is the npm version plus its registry `dist.integrity`, committed once for both
+packages as `TlsnProverPin` in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt).
+Every build checks, before it copies a byte, that the
 installed tarball carries that integrity, that every shipped file matches the package's `SHA256SUMS`,
 and that `VERSION`'s `WASM_SHA256` is the binary actually installed; a miss fails the build
 ([`core/PROVER.md`](core/PROVER.md)). To check an installed copy by hand:

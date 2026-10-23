@@ -2,6 +2,7 @@
 #
 # Nothing is excluded. Third-party build artifacts used to be committed under `vendor/` and were ignored
 # here, since findings in them belong upstream; the one such artifact, the TLSN prover, now arrives as
-# the npm package @dmarket/steam-provenance (pinned in core/build.gradle.kts) into build output that is
-# never part of the analysed checkout. Re-add a `paths-ignore` entry if a vendored tree ever returns.
+# the npm package @dmarket/steam-provenance (pinned in build-logic/src/main/kotlin/TlsnProver.kt) into
+# build output that is never part of the analysed checkout. Re-add a `paths-ignore` entry if a vendored
+# tree ever returns.
 name: "p2p-tracker-core"

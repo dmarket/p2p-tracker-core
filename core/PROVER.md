@@ -9,16 +9,19 @@ inside its npm package.
 One exact release of the npm package
 [`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance), declared as a
 Kotlin/JS dependency of `:core`'s `jsMain` in [`build.gradle.kts`](build.gradle.kts). Two values pin it,
-and they live next to each other at the top of that file:
+side by side in `TlsnProverPin`
+([`build-logic/src/main/kotlin/TlsnProver.kt`](../build-logic/src/main/kotlin/TlsnProver.kt)), the one pin
+for both npm packages:
 
 | Value | What it pins |
 |---|---|
-| `tlsnProverVersion` | the exact npm version, never a range or a dist-tag (`^1.0.1` would also match every later release) |
-| `tlsnProverIntegrity` | the registry's `dist.integrity` for that version: a sha512 over the whole npm tarball |
+| `TlsnProverPin.VERSION` | the exact npm version, never a range or a dist-tag (`^1.0.1` would also match every later release) |
+| `TlsnProverPin.INTEGRITY` | the registry's `dist.integrity` for that version: a sha512 over the whole npm tarball |
 
 The package is installed, never imported. No Kotlin code names it, so no bundler, ours or a host's, ever
-sees it; `core/npm/prepare-package.sh` blanks `dependencies` in our published `package.json`, so
-installing `@dmarket/p2p-tracker-core` does not install a second copy.
+sees it; `core/npm/prepare-package.sh` replaces the generated `dependencies` of each published
+`package.json` with the ones its partial lists, and neither lists the prover, so installing either
+package does not install a second copy.
 
 The `copyTlsnProver` task takes exactly three paths out of the installed package and puts them at the
 root of our JS distribution, and therefore of our npm tarball:
@@ -28,6 +31,9 @@ pkg/            wasm-pack output — the prover. STAYS LOOSE at runtime, never i
 transport/      WebSocket transport + `createProver` façade (dist/ + its package.json and README.md).
 VERSION         provenance manifest (GIT_SHA, WASM_SHA256, …), shell-sourceable
 ```
+
+`:headless-js` copies the same three paths (`headlessPackageFiles`) into its own distribution, so
+`@dmarket/p2p-tracker-headless` ships the same prover byte for byte, and a bump changes both packages.
 
 Everything else in the package stays behind. Its `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`
 and `THIRD_PARTY_NOTICES.md` would collide with ours or describe the wrong package, and `SHA256SUMS` also
@@ -41,18 +47,18 @@ committed beside it.
 ## What the build checks
 
 `verifyTlsnProver` checks the installed package and fails the build on any miss. CI runs no separate step.
-Nothing reads the package before this task has passed: `copyTlsnProver` and every JS test task of `:core`
-depend on it. The tests matter as much as the copy, because `WasmRevealPolicyContractTest` loads and runs
+Nothing reads the package before this task has passed: `copyTlsnProver`, `:headless-js`'s
+`headlessPackageFiles` and every JS test task of `:core` depend on it. The tests matter as much as the copy, because `WasmRevealPolicyContractTest` loads and runs
 the real `pkg/`, and CI runs `check` before the distribution task. Each run logs the result:
 
 ```
 TLSN prover @dmarket/steam-provenance@<version> verified (<n> files): GIT_SHA=… WASM_SHA256=… TRANSPORT_VERSION=…
 ```
 
-1. **Integrity.** The lockfile entry the npm install used must carry `tlsnProverIntegrity`. yarn checks
+1. **Integrity.** The lockfile entry the npm install used must carry `TlsnProverPin.INTEGRITY`. yarn checks
    the download against the registry's integrity and records it there, so this ties the whole npm tarball
    to a value committed in this repository.
-2. **Version and commit.** The installed `package.json` must be `tlsnProverVersion`, and its `gitHead`
+2. **Version and commit.** The installed `package.json` must be `TlsnProverPin.VERSION`, and its `gitHead`
    must equal `GIT_SHA` in `VERSION`.
 3. **Checksums.** The files we ship must be exactly the `pkg/`, `transport/` and `VERSION` entries of the
    package's `SHA256SUMS`, and each must match it. A shipped file the manifest does not list fails, and so
@@ -65,7 +71,7 @@ compares it with this repository. None of them proves the `.wasm` is what the pi
 compiles to; that needs a reproducible rebuild, which does not exist yet (see
 [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)).
 
-The integrity pin lives in the build script rather than in a committed lockfile because `kotlin-js-store/`
+The integrity pin lives in build-logic rather than in a committed lockfile because `kotlin-js-store/`
 is not tracked, and tracking it would freeze every transitive npm dependency of the Kotlin/JS toolchain
 as well. The pin covers the one npm input that ships, and nothing else.
 
@@ -191,11 +197,14 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
    environment runs. The prover and the notary must agree on the `dep/tlsn` pin, and a mismatch surfaces as
    an **opaque MPC/deserialization failure**, not a version error. Correlate by commit only — never by the
    npm version and never by `DOCKER_VERSION`, whose build numbers differ for the same commit.
-3. Set `tlsnProverVersion` and `tlsnProverIntegrity` in [`build.gradle.kts`](build.gradle.kts), together.
+3. Set `TlsnProverPin.VERSION` and `TlsnProverPin.INTEGRITY` in
+   [`build-logic/src/main/kotlin/TlsnProver.kt`](../build-logic/src/main/kotlin/TlsnProver.kt), together.
+   Both npm packages ship this prover, so the bump changes `@dmarket/p2p-tracker-core` and
+   `@dmarket/p2p-tracker-headless` alike.
 4. `./gradlew kotlinUpgradeYarnLock` — refreshes your local `kotlin-js-store/yarn.lock`. It is not tracked,
    but when it exists the Kotlin/JS lockfile check fails the build until it matches the new dependency.
-5. `./gradlew check :core:jsBrowserProductionLibraryDistribution` — the checks above run here; confirm the
-   logged `GIT_SHA` is the one from step 2.
+5. `./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution`
+   — the checks above run here; confirm the logged `GIT_SHA` is the one from step 2.
 6. Re-check the package's `pkg/client_wasm.d.ts` against what `WasmProverModule.kt` sends. The
    `RevealPolicy` fields in particular are required-not-defaulted, so an added field is a silent runtime
    break rather than a compile error; `WasmRevealPolicyContractTest` asks the real wasm, but only about

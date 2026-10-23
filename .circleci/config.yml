@@ -89,11 +89,12 @@ jobs:
     steps:
       - checkout
       # No separate prover step: the TLSN prover is a pinned npm dependency, and :core:verifyTlsnProver
-      # checks it — integrity against the pin committed in core/build.gradle.kts, version,
-      # gitHead == GIT_SHA, SHA256SUMS, WASM_SHA256 — and fails the build on any miss. Both the JS tests
-      # (which run the real wasm) and the copy into the distribution depend on it, so nothing executes or
-      # ships the package unchecked. Its log line names GIT_SHA, which must match the notary the prover
-      # talks to (a mismatch surfaces as an opaque MPC failure, not a clean error). See core/PROVER.md.
+      # checks it — integrity against the pin committed in build-logic/src/main/kotlin/TlsnProver.kt,
+      # version, gitHead == GIT_SHA, SHA256SUMS, WASM_SHA256 — and fails the build on any miss. The JS
+      # tests (which run the real wasm) and the copy into each package's distribution depend on it, so
+      # nothing executes or ships the package unchecked. Its log line names GIT_SHA, which must match the
+      # notary the prover talks to (a mismatch surfaces as an opaque MPC failure, not a clean error). See
+      # core/PROVER.md.
       - restore_gradle_cache
       - run:
           name: Check (spotless + JVM/JS tests + kover gate) + JS library distribution

@@ -24,7 +24,7 @@ package com.dmarket.p2p.tracker.notary
  * true requirement instead of oscillating.
  *
  * **The wording is upstream's, and this is the test that guards it.** The message comes from the pinned
- * tlsn prover (`core/build.gradle.kts` pins a package release, not a schema), so a bump can reword it and
+ * tlsn prover (`TlsnProverPin` in build-logic pins the release, not a schema), so a bump can reword it and
  * nothing here would fail loudly — the parser would simply stop matching and every refused deal would re-buy
  * its MPC session forever. `OnlineBudgetLessonTest` therefore pins the *verbatim* line as observed, and a
  * vendor bump that changes it is expected to break that test rather than production.

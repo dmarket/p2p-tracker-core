@@ -12,7 +12,8 @@ local.properties
 *.local
 
 # Node (KMP/JS toolchain + dist). kotlin-js-store/ (the Kotlin/JS yarn.lock) stays untracked on purpose:
-# the one npm input that ships, the TLSN prover, is pinned by version + integrity in core/build.gradle.kts.
+# the one npm input that ships, the TLSN prover, is pinned by version + integrity in
+# build-logic/src/main/kotlin/TlsnProver.kt.
 node_modules/
 kotlin-js-store/
 

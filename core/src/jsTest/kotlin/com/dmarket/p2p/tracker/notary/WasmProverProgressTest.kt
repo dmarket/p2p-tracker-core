@@ -16,7 +16,7 @@ import kotlin.test.assertFalse
  * Covers the formatting of the wasm's `ProveProgress` events.
  *
  * Worth its own tests despite being one string template: the events are produced by the **pinned** prover
- * (`core/build.gradle.kts` pins a package release, not the event shape), the formatter is invoked BY the wasm
+ * (`TlsnProverPin` in build-logic pins the release, not the event shape), the formatter is invoked BY the wasm
  * mid-issuance, and anything it throws unwinds through a wasm frame — turning a renamed field into a trapped
  * prover instance rather than a missing log line. So the degradation paths are the point, not the happy one.
  */

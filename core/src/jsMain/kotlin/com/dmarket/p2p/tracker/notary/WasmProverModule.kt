@@ -520,7 +520,7 @@ internal fun issuanceLine(request: WasmProveRequest, hostTarget: Boolean = false
  * `"wasm"` on this path.
  *
  * Every field is read defensively. This object is produced by the pinned prover, so a version bump can
- * rename or drop a field (`core/build.gradle.kts` pins a package release, not the event shape) — and the failure
+ * rename or drop a field (`TlsnProverPin` in build-logic pins the release, not the event shape) — and the failure
  * mode of a naive read is a `TypeError` thrown from inside a wasm-invoked callback, i.e. exactly the trap
  * this call site exists to help diagnose.
  */
