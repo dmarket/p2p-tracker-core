@@ -12,7 +12,8 @@ import kotlin.test.assertTrue
  * The generated `.d.mts` also carries the browser functions and config classes of the library underneath, which
  * the entry does not export, and their order there is not stable. So the golden file holds only the facade's own
  * declarations, picked by name. It guards names and signatures; the result types there are `any`, and the
- * package's handwritten types describe them.
+ * package's handwritten types (`index.d.ts`) describe them. Those are checked here for what can be read off the
+ * runtime: the same names, and each constant's value as its declared literal.
  */
 class SurfaceContractTest {
     private val facade = listOf(
@@ -64,6 +65,23 @@ class SurfaceContractTest {
         assertEquals("wss://api.dmarket.com/provenance/v1/", entry.defaultNotaryUrl())
         assertEquals("https://api.dmarket.com", entry.defaultBaseUrl())
         assertEquals(headlessVersion(), entry.headlessVersion())
+    }
+
+    @Test
+    fun the_package_types_declare_exactly_the_facade_and_each_constant_as_its_value() = runTest {
+        val types = distributed("index.d.ts")
+        val declared = Regex("^export declare function (\\w+)", RegexOption.MULTILINE).findAll(types).map { it.groupValues[1] }
+        assertEquals(facade, declared.toList().sorted())
+        assertEquals(0, Regex("\\bany\\b").findAll(types).count(), "index.d.ts leaves a type undescribed")
+        val entry = importEntry()
+        for (constant in listOf("reasons", "failedCancelKinds", "directiveActions")) {
+            val value = entry[constant]()
+            for (key in js("Object.keys")(value) as Array<String>) {
+                val literal = "$key: ${JSON.stringify(value[key])};"
+                assertTrue(literal in types, "index.d.ts does not declare $constant() with $literal")
+            }
+        }
+        assertTrue("steamNotLinkedCode(): ${JSON.stringify(entry.steamNotLinkedCode())};" in types)
     }
 
     @Test

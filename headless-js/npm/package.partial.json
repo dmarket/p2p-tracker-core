@@ -1,0 +1,49 @@
+{
+  "name": "@dmarket/p2p-tracker-headless",
+  "description": "The DMarket P2P trade tracker for Node.js hosts with no browser: heartbeat, the backend's offer directives on Steam, trade status reports and TLSN proofs, behind a facade that keeps the pushed secrets inside the library.",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "author": "DMarket",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dmarket/p2p-tracker-core.git"
+  },
+  "homepage": "https://github.com/dmarket/p2p-tracker-core#readme",
+  "bugs": {
+    "url": "https://github.com/dmarket/p2p-tracker-core/issues"
+  },
+  "keywords": [
+    "dmarket",
+    "p2p",
+    "steam",
+    "trade-tracker",
+    "headless",
+    "nodejs",
+    "kotlin-multiplatform"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./p2p-tracker-headless.mjs"
+    },
+    "./prover-child.mjs": "./prover-child.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "*.mjs",
+    "*.mjs.map",
+    "index.d.ts",
+    "pkg/",
+    "transport/",
+    "VERSION"
+  ],
+  "dependencies": {
+    "ws": "8.20.1"
+  }
+}

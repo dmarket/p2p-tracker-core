@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# prepare-package.sh — bridge the Kotlin/JS distribution into a publishable npm package.
+# prepare-package.sh [<module>] — bridge a module's Kotlin/JS distribution into a publishable npm package.
 #
-# The Kotlin/JS generator emits core/build/dist/js/productionLibrary/package.json with a bad name
-# ("dmarket-p2p-tracker-core-core") and version ("0.0.0-unspecified"). This script overlays the
-# checked-in package.partial.json (scoped name, license, repo, publishConfig, …) and stamps the
+# <module> is the Gradle module the package is built from: `core` (the default, @dmarket/p2p-tracker-core) or
+# `headless-js` (@dmarket/p2p-tracker-headless). One script for both, so the two packages always get the same
+# version, dist-tag and release.env from the same commit.
+#
+# The Kotlin/JS generator emits <module>/build/dist/js/productionLibrary/package.json with a bad name
+# ("p2p-tracker-core") and version ("0.0.0-unspecified"). This script overlays the module's checked-in
+# <module>/npm/package.partial.json (scoped name, license, repo, publishConfig, …) and stamps the
 # effective version derived from gradle.properties:VERSION_NAME.
 #
 # Version rules:
@@ -23,7 +27,7 @@
 #
 # Outputs (for a later, separate publish job that may run on a different image):
 #   - rewrites the dist package.json in place,
-#   - writes $REPO_ROOT/release.env with `export VERSION/DIST_TAG/IS_SNAPSHOT/SKIP_PUBLISH` (persisted
+#   - writes $REPO_ROOT/release.env (the same for every module: nothing in it depends on the package) with `export VERSION/DIST_TAG/IS_SNAPSHOT/SKIP_PUBLISH` (persisted
 #     via the CircleCI workspace and `cat release.env >> $BASH_ENV` in the publish job),
 #   - also appends the same exports to $BASH_ENV when running inside CircleCI (same-job convenience).
 #
@@ -32,13 +36,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DIST_DIR="$REPO_ROOT/core/build/dist/js/productionLibrary"
-PARTIAL="$SCRIPT_DIR/package.partial.json"
+
+# The module and the Gradle task that builds its distribution.
+MODULE="${1:-core}"
+case "$MODULE" in
+  core) DIST_TASK=":core:jsBrowserProductionLibraryDistribution" ;;
+  headless-js) DIST_TASK=":headless-js:jsNodeProductionLibraryDistribution" ;;
+  *)
+    echo "ERROR: unknown module '$MODULE': expected core or headless-js." >&2
+    exit 1
+    ;;
+esac
+
+DIST_DIR="$REPO_ROOT/$MODULE/build/dist/js/productionLibrary"
+PARTIAL="$REPO_ROOT/$MODULE/npm/package.partial.json"
 GENERATED="$DIST_DIR/package.json"
 
 if [[ ! -f "$GENERATED" ]]; then
   echo "ERROR: $GENERATED not found." >&2
-  echo "       Run ./gradlew :core:jsBrowserProductionLibraryDistribution first." >&2
+  echo "       Run ./gradlew $DIST_TASK first." >&2
   exit 1
 fi
 
@@ -101,32 +117,40 @@ else
 fi
 
 # Shallow-merge: generated (main/types/dependencies/…) is the base, partial overrides, version stamped.
-# The partial deliberately overrides "dependencies" with {}: the Kotlin/JS generator declares an exact
-# pin on `ws` (Node websocket plumbing for ktor-client-js) that the browser distribution never imports —
-# there is not a single require()/import of it in the shipped chunks. Shipping that phantom pin only
-# forwarded ws advisories to every consumer and, because it is exact, npm could not resolve a fix for
-# them (`npm audit fix --force` died on an undefined@undefined target). Re-add an entry here — not in
-# the generated file — if a real runtime dependency ever appears.
+# A partial overrides "dependencies" whole: the Kotlin/JS generator declares every npm dependency of the
+# module's sources, used or not. Core's partial sets {}: the generated exact pin on `ws` (Node websocket
+# plumbing for ktor-client-js) is never imported by the browser distribution — there is not a single
+# require()/import of it in the shipped chunks. Shipping that phantom pin only forwarded ws advisories to
+# every consumer and, because it is exact, npm could not resolve a fix for them (`npm audit fix --force`
+# died on an undefined@undefined target). A module's partial lists exactly the runtime dependencies its
+# chunks import — not the generated file.
 # Then declare an explicit modern-ESM entry point derived from the merged main/types (robust to the
 # generated filename): "type": "module", a "module" alias, and an "exports" map so consumers resolve a
-# single well-defined root. The whole productionLibrary dir still ships (the entry imports sibling
-# chunks), so no "files" allowlist is added.
+# single well-defined root. A partial's own "exports" is merged into that map, not replaced by it: its
+# "." conditions override the derived ones ("default" stays last, as Node requires), and its other
+# subpaths are added. Without a "files" allowlist in the partial the whole productionLibrary dir ships
+# (the entry imports sibling chunks).
 node -e '
   const fs = require("fs");
   const [gen, partial, version] = process.argv.slice(1);
   const g = JSON.parse(fs.readFileSync(gen, "utf8"));
   const p = JSON.parse(fs.readFileSync(partial, "utf8"));
   const merged = { ...g, ...p, version };
+  const relative = (path) => (path.startsWith("./") ? path : "./" + path);
   merged.type = "module";
   if (merged.main) merged.module = merged.main;
   if (merged.main) {
-    merged.exports = {
-      ".": {
-        ...(merged.types ? { types: "./" + merged.types } : {}),
-        import: "./" + merged.main,
-        default: "./" + merged.main,
-      },
+    const root = {
+      ...(merged.types ? { types: relative(merged.types) } : {}),
+      import: relative(merged.main),
+      default: relative(merged.main),
+      ...((p.exports || {})["."] || {}),
     };
+    const fallback = root.default;
+    delete root.default;
+    root.default = fallback;
+    const { ".": _, ...subpaths } = p.exports || {};
+    merged.exports = { ".": root, ...subpaths };
   }
   fs.writeFileSync(gen, JSON.stringify(merged, null, 2) + "\n");
 ' "$GENERATED" "$PARTIAL" "$VERSION"

@@ -46,6 +46,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Added
 
+- A second npm package, `@dmarket/p2p-tracker-headless`: the headless tracker for Node.js hosts, with its prover
+  processes and the same pinned TLSN prover, built from `:headless-js`; `core/npm/prepare-package.sh headless-js`
+  prepares it.
 - `DirectiveStatus.NOT_ACTIONABLE` (`not_actionable`): a cancel whose offer is no longer live, the command spent
   without a confirmed cancellation. A stored outcome or write claim whose status a build cannot name is skipped where
   it is read and kept in storage.
