@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockRequestHandleScope
@@ -27,7 +28,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 
@@ -121,7 +122,7 @@ class HeaderSessionSteamWritersTest {
             createHttpClient(engine(seen) { respond("""{"tradeofferid":"9"}""", headers = json) }),
             sessionId = "sid",
         )
-        canceller.cancelOffer(credential, OfferId("9"))
+        assertEquals(CancelOfferResult.Cancelled, canceller.cancelOffer(credential, OfferId("9")))
 
         val request = seen.single()
         assertEquals("https://steamcommunity.com/tradeoffer/9/cancel", request.url.toString())
@@ -130,24 +131,44 @@ class HeaderSessionSteamWritersTest {
         assertEquals(mapOf("sessionid" to "sid"), request.form())
     }
 
+    private fun cancellerAnswering(status: HttpStatusCode, body: String) = HeaderSessionSteamOfferCanceller(
+        createHttpClient(engine(mutableListOf()) { respond(body, status, headers = json) }),
+        sessionId = "sid",
+    )
+
     @Test
-    fun a_cancel_refused_inside_a_2xx_throws() = runTest {
-        val canceller = HeaderSessionSteamOfferCanceller(
-            createHttpClient(engine(mutableListOf()) { respond("""{"success":15}""", headers = json) }),
-            sessionId = "sid",
-        )
-        val e = assertFailsWith<IllegalStateException> { canceller.cancelOffer(credential, OfferId("9")) }
-        assertEquals("Steam cancel refused with EResult 15", e.message)
+    fun a_cancel_reads_steams_envelope_under_any_status() = runTest {
+        for (status in listOf(HttpStatusCode.OK, HttpStatusCode.InternalServerError)) {
+            assertEquals(CancelOfferResult.NotLive, cancellerAnswering(status, """{"success":11}""").cancelOffer(credential, OfferId("9")))
+            assertEquals(
+                CancelOfferResult.Refused("Steam cancel refused with EResult 15"),
+                cancellerAnswering(status, """{"success":15}""").cancelOffer(credential, OfferId("9")),
+            )
+            assertIs<CancelOfferResult.Unanswered>(cancellerAnswering(status, """{"success":16}""").cancelOffer(credential, OfferId("9")))
+        }
     }
 
     @Test
     fun a_cancel_answered_with_either_ok_spelling_succeeds() = runTest {
-        for (body in listOf("""{"success":1}""", """{"success":true}""", """{"tradeofferid":"9"}""", "not json")) {
-            val canceller = HeaderSessionSteamOfferCanceller(
-                createHttpClient(engine(mutableListOf()) { respond(body, headers = json) }),
-                sessionId = "sid",
-            )
-            canceller.cancelOffer(credential, OfferId("9"))
+        for (body in listOf("""{"success":1}""", """{"success":true}""", """{"tradeofferid":"9"}""")) {
+            assertEquals(CancelOfferResult.Cancelled, cancellerAnswering(HttpStatusCode.OK, body).cancelOffer(credential, OfferId("9")))
         }
+    }
+
+    @Test
+    fun a_cancel_answered_with_a_page_under_200_is_refused_not_done() = runTest {
+        for (body in listOf("<html>Sign In</html>", "not json", "")) {
+            assertIs<CancelOfferResult.Refused>(cancellerAnswering(HttpStatusCode.OK, body).cancelOffer(credential, OfferId("9")), body)
+        }
+    }
+
+    @Test
+    fun a_cancel_with_no_response_is_unanswered_and_quotes_no_token() = runTest {
+        val canceller = HeaderSessionSteamOfferCanceller(
+            createHttpClient(MockEngine { error("connection reset for access_token=eyJ.header-session.token") }),
+            sessionId = "sid",
+        )
+        val result = assertIs<CancelOfferResult.Unanswered>(canceller.cancelOffer(credential, OfferId("9")))
+        assertTrue("header-session" !in result.error, result.error)
     }
 }

@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamSessionCookie
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.redactedSummary
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
@@ -78,8 +79,9 @@ class HeaderSessionSteamOfferCreator(
  * session travels. Cancels a sent offer and nothing else: the only URL built here is the fixed
  * `…/tradeoffer/{id}/cancel`.
  *
- * Throws on every outcome but a cancelled offer — a non-2xx, a transport error, or a 2xx carrying a non-OK
- * `EResult` — so the loop never reports a cancel SUCCESS with the offer still live.
+ * Steam's answer is read on every HTTP status ([SteamOfferWire.readCancel]); no answer at all is
+ * [CancelOfferResult.Unanswered]. Only the positive shape reads as a cancelled offer, so the loop never reports a
+ * cancel SUCCESS with the offer still live.
  */
 class HeaderSessionSteamOfferCanceller(
     private val httpClient: HttpClient,
@@ -87,11 +89,11 @@ class HeaderSessionSteamOfferCanceller(
     private val communityBaseUrl: String = "https://steamcommunity.com",
 ) : SteamOfferCanceller {
 
-    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId) {
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): CancelOfferResult = steamCancelAnswer {
         val url = "$communityBaseUrl/tradeoffer/${offerId.value}/cancel"
-        val response = httpClient.submitForm(url = url, formParameters = parameters { append("sessionid", sessionId) }) {
+        httpClient.submitForm(url = url, formParameters = parameters { append("sessionid", sessionId) }) {
             steamSession(credential, sessionId, communityBaseUrl, referer = "$communityBaseUrl/tradeoffer/${offerId.value}/")
+            captureErrorBody(STEAM_CANCEL_ERROR_BODY_MAX)
         }
-        SteamOfferWire.cancelRefusal(response.bodyAsText())?.let { error(it) }
     }
 }

@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.game.GameAdapter
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.model.steam.toAccountId
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import io.ktor.http.Parameters
 import io.ktor.http.parameters
@@ -87,19 +88,45 @@ internal object SteamOfferWire {
     }
 
     /**
-     * The refusal a 2xx cancel [body] carries, or `null` when it carries none.
+     * Reads a cancel's answer: its HTTP [status] and its [body] (`null` when none could be read). The body is read on
+     * every status, and the first rule that matches wins:
      *
-     * A cancelled offer is answered `{"tradeofferid":"<id>"}` with no `success` key, so only a **present**
-     * non-OK `success` is a refusal; an absent or unparseable envelope stays a success, because inventing a
-     * failure out of Steam's OK shape would strand the directive. Both spellings of OK are accepted — Steam
-     * has been seen answering `true` where an int is documented. The message names the EResult and nothing
-     * else: it becomes a directive outcome that is POSTed to DMarket.
+     * 1. a `strError` is a refusal, on any status — it carries no `success` key, so it is checked first;
+     * 2. a `success` decides, on any status: `1` or `true` landed, `11` is [CancelOfferResult.NotLive], `16` is
+     *    [CancelOfferResult.Unanswered], anything else is refused with the number;
+     * 3. a 2xx carrying `tradeofferid` landed — the positive shape, not merely no negative one;
+     * 4. anything else is refused: an HTML page, a login redirect or a truncated body never reads as a cancel.
+     *
+     * No response at all is the caller's [CancelOfferResult.Unanswered]. Messages name the status and the EResult
+     * and nothing else, except a `strError`, which is capped: each becomes a directive outcome POSTed to DMarket.
      */
-    fun cancelRefusal(body: String): String? {
-        val success = parseObject(body)?.get("success")?.takeUnless { it is JsonNull } ?: return null
-        val eresult = (success as? JsonPrimitive)?.content ?: success.toString()
-        return if (eresult == "1" || eresult == "true") null else "Steam cancel refused with EResult $eresult"
+    fun readCancel(status: Int, body: String?): CancelOfferResult {
+        val parsed = body?.let(::parseObject)
+        (parsed?.get("strError") as? JsonPrimitive)?.takeIf { it.isString }?.let { strError ->
+            return CancelOfferResult.Refused("Steam cancel refused (HTTP $status): ${strError.content.take(STR_ERROR_MAX)}")
+        }
+        parsed?.get("success")?.takeUnless { it is JsonNull }?.let { success ->
+            val eresult = (success as? JsonPrimitive)?.content ?: success.toString()
+            return when (eresult) {
+                "1", "true" -> CancelOfferResult.Cancelled
+                ERESULT_INVALID_STATE -> CancelOfferResult.NotLive
+                ERESULT_TIMEOUT -> CancelOfferResult.Unanswered("Steam cancel answered EResult 16 (Timeout)")
+                else -> CancelOfferResult.Refused("Steam cancel refused with EResult $eresult")
+            }
+        }
+        val offerId = (parsed?.get("tradeofferid") as? JsonPrimitive)?.takeIf { it.isString }
+        if (status in 200..299 && offerId != null) return CancelOfferResult.Cancelled
+        return CancelOfferResult.Refused("Steam cancel answer is not one of Steam's (HTTP $status)")
     }
+
+    /** Steam's `k_EResultInvalidState`: nothing left to cancel. */
+    private const val ERESULT_INVALID_STATE = "11"
+
+    /** Steam's `k_EResultTimeout`: the write may or may not have landed. */
+    private const val ERESULT_TIMEOUT = "16"
+
+    /** Cap on a `strError` carried into a cancel's outcome: Steam's refusals are one sentence. */
+    private const val STR_ERROR_MAX = 160
 
     private fun parseObject(body: String): JsonObject? = runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
 

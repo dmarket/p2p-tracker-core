@@ -1,11 +1,12 @@
 package com.dmarket.p2p.tracker.client.steam
 
+import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import io.ktor.client.HttpClient
 import io.ktor.client.request.forms.submitForm
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.parameters
 
 /**
@@ -25,10 +26,10 @@ import io.ktor.http.parameters
  * **Manifest requirements:** `host_permissions` for `https://steamcommunity.com` (cookie-bearing
  * POST + `sessionid` read) and the `"cookies"` permission.
  *
- * **The HTTP status alone does not decide the outcome.** Steam's community endpoints answer some refusals
- * `200` with an `EResult` envelope (`{"success":<EResult>}`), so this returns normally only when the body
- * does not carry a non-OK `EResult` — see `SteamOfferWire.cancelRefusal`. Anything else would report the directive
- * SUCCESS with the offer still live on Steam.
+ * **The HTTP status alone does not decide the outcome.** Steam serves its `EResult` envelope
+ * (`{"success":<EResult>}`) under a `500` as readily as under a `200`, so the body is read on every status
+ * ([SteamOfferWire.readCancel]) and only the positive shape reads as a cancelled offer. An HTML page, a login
+ * redirect or an empty body is refused: reporting it SUCCESS would leave the offer live on Steam.
  *
  * The [credential] is accepted for audit-consistency with the other Steam-facing ports; the cancel
  * itself is authorised by the ambient cookie session, not the IEconService token.
@@ -36,18 +37,14 @@ import io.ktor.http.parameters
 class FetchSteamOfferCanceller(private val httpClient: HttpClient, private val communityBaseUrl: String = "https://steamcommunity.com") :
     SteamOfferCanceller {
 
-    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId) {
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): CancelOfferResult {
         val url = "$communityBaseUrl/tradeoffer/${offerId.value}/cancel"
-        // A missing cookie must THROW: returning silently would let the loop report the cancel as
-        // SUCCESS while the offer is still live on Steam.
-        val sessionId = httpClient.steamSessionId(communityBaseUrl) ?: error("no Steam session cookie")
-        // The shared Steam client sanitizes failures, so a non-OK Steam status (403/500) throws
-        // HttpStatusException, and a transport error throws too — either way the loop treats the cancel as
-        // failed (the offer is still live) and retries, rather than assuming it succeeded.
-        val response = httpClient.submitForm(url = url, formParameters = parameters { append("sessionid", sessionId) })
-        // …and a 2xx is not by itself a cancelled offer: Steam answers some refusals `200 {"success":<EResult>}`.
-        // Accepting every 2xx would report the directive SUCCESS — which marks it handled and releases the
-        // deal's create claim — with the offer still live on Steam.
-        SteamOfferWire.cancelRefusal(response.bodyAsText())?.let { error(it) }
+        // No cookie, no request: nothing reached Steam, so the cancel is refused, never reported done.
+        val sessionId = httpClient.steamSessionId(communityBaseUrl) ?: return CancelOfferResult.Refused("no Steam session cookie")
+        return steamCancelAnswer {
+            httpClient.submitForm(url = url, formParameters = parameters { append("sessionid", sessionId) }) {
+                captureErrorBody(STEAM_CANCEL_ERROR_BODY_MAX)
+            }
+        }
     }
 }

@@ -90,6 +90,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
 import com.dmarket.p2p.tracker.port.steam.SteamNotificationReader
@@ -166,6 +167,9 @@ private const val UNANSWERED_CREATE_ABSENT = "no answer from steam, and no such 
  * until its TTL.
  */
 internal const val UNANSWERED_CREATE_UNSETTLED = "unanswered: steam could not be read before the create's window closed"
+
+/** A cancel Steam answered EResult `11` (InvalidState): the offer was no longer outstanding. */
+internal const val CANCEL_NOT_LIVE_ERROR = "Steam cancel refused with EResult 11 (offer not active)"
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
@@ -2231,8 +2235,10 @@ class TradeTrackerLoop(
             // dangling — versus a transport blip or a 5xx, where the next re-lease very likely works. Without
             // it every failure looks identical, so the retries run out their fixed budget and the give-up
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
-            val failure = runCatching { offerCanceller.cancelOffer(credential, offerId) }.exceptionOrNull()?.redactedSummary()
-            val cancelled = failure == null
+            val result = runCatching { offerCanceller.cancelOffer(credential, offerId) }
+                .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
+            val failure = result.error()
+            val cancelled = result == CancelOfferResult.Cancelled
             val verdict = if (cancelled || !config.checkFailedCancels) null else checkFailedCancel(credential, offerId)
             val status = if (cancelled) DirectiveStatus.SUCCESS else verdict?.status ?: DirectiveStatus.FAILED
             val outcome = directive.outcome(status, error = verdict?.error(failure) ?: failure)
@@ -2256,6 +2262,14 @@ class TradeTrackerLoop(
             }
             WriteAttempt(outcome = outcome, wroteToSteam = settled) to outcome.takeIf { settled }.claimEnd()
         }
+    }
+
+    /** The text a cancel that did not land reports; `null` for one that did. */
+    private fun CancelOfferResult.error(): String? = when (this) {
+        CancelOfferResult.Cancelled -> null
+        CancelOfferResult.NotLive -> CANCEL_NOT_LIVE_ERROR
+        is CancelOfferResult.Unanswered -> error
+        is CancelOfferResult.Refused -> error
     }
 
     /**

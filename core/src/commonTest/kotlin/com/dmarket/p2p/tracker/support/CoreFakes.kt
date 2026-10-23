@@ -52,6 +52,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenStore
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
 import com.dmarket.p2p.tracker.port.steam.SteamNotificationReader
@@ -708,16 +709,21 @@ class RecordingEventObserver : EventObserver {
 
 // ---- FakeSteamOfferCanceller -------------------------------------------------------------------
 
-class FakeSteamOfferCanceller(private val failWith: Throwable? = null) : SteamOfferCanceller {
+class FakeSteamOfferCanceller(
+    private val failWith: Throwable? = null,
+    /** Steam's answer, as the actual reads it; [failWith], when set, is thrown instead. */
+    var result: CancelOfferResult = CancelOfferResult.Cancelled,
+) : SteamOfferCanceller {
     val cancelledOffers = mutableListOf<OfferId>()
 
     /** Every cancel asked for, failed ones included. */
     var attempts = 0
 
-    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId) {
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): CancelOfferResult {
         attempts++
         failWith?.let { throw it }
-        cancelledOffers += offerId
+        if (result == CancelOfferResult.Cancelled) cancelledOffers += offerId
+        return result
     }
 }
 

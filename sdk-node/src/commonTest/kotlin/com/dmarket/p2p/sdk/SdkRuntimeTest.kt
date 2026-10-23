@@ -60,6 +60,8 @@ class SdkRuntimeTest {
             heartbeat && request.headers[TradingApiSignature.API_KEY] == OTHER_PUBLIC_KEY ->
                 respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
             heartbeat -> respond(heartbeatBody, heartbeatStatus, json)
+            // Steam's answer to a cancel that landed: the offer's id, no `success` key.
+            request.url.encodedPath.endsWith("/cancel") -> respond("""{"tradeofferid":"555"}""", headers = json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }

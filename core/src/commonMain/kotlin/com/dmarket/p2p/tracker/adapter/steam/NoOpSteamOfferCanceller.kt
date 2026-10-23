@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.adapter.steam
 
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 
 /**
@@ -14,5 +15,6 @@ import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
  * wound down on Steam.
  */
 object NoOpSteamOfferCanceller : SteamOfferCanceller {
-    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId) { /* no-op: no Steam write wired */ }
+    /** Answers as a cancel that landed, as this no-op always has: see the class note on supplying a real one. */
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): CancelOfferResult = CancelOfferResult.Cancelled
 }

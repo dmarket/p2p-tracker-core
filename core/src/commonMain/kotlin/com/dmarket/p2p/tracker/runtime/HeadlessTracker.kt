@@ -60,6 +60,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
@@ -558,7 +559,7 @@ private object RefusedOfferWrites : SteamOfferCreator, SteamOfferCanceller {
 
     override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = CreateOfferResult.Failed(REFUSED)
 
-    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): Unit = throw IllegalStateException(REFUSED)
+    override suspend fun cancelOffer(credential: SteamCredential, offerId: OfferId): CancelOfferResult = CancelOfferResult.Refused(REFUSED)
 }
 
 /**
