@@ -42,11 +42,17 @@ kotlin {
     }
 }
 
+// The contract tests import the built package, so its own imports (`ws`) must resolve: a copy of it sits under the
+// build's js directory, whose node_modules Node finds walking up, as an installed package finds its dependencies.
+val headlessDistUnderTest = tasks.register<Sync>("headlessDistUnderTest") {
+    from(tasks.named("jsNodeProductionLibraryDistribution"))
+    into(rootProject.layout.buildDirectory.dir("js/headless-dist-under-test"))
+}
+
 // The contract tests read the built package (its entry and its .d.mts) and their golden files by absolute path:
 // the test bundle is an ES module, which has no __dirname to find them from.
 tasks.named<org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest>("jsNodeTest") {
-    val distribution = tasks.named("jsNodeProductionLibraryDistribution")
-    inputs.files(distribution).withPropertyName("headlessDistribution")
-    environment("HEADLESS_DIST_DIR", layout.buildDirectory.dir("dist/js/productionLibrary").get().asFile.absolutePath)
+    inputs.files(headlessDistUnderTest).withPropertyName("headlessDistribution")
+    environment("HEADLESS_DIST_DIR", headlessDistUnderTest.get().destinationDir.absolutePath)
     environment("HEADLESS_TEST_RESOURCES", layout.projectDirectory.dir("src/jsTest/resources").asFile.absolutePath)
 }

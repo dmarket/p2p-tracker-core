@@ -27,7 +27,7 @@ fun proverAssetsDir(configured: String?): String? {
  * has none, so there from [script] (the process's entry), the way a CommonJS script there would. `null` when it is
  * not installed.
  */
-private fun resolveInstalled(specifier: String, script: String?): String? = runCatching {
+internal fun resolveInstalled(specifier: String, script: String?): String? = runCatching {
     val resolve: dynamic = if (js("typeof require") == "function") {
         js("require").resolve
     } else {

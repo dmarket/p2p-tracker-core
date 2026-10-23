@@ -20,13 +20,15 @@ fun idleScope(): CoroutineScope = CoroutineScope(StandardTestDispatcher(TestCoro
 /**
  * DMarket and Steam behind one mock engine. Records every request as `METHOD path`; DMarket heartbeats answer
  * [heartbeatBody] (or, for a heartbeat signed with [OTHER_PUBLIC_KEY], [otherKeyHeartbeat]), a cancel answers that it
- * landed, a create that it needs confirmation, anything else an empty Steam response.
+ * landed, a create that it needs confirmation, an offer read [offerBody] when set, a proof that it verified, anything
+ * else an empty Steam response.
  */
 class FakeBackend {
     var heartbeatBody = """{"activeTracking":[],"directives":[],"ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}"""
     var heartbeatStatus = HttpStatusCode.OK
     var otherKeyHeartbeat: String? = null
     var otherKeyStatus = HttpStatusCode.OK
+    var offerBody: String? = null
     val requested = mutableListOf<String>()
 
     val engine = MockEngine { request ->
@@ -38,6 +40,8 @@ class FakeBackend {
             heartbeat && request.headers[TradingApiSignature.API_KEY] == OTHER_PUBLIC_KEY ->
                 respond(otherKeyHeartbeat ?: heartbeatBody, otherKeyStatus, json)
             heartbeat -> respond(heartbeatBody, heartbeatStatus, json)
+            path.endsWith("/p2p/ext/notary") -> respond("""{"dealId":"deal-1","verified":true}""", headers = json)
+            path.endsWith("/IEconService/GetTradeOffer/v1/") && offerBody != null -> respond(offerBody!!, headers = json)
             path.endsWith("/cancel") -> respond("""{"tradeofferid":"555"}""", headers = json)
             path.endsWith("/tradeoffer/new/send") -> respond("""{"tradeofferid":"777","needs_mobile_confirmation":true}""", headers = json)
             else -> respond("""{"response":{}}""", headers = json)

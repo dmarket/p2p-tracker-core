@@ -10,6 +10,7 @@ export declare function minWriteTokenLifetimeMs(): number;
 export declare function pushSteamToken(handle: any, accessToken: string): Promise<any>;
 export declare function pushTradingApiKey(handle: any, publicKey: string, secretKey: string): Promise<any>;
 export declare function reasons(): any;
+export declare function runProverChild(): void;
 export declare function start(handle: any): void;
 export declare function steamNotLinkedCode(): string;
 export declare function stop(handle: any): Promise<void>;

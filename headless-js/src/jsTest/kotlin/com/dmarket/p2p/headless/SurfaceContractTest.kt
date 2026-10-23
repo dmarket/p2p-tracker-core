@@ -28,6 +28,7 @@ class SurfaceContractTest {
         "pushSteamToken",
         "pushTradingApiKey",
         "reasons",
+        "runProverChild",
         "start",
         "steamNotLinkedCode",
         "stop",

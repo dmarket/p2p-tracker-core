@@ -1,0 +1,14 @@
+{"type":"upgrade_refused","status":503,"summary":"the notary refused the upgrade: HTTP 503"}
+{"type":"session_closed","code":1013,"reason":"busy","summary":"the notary closed the session: 1013 busy"}
+{"type":"session_closed","code":4008,"reason":null,"summary":"the notary closed the session: 4008"}
+{"type":"notary_unreachable","detail":"connect ECONNREFUSED 127.0.0.1:9","summary":"the notary could not be reached: connect ECONNREFUSED 127.0.0.1:9"}
+{"type":"version_mismatch","detail":"prover version does not match with verifier","summary":"the notary's protocol version is not this prover's: prover version does not match with verifier"}
+{"type":"steam_failed","status":502,"detail":"Steam answered HTTP 502","summary":"the proven Steam read failed: HTTP 502: Steam answered HTTP 502"}
+{"type":"steam_failed","status":null,"detail":"tls handshake failed","summary":"the proven Steam read failed: tls handshake failed"}
+{"type":"prover_killed","cause":"out_of_memory","detail":"signal SIGKILL","summary":"the prover was killed: out of memory (signal SIGKILL)"}
+{"type":"prover_killed","cause":"connect_deadline","detail":null,"summary":"the prover was killed: no connect before the deadline"}
+{"type":"prover_killed","cause":"session_deadline","detail":null,"summary":"the prover was killed: still proving at the deadline"}
+{"type":"prover_killed","cause":"exited","detail":"exit code 3","summary":"the prover was killed: exited without an answer (exit code 3)"}
+{"type":"not_started","reason":"no proof until 2026-06-16T12:00:30Z, after the notary refused the upgrade: HTTP 503","summary":"proof not started: no proof until 2026-06-16T12:00:30Z, after the notary refused the upgrade: HTTP 503"}
+{"type":"limits_exceeded","detail":"the online phase needs 4096 bytes","summary":"the read exceeds the proof's MPC limits: the online phase needs 4096 bytes"}
+{"type":"other","detail":"prover worker errored","summary":"prover worker errored"}

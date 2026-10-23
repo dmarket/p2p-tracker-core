@@ -21,6 +21,9 @@ internal class HeadlessOptions(
     val notaryUrl: String,
     val onEvent: ((String) -> Unit)?,
     val nowMs: (() -> Double)?,
+    val prover: ProverOptions?,
+    val onProofOutcome: ((dynamic) -> Unit)?,
+    val onProverLine: ((String, String) -> Unit)?,
 ) {
     /** The host's clock hook, or `null` for the system clock. */
     fun clock(): Clock? = nowMs?.let { now ->
@@ -37,12 +40,21 @@ internal class HeadlessOptions(
     }
 
     companion object {
-        private val KNOWN = setOf("dataDir", "baseUrl", "steamWrites", "notaryUrl", "onEvent", "nowMs")
+        private val KNOWN = setOf(
+            "dataDir",
+            "baseUrl",
+            "steamWrites",
+            "notaryUrl",
+            "onEvent",
+            "nowMs",
+            "prover",
+            "onProofOutcome",
+            "onProverLine",
+        )
 
         fun parse(options: dynamic): HeadlessOptions {
             require(jsTypeOf(options) == "object" && options != null) { "options must be an object" }
-            val keys = js("Object.keys")(options).unsafeCast<Array<String>>()
-            keys.firstOrNull { it !in KNOWN }?.let { throw IllegalArgumentException("unknown option: ${safeName(it)}") }
+            refuseUnknown(options, KNOWN, prefix = "")
 
             val dataDir = options.dataDir
             require(jsTypeOf(dataDir) == "string" && (dataDir as String).isNotBlank()) { "dataDir must be a non-empty string" }
@@ -53,13 +65,34 @@ internal class HeadlessOptions(
             val steamWrites = optional<Boolean>(options.steamWrites, "steamWrites", "boolean") ?: true
             val onEvent = optional<(String) -> Unit>(options.onEvent, "onEvent", "function")
             val nowMs = optional<() -> Double>(options.nowMs, "nowMs", "function")
-            return HeadlessOptions(dataDir, baseUrl, steamWrites, notaryUrl, onEvent, nowMs)
+            val proverOption: dynamic = optional<dynamic>(options.prover, "prover", "object")
+            val prover = if (proverOption != null) ProverOptions.parse(proverOption) else null
+            val onProofOutcome = optional<(dynamic) -> Unit>(options.onProofOutcome, "onProofOutcome", "function")
+            val onProverLine = optional<(String, String) -> Unit>(options.onProverLine, "onProverLine", "function")
+            return HeadlessOptions(
+                dataDir,
+                baseUrl,
+                steamWrites,
+                // A prover's notary is the one every upgrade is signed for: the two cannot differ.
+                prover?.notaryUrl ?: notaryUrl,
+                onEvent,
+                nowMs,
+                prover,
+                onProofOutcome,
+                onProverLine,
+            )
+        }
+
+        /** Refuses the first own key of [o] not in [known], by its name under [prefix]. */
+        internal fun refuseUnknown(o: dynamic, known: Set<String>, prefix: String) {
+            val keys = js("Object.keys")(o).unsafeCast<Array<String>>()
+            keys.firstOrNull { it !in known }?.let { throw IllegalArgumentException("unknown option: $prefix${safeName(it)}") }
         }
 
         /** [value] when it is of JS type [type], `null` when absent; anything else is refused by [name]. */
-        private fun <T> optional(value: dynamic, name: String, type: String): T? {
+        internal fun <T> optional(value: dynamic, name: String, type: String): T? {
             if (value == null) return null
-            require(jsTypeOf(value) == type) { "$name must be a $type" }
+            require(jsTypeOf(value) == type) { "$name must be ${if (type == "object") "an" else "a"} $type" }
             return value.unsafeCast<T>()
         }
 
