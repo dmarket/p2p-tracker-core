@@ -27,6 +27,10 @@ rootProject.name = "dmarket-p2p-tracker-core"
 // :debug-harness is a dev-only module: the platform-free C1 conformance probes (commonMain, one per
 // report/write request, unit-tested against MockEngine) plus a Chrome MV3 debug console that drives
 // them and the live browser paths (scrape / refresh / vault / Steam + DMarket reads and writes). It is
-// NEVER published (absent from the publish config — the npm artifact is built from :core alone) and
-// nothing depends on it; it must not expand :core's audited @JsExport surface.
-include(":domain", ":core", ":debug-harness", ":sdk-node")
+// NEVER published (absent from the publish config) and nothing depends on it; it must not expand :core's
+// audited @JsExport surface.
+//
+// Each npm package is built from one module: the web extension's from :core alone, the headless tracker's
+// from :headless-js. :headless-js depends on :core, never the reverse, so nothing of it reaches the
+// extension's package.
+include(":domain", ":core", ":debug-harness", ":sdk-node", ":headless-js")
