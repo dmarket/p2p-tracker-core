@@ -13,6 +13,18 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
 
 ### Fixed
 
+- A `cancel_offer`'s answer is read from Steam's body on every HTTP status. Steam serves its EResult envelope
+  `{"success":<n>}` under a `500` as readily as under a `200`, and the HTTP layer threw on the status first, so an
+  EResult `11` under a `500` read as a bare `HTTP 500`. A `200` carrying an HTML or login page, an empty body or `{}`
+  was reported as a cancelled offer; it is now a failed cancel. Only `{"tradeofferid":…}` under a 2xx, or EResult `1`,
+  is a cancel that landed.
+- A `create_offer` Steam answered EResult `16` (Timeout), under any status, reads as
+  `Steam create answered EResult 16 (Timeout)`: a transport failure (`SteamCreateFailureCause.TRANSPORT`), held and
+  settled from the sent offers under `LoopConfig.unansweredCreateGrace`. It read as an unrecognised failure.
+- A cancel Steam did not answer (no response, or EResult `16`) whose offer could not be read reports nothing and keeps
+  the directive, told as `DirectiveDropped`: a `failed` would have it written again on nothing. Only with
+  `LoopConfig.checkFailedCancels`.
+
 - A proof `/notary` refuses with a 4xx, for a deal that has closed or is gone, is that transition's verdict, like
   a delivered `verified: false`. It was read as a proof the backend never saw: the transition was proven again on
   every wake while the deal stayed tracked, and each refusal counted towards parking the prover for every deal.
@@ -33,6 +45,14 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   reported as 4, 5, 6, 7 or 11 went out unproven, and a refund is never moved on an unproven report.
 
 ### Added
+
+- `DirectiveStatus.NOT_ACTIONABLE` (`not_actionable`): a cancel whose offer is no longer live, the command spent
+  without a confirmed cancellation. A stored outcome or write claim whose status a build cannot name is skipped where
+  it is read and kept in storage.
+- `LoopConfig.reportNotActionable`, off by default: a cancel decided by `FailedCancelCheck.decide`. A live offer
+  (`2`, `9`) is `failed`; a terminal one (`3`–`8`, `10`, `11`) is `not_actionable` and the cancel is marked handled; an
+  unanswered cancel whose offer reads `6` is `success`. The read that settles a cancel also reports the offer's code on
+  `/trade-events` for a deal the heartbeat does not track, once.
 
 - `sanitizeHttpFailures`, `createHttpClient`, `createSteamHttpClient` and `createMarketplaceHttpClient` take a
   trailing `describeTransportCauses`. On, a failed fetch that Ktor's JS engine reports as a bare `Fail to fetch`
@@ -188,6 +208,9 @@ npm and used as the GitHub Release notes when the version bump is merged to `mai
   `STEAM_SESSION_MISSING_DROP_REASON`. They stay unreported, as before.
 
 ### Changed
+
+- `SteamOfferCanceller.cancelOffer` returns a `CancelOfferResult` (`Cancelled`, `NotLive`, `Unanswered`, `Refused`)
+  instead of throwing on a cancel that did not land.
 
 - The history axis joins a deal with no trade id by the heartbeat's `assetId` and reads no
   `GET /exchange/v1/p2p/deals/{id}` for it; a ref that matches nothing waits for the next heartbeat rather
