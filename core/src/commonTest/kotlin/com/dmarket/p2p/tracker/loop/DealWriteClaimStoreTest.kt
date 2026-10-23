@@ -186,6 +186,42 @@ class DealWriteClaimStoreTest {
     }
 
     @Test
+    fun a_cancel_claim_completed_not_actionable_survives_a_respawn() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        val cancelKey = DealWriteKey(DealId("deal-1"), DirectiveAction.CANCEL_OFFER)
+        val spent = DirectiveOutcome(
+            directiveId = DirectiveId("dir-1"),
+            action = DirectiveAction.CANCEL_OFFER,
+            status = DirectiveStatus.NOT_ACTIONABLE,
+            dealId = DealId("deal-1"),
+            error = "offer already canceled (state 6)",
+        )
+        PersistedDealWriteClaimStore(storage).apply {
+            claim(claim().copy(action = DirectiveAction.CANCEL_OFFER), t0, ttl)
+            complete(cancelKey, spent)
+        }
+        val respawned = PersistedDealWriteClaimStore(storage)
+        val duplicate = claim(directiveId = "dir-2").copy(action = DirectiveAction.CANCEL_OFFER)
+        val verdict = assertIs<ClaimVerdict.AlreadyCompleted>(respawned.claim(duplicate, t0, ttl))
+        assertEquals(spent, verdict.claim.outcome)
+    }
+
+    @Test
+    fun a_claim_whose_outcome_status_this_build_cannot_name_still_blocks_the_duplicate() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        PersistedDealWriteClaimStore(storage).apply {
+            claim(claim(), t0, ttl)
+            complete(key, outcome())
+        }
+        val raw = storage.get(DeviceVaultKeys.DEAL_WRITE_CLAIMS).orEmpty()
+        storage.set(DeviceVaultKeys.DEAL_WRITE_CLAIMS, raw.replace("needs_confirmation", "some_future_status"))
+
+        val verdict =
+            assertIs<ClaimVerdict.AlreadyCompleted>(PersistedDealWriteClaimStore(storage).claim(claim(directiveId = "dir-2"), t0, ttl))
+        assertEquals(null, verdict.claim.outcome, "nothing to replay, but the write is not run twice")
+    }
+
+    @Test
     fun a_held_create_keeps_its_claim_in_flight_with_what_to_look_for_across_a_respawn() = runTest {
         val storage = InMemoryDeviceKeyValueStore()
         val unanswered = UnansweredCreate(SteamId("76561198000000002"), setOf(AssetId("a1"), AssetId("a2")), t0 + 10.minutes)

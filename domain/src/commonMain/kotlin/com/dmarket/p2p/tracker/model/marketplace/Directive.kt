@@ -85,7 +85,12 @@ data class Directive(
  * `UNKNOWN` fallback as there is on [DirectiveAction] — and that asymmetry is deliberate: the client
  * only ever *produces* a status, so a value it cannot name is a value it cannot have sent. The one
  * cost is on a **downgrade**: a build without an entry cannot parse a persisted outcome a newer build
- * wrote, and drops the stored result it would have replayed on a re-lease.
+ * wrote. Such a row is skipped where it is read, not deleted: it stays in storage for a build that
+ * can name it, the directive stays handled (never written to Steam again), and a re-lease of it is
+ * answered with nothing (`HandledDirectiveSkipped`) until its lease lapses.
+ *
+ * New entries go **last**: the JS target switches on ordinals, and an entry inserted mid-enum leaves
+ * an incrementally compiled consumer with stale ones.
  *
  * [UNSUPPORTED] and [MALFORMED] carry no Steam write and never will. They exist because a directive
  * this client refuses is otherwise invisible to the backend, which re-leases it on every heartbeat
@@ -114,6 +119,15 @@ enum class DirectiveStatus(val wireName: String) {
      * end a lease the client still needs re-served.
      */
     MALFORMED("malformed"),
+
+    /**
+     * A `cancel_offer` whose offer was no longer live on Steam: the command is spent, but nothing confirms
+     * a cancellation. Steam answers EResult `11` (InvalidState) for an offer already cancelled, accepted,
+     * declined, expired or countered alike, so the cancel cannot be reported [SUCCESS] — that would assert
+     * a cancellation the write never made — and it cannot be [FAILED] either, which the backend answers by
+     * issuing the cancel again. The offer's real state goes out on `/trade-events` beside it.
+     */
+    NOT_ACTIONABLE("not_actionable"),
 }
 
 /**
