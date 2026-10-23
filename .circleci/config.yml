@@ -1,13 +1,16 @@
 version: 2.1
 
-# CI/CD for @dmarket/p2p-tracker-core (the :core Kotlin/JS library distribution).
+# CI/CD for the two npm packages built here: @dmarket/p2p-tracker-core (the :core Kotlin/JS library
+# distribution, for the web extension) and @dmarket/p2p-tracker-headless (the :headless-js one, for Node.js
+# hosts). They are released together: one VERSION_NAME, one release branch, one approval, and for a stable
+# version one tag and one GitHub Release covering both.
 #
 # Release model: a release BRANCH plus a human approval — mirroring the extension repository, so one
 # mental model covers both halves of the plugin. `main` publishes nothing: merging there is merging,
 # not shipping. A release is proposed by pushing `release/v<x.y.z>` (VERSION_NAME in gradle.properties
 # must equal that exact string) and happens when someone approves `hold_release`.
 #
-# The version string still decides the channel:
+# The version string still decides the channel, the same for both packages:
 #   - "<x.y.z>-SNAPSHOT"  -> npm prerelease "<x.y.z>-SNAPSHOT.<commits>" under dist-tag "snapshot"
 #                            (no tag / no GitHub Release). Branch: `release/v<x.y.z>-SNAPSHOT`.
 #   - "<x.y.z>"           -> npm "latest" + annotated tag v<x.y.z> + GitHub Release from CHANGELOG.
@@ -35,11 +38,13 @@ version: 2.1
 # own "[skip ci]", which skips the whole pipeline including the tests.)
 #
 # npm auth = TRUSTED PUBLISHING via OIDC (no stored NPM_TOKEN). The publish job mints a short-lived
-# OIDC token (`circleci run oidc get`) that the npm CLI (>= 11.11.0 for CircleCI) exchanges for a scoped publish
-# token. Prerequisites (one-time):
+# OIDC token (`circleci run oidc get`) for each package, which the npm CLI (>= 11.11.0 for CircleCI) exchanges
+# for a publish token scoped to that package. Prerequisites (one-time, for EACH of the two packages):
 #   1. The package must have been published once already (bootstrap publish — see the release runbook).
 #   2. Configure the Trusted Publisher on npmjs.com → package Settings → Trusted Publishing → CircleCI
 #      (needs the CircleCI Org ID, Project ID, Pipeline Definition ID, and VCS origin URL).
+# The headless package is published first, so until both are in place for it publish_npm fails before it
+# reaches core, and nothing is released.
 # Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
 # releases. Snapshots need no secrets at all.
 
@@ -80,9 +85,9 @@ commands:
             - ~/.gradle/wrapper
 
 jobs:
-  # Single Gradle job: `check` and the JS library distribution share one container, one cache
+  # Single Gradle job: `check` and both JS library distributions share one container, one cache
   # restore, one configuration phase, and one set of compiled klibs (a separate package job used to
-  # recompile all Kotlin/JS from scratch). The dist + npm packaging also run on non-publish branches
+  # recompile all Kotlin/JS from scratch). The dists + npm packaging also run on non-publish branches
   # — after `check` they are cheap incremental work, and publish_npm stays branch-filtered.
   build_and_test:
     executor: jdk-node
@@ -97,8 +102,8 @@ jobs:
       # core/PROVER.md.
       - restore_gradle_cache
       - run:
-          name: Check (spotless + JVM/JS tests + kover gate) + JS library distribution
-          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution --no-daemon --stacktrace
+          name: Check (spotless + JVM/JS tests + kover gate) + both JS library distributions
+          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution --no-daemon --stacktrace
       - save_gradle_cache
       - run:
           name: Collect test results
@@ -109,11 +114,35 @@ jobs:
       - store_test_results:
           path: ~/test-results
       - run:
-          name: Prepare npm package.json (name + version + dist-tag) and release.env
-          command: bash core/npm/prepare-package.sh
+          name: Prepare both npm package.json files (name + version + dist-tag) and release.env
+          # Each run writes release.env (and appends it to $BASH_ENV). Nothing in it depends on the package,
+          # so the two runs must write the same file; the publish job loads one release.env for both.
+          command: |
+            set -euo pipefail
+            bash core/npm/prepare-package.sh headless-js
+            cp release.env /tmp/release.headless.env
+            bash core/npm/prepare-package.sh core
+            if ! cmp release.env /tmp/release.headless.env; then
+              echo "ERROR: the two packages were prepared with different release vars:" >&2
+              diff /tmp/release.headless.env release.env >&2 || true
+              exit 1
+            fi
+      - run:
+          name: Smoke-test the packed headless package as a host installs it
+          # The tests import the package from the build directory. What only an installed package exercises —
+          # the package root, the default prover files, `ws` as a dependency, the wasm under pkg/, the types —
+          # runs here, from the tarball npm would publish, on this image's Node (>= the package's engines).
+          # Installs `ws` and typescript from the registry. The tarball stays in /tmp: publish_npm publishes
+          # the prepared directory, not this file.
+          command: |
+            set -euo pipefail
+            mkdir -p /tmp/headless-pack
+            (cd headless-js/build/dist/js/productionLibrary && npm pack --pack-destination /tmp/headless-pack)
+            bash headless-js/npm/smoke/run.sh /tmp/headless-pack/*.tgz /tmp/headless-smoke
       - persist_to_workspace:
           root: .
           paths:
+            - headless-js/build/dist/js/productionLibrary
             - core/build/dist/js/productionLibrary
             - release.env
 
@@ -141,12 +170,16 @@ jobs:
             fi
             npm --version
       - run:
-          name: Publish to npm via OIDC (+ tag & GitHub Release for stable versions)
+          name: Publish both packages to npm via OIDC (+ tag & GitHub Release for stable versions)
           command: |
             set -euo pipefail
-            PKG_DIR="core/build/dist/js/productionLibrary"
-            NAME="$(node -p "require('./$PKG_DIR/package.json').name")"
-            echo "Target: $NAME@$VERSION (dist-tag: $DIST_TAG, snapshot: $IS_SNAPSHOT, branch: $CIRCLE_BRANCH)"
+            # Headless first, core second. Core is what the web extension consumes, and its users are live:
+            # if the headless publish fails, core is not published, so the extension never gets a release
+            # whose pair is missing and that has no tag. If core fails after headless, headless waits without
+            # a tag, but nothing picks it up on its own: its consumers pin exact versions and move to a new one
+            # deliberately. Either way a re-run converges, because each package skips what npm already has.
+            PKG_DIRS="headless-js/build/dist/js/productionLibrary core/build/dist/js/productionLibrary"
+            echo "Target: $VERSION (dist-tag: $DIST_TAG, snapshot: $IS_SNAPSHOT, branch: $CIRCLE_BRANCH)"
 
             # --- Opt-out guard: "[skip publish]" in the commit message (resolved in prepare-package.sh). ---
             if [ "${SKIP_PUBLISH:-false}" = "true" ]; then
@@ -184,27 +217,47 @@ jobs:
               exit 1
             fi
 
-            # --- Idempotency: skip the PUBLISH, not the job. ---
-            # Skipping the whole job here is what a re-run after a partial failure would hit: npm has the
-            # version, so the tag and Release below would never be created for it — and there is no second
-            # chance, because this same guard fires on every later attempt. So each step decides for itself
-            # whether its own artefact already exists, and an approved release converges on a published
-            # version WITH its tag however many times it is run.
-            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-              echo "$NAME@$VERSION already on npm — skipping the publish."
-            else
-              # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
-              NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
-              export NPM_ID_TOKEN
-              (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
-              echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
-            fi
+            # --- Both distributions are this release's. ---
+            # Both come from the one build_and_test run that wrote release.env; a version that differs means
+            # the workspace holds a distribution that run did not prepare. Checked for both before either is
+            # published, so a stale core is not found only after headless has gone out without it.
+            for PKG_DIR in $PKG_DIRS; do
+              PKG_VERSION="$(node -p "require('./$PKG_DIR/package.json').version")"
+              if [ "$PKG_VERSION" != "$VERSION" ]; then
+                echo "ERROR: $PKG_DIR holds version $PKG_VERSION, but this release is $VERSION." >&2
+                exit 1
+              fi
+            done
+
+            for PKG_DIR in $PKG_DIRS; do
+              NAME="$(node -p "require('./$PKG_DIR/package.json').name")"
+
+              # --- Idempotency: skip the PUBLISH, not the job. ---
+              # Skipping the whole job here is what a re-run after a partial failure would hit: npm has the
+              # version, so the tag and Release below would never be created for it — and there is no second
+              # chance, because this same guard fires on every later attempt. So each step decides for itself
+              # whether its own artefact already exists, and an approved release converges on both packages
+              # published WITH the tag however many times it is run.
+              if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+                echo "$NAME@$VERSION already on npm — skipping its publish."
+              else
+                # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
+                # A fresh one for each package: npm exchanges it for a publish token for that one package, and
+                # whether the same id token is accepted a second time is not something to learn mid-release.
+                NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
+                export NPM_ID_TOKEN
+                (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
+                echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
+              fi
+            done
 
             # --- Stable releases: annotated tag + GitHub Release from the changelog section. ---
             #
             # The tag is minted HERE, downstream of `hold_release`, and that is the point rather than an
             # implementation detail: a tag is the durable public statement that a version was released, so it
-            # must not exist for a release nobody approved. Nothing earlier in this pipeline creates one.
+            # must not exist for a release nobody approved. Nothing earlier in this pipeline creates one. It
+            # comes after both publishes: a failed one has already ended the job (set -e), so a release that is
+            # only half on npm has no tag. One tag and one Release for the two packages, as they share a version.
             if [ "$IS_SNAPSHOT" = "false" ]; then
               git config user.name "circleci-bot"
               git config user.email "ci@dmarket.com"

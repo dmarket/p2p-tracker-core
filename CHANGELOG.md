@@ -1,13 +1,16 @@
 # Changelog
 
-All notable changes to `@dmarket/p2p-tracker-core` are documented in this file.
+All notable changes to the two npm packages built from this repository, `@dmarket/p2p-tracker-core` and
+`@dmarket/p2p-tracker-headless`, are documented in this file. Both are released together under one version, so
+one section covers both.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), and commit messages follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
-Releases are automated: the section matching `VERSION_NAME` (in `gradle.properties`) is published to
-npm and used as the GitHub Release notes when the version bump is merged to `main`.
+Releases are automated: both packages are published to npm at `VERSION_NAME` (in `gradle.properties`) when
+an approved release branch runs, and for a stable version the section matching it becomes the notes of the one
+GitHub Release.
 
 ## [Unreleased]
 
