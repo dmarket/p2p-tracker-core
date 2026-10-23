@@ -7,7 +7,7 @@
 {"event":"SteamReadFailed","axis":"offers","reason":"HTTP 429"}
 {"event":"SteamWriteDeferred","kind":"create_offer","directiveId":"dir-1","reason":"the Steam token expires before a create could be confirmed","dealId":"deal-1","retryAfterSeconds":60}
 {"event":"CycleCompleted","directivesExecuted":1,"reportsSent":2,"proofsSubmitted":1,"watching":3}
-{"event":"DirectiveExecuted","kind":"cancel_offer","status":"failed","steamOfferId":"555","dealId":"deal-1","error":"Steam refused it"}
+{"event":"DirectiveExecuted","kind":"cancel_offer","status":"FAILED","steamOfferId":"555","dealId":"deal-1","error":"Steam refused it"}
 {"event":"FailedCancelChecked","dealId":"deal-1","steamOfferId":"555","kind":"already_traded","offerState":3}
 {"event":"ProofFailed","dealId":"deal-1","source":"offer","reason":"proof failed: the Steam token is too close to its expiry to start a proof","demanded":true}
 {"event":"ProofSubmitted","dealId":"deal-1","source":"offer","verified":false,"reason":"refused","prover":"wasm","demanded":true}

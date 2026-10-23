@@ -28,7 +28,7 @@ class EventContractTest {
         LifecycleEvent.SteamReadFailed(axis = "offers", reason = "HTTP 429"),
         LifecycleEvent.SteamWriteDeferred("create_offer", "dir-1", TOKEN_EXPIRING_DEFER_REASON, dealId = "deal-1", retryAfterSeconds = 60),
         LifecycleEvent.CycleCompleted(directivesExecuted = 1, reportsSent = 2, proofsSubmitted = 1, watching = 3),
-        LifecycleEvent.DirectiveExecuted("cancel_offer", "failed", steamOfferId = "555", dealId = "deal-1", error = "Steam refused it"),
+        LifecycleEvent.DirectiveExecuted("cancel_offer", "FAILED", steamOfferId = "555", dealId = "deal-1", error = "Steam refused it"),
         LifecycleEvent.FailedCancelChecked("deal-1", "555", FailedCancelKind.ALREADY_TRADED.wireName, offerState = 3),
         LifecycleEvent.ProofFailed("deal-1", "offer", reason = "proof failed: $PROOF_TOKEN_EXPIRING_REASON", demanded = true),
         LifecycleEvent.ProofSubmitted("deal-1", "offer", verified = false, reason = "refused", prover = "wasm", demanded = true),
