@@ -274,6 +274,8 @@ private data class WriteAttempt(
     val reason: String? = null,
     /** Set when the attempt was already reported and tallied on its own, outside the batch (a replayed duplicate). */
     val countedOutOfBand: Boolean = false,
+    /** A settled cancel's offer code, read off Steam, for `/trade-events` — see [LoopConfig.reportNotActionable]. */
+    val offerReport: TradeStatusReport? = null,
 ) {
     /**
      * Whether this attempt counts towards the cycle's executed-directive tally: a real Steam write always does,
@@ -1829,8 +1831,45 @@ class TradeTrackerLoop(
         attempts += executeCreateChains(plan.creates, credential, heartbeat.linkedSteamId, tracking)
         plan.cancels.forEach { attempts += runCancel(it, credential, heartbeat.linkedSteamId, tracking) }
         done += flushWriteOutcomes(attempts)
+        reportCancelledOfferCodes(attempts.mapNotNull { it.offerReport })
         plan.inventoryScans.forEach { if (runInventory(it, credential)) done++ }
         return done
+    }
+
+    /**
+     * Sends the offer codes this cycle's settled cancels read ([LoopConfig.reportNotActionable]) on `/trade-events`, in
+     * one call. A code the deal's baseline already holds is not sent again; an accepted one joins the baseline, so a deal
+     * that returns to tracking does not report it twice.
+     *
+     * A refusal (`accepted: false` — the backend discards it for a deal already closed) is told and dropped, not
+     * retried: the report belongs to the read that settled the cancel, and that cancel is handled, so nothing reads
+     * its offer again. It is diagnostic for the backend, and nothing here depends on it landing.
+     */
+    private suspend fun reportCancelledOfferCodes(reports: List<TradeStatusReport>) {
+        if (reports.isEmpty()) return
+        val baseline = runCatching { progress.loadReported() }.getOrElse { emptyMap() }
+        val fresh = reports.filter { baseline[it.dealId]?.lastOfferCode != it.steamStatusCode }
+        if (fresh.isEmpty()) return
+        val acks = runCatching { marketplace.reportTradeStatus(fresh) }.fold(
+            onSuccess = { ReportAcknowledgement.match(fresh, it) },
+            onFailure = { failure -> fresh.map { ReportAck(it, accepted = false, reason = failure.redactedSummary()) } },
+        )
+        for (ack in acks) {
+            val report = ack.report
+            if (ack.accepted) {
+                emit(LifecycleEvent.TradeStatusReported(report.dealId.value, report.source.wireName, report.steamStatusCode))
+            } else {
+                emit(
+                    LifecycleEvent.TradeStatusReportFailed(
+                        report.dealId.value,
+                        report.source.wireName,
+                        report.steamStatusCode,
+                        ack.reason.redactedRemoteText(),
+                    ),
+                )
+            }
+        }
+        runCatching { persistReported(acks.filter { it.accepted }.map { it.report }, baseline) }
     }
 
     /**
@@ -2283,8 +2322,27 @@ class TradeTrackerLoop(
             }
             emitExecuted(outcome)
             checked?.let { emit(it) }
-            WriteAttempt(outcome = outcome, wroteToSteam = settled) to outcome.takeIf { settled }.claimEnd()
+            val offerReport = cancelledOfferReport(directive, verdict, settled, activeTracking)
+            WriteAttempt(outcome = outcome, wroteToSteam = settled, offerReport = offerReport) to outcome.takeIf { settled }.claimEnd()
         }
+    }
+
+    /**
+     * The offer code a settled cancel read, as a report for `/trade-events` ([LoopConfig.reportNotActionable]): the
+     * backend learns what the offer became, which an EResult `11` alone does not say. Only for a deal this heartbeat
+     * does not track — a tracked deal's offer is the watch's to report, behind any proof it owes — and only from the
+     * read that settles the cancel, which is what makes it one-shot: the cancel is handled, so it is never read again.
+     */
+    private fun cancelledOfferReport(
+        directive: Directive,
+        verdict: FailedCancelVerdict?,
+        settled: Boolean,
+        activeTracking: List<TrackedDeal>,
+    ): TradeStatusReport? {
+        if (!config.reportNotActionable || !settled) return null
+        val state = verdict?.offerState ?: return null
+        val dealId = directive.dealId?.takeIf { deal -> activeTracking.none { it.dealId == deal } } ?: return null
+        return TradeStatusReport(dealId, TradeStatusSource.OFFER, state, clock.now())
     }
 
     /** What Steam's answer said about a write that did not plainly land; `null` for one that did. */

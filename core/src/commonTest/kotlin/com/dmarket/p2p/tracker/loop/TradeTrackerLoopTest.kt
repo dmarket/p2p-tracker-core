@@ -2381,6 +2381,59 @@ class TradeTrackerLoopTest {
         }
     }
 
+    @Test
+    fun a_settled_cancel_reports_its_offers_code_once_even_when_the_backend_discards_it() = runTest {
+        val mp = cancelHeartbeat().apply { tradeStatusAccepted = false }
+        val events = RecordingEventObserver()
+        val clock = FakeClock()
+        val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotLive)
+        val l = failedCancelLoop(3, mp, canceller = canceller, events = events, clock = clock, reportNotActionable = true)
+        l.runOnce()
+
+        val report = mp.tradeStatusReports.single()
+        assertEquals(DealId("deal-1") to TradeStatusSource.OFFER, report.dealId to report.source)
+        assertEquals(3, report.steamStatusCode)
+        assertTrue(events.events.any { it is LifecycleEvent.TradeStatusReportFailed }, "${events.events}")
+
+        clock.advance(61.seconds)
+        l.runOnce()
+        assertEquals(1, mp.tradeStatusReports.size, "a discarded report is not sent again")
+        assertEquals(1, canceller.attempts)
+    }
+
+    @Test
+    fun an_accepted_offer_code_joins_the_baseline() = runTest {
+        val mp = cancelHeartbeat()
+        val progress = InMemoryTrackerProgressStore()
+        val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotLive)
+        failedCancelLoop(6, mp, canceller = canceller, progress = progress, reportNotActionable = true).runOnce()
+
+        assertEquals(6, mp.tradeStatusReports.single().steamStatusCode)
+        assertEquals(6, progress.loadReported()[DealId("deal-1")]?.lastOfferCode)
+    }
+
+    @Test
+    fun no_offer_code_goes_out_for_a_tracked_deal_a_live_offer_or_with_the_flag_off() = runTest {
+        val tracked = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(TrackedDeal(DealId("deal-1"), role = DealRole.SELLER)),
+                directives = listOf(cancelDirective()),
+                ttlSeconds = 60,
+            ),
+        )
+        val notLive = { FakeSteamOfferCanceller(result = CancelOfferResult.NotLive) }
+        failedCancelLoop(6, tracked, canceller = notLive(), reportNotActionable = true).runOnce()
+        assertTrue(tracked.tradeStatusReports.none { it.steamStatusCode == 6 }, "the watch reports a tracked deal's offer")
+
+        val live = cancelHeartbeat()
+        failedCancelLoop(2, live, canceller = notLive(), reportNotActionable = true).runOnce()
+        assertTrue(live.tradeStatusReports.isEmpty(), "a live offer settles nothing")
+
+        val off = cancelHeartbeat()
+        failedCancelLoop(6, off, canceller = notLive()).runOnce()
+        assertTrue(off.tradeStatusReports.isEmpty(), "the flag is off")
+    }
+
     // ---- report_inventory ------------------------------------------------------------------
 
     private fun inventoryDirective(id: String = "dir-inv", vararg assetIds: String = arrayOf("a1", "a2")) = Directive(
