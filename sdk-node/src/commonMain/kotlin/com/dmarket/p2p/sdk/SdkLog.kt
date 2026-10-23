@@ -1,5 +1,6 @@
 package com.dmarket.p2p.sdk
 
+import com.dmarket.p2p.tracker.engine.FailedCancelKind
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.toWireJson
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -28,6 +29,16 @@ class SdkLog(private val clock: Clock, private val writeLine: (String) -> Unit) 
     override suspend fun onEvent(event: LifecycleEvent) {
         val payload = Json.parseToJsonElement(event.toWireJson()).jsonObject
         writeLine(line(levelOf(event), "event", payload))
+        // A trade that went through after DMarket gave up on the deal: no problem code is ever sent to DMarket, so this
+        // line is the lasting record a person acts on.
+        if (event is LifecycleEvent.FailedCancelChecked && event.kind == FailedCancelKind.ALREADY_TRADED.wireName) {
+            warn(
+                "offer accepted after cancel",
+                "dealId" to event.dealId,
+                "offerId" to event.steamOfferId,
+                "offerState" to event.offerState?.toString(),
+            )
+        }
     }
 
     private fun write(level: String, msg: String, fields: Array<out Pair<String, String?>>) {

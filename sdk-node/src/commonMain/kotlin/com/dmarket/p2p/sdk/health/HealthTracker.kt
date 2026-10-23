@@ -61,6 +61,9 @@ class HealthTracker(
     /** Each `cancel_offer` leased while offer writes are off, by deal: when a heartbeat last carried it. */
     private val cancelsLeasedWhileDisabled = linkedMapOf<String, Instant>()
 
+    /** Each deal whose cancelled offer Steam shows traded, by deal: the offer id and when it was last seen so. */
+    private val acceptedAfterCancel = linkedMapOf<String, Pair<String, Instant>>()
+
     /** Each deal's last failed directive, by deal. */
     private val directiveFailures = linkedMapOf<String, DirectiveFailure>()
     private val proofFailures = linkedMapOf<String, String>()
@@ -129,8 +132,12 @@ class HealthTracker(
                 }
             }
             // An offer gone already is what the cancel was for: nothing is left to fix, whatever the cancel reported.
-            is LifecycleEvent.FailedCancelChecked -> if (event.kind == FailedCancelKind.ALREADY_INACTIVE.wireName) {
-                event.dealId?.let(directiveFailures::remove)
+            is LifecycleEvent.FailedCancelChecked -> when (event.kind) {
+                FailedCancelKind.ALREADY_INACTIVE.wireName -> event.dealId?.let(directiveFailures::remove)
+                FailedCancelKind.ALREADY_TRADED.wireName -> event.dealId?.let {
+                    acceptedAfterCancel[it] = event.steamOfferId to clock.now()
+                }
+                else -> Unit
             }
             is LifecycleEvent.ProofFailed -> when {
                 // The prover's host already said how it ended ([proofOutcome]).
@@ -295,6 +302,15 @@ class HealthTracker(
                 writesNotRun,
             )
         }
+        acceptedAfterCancel.values.removeAll { (_, seen) -> now - seen > ACCEPTED_AFTER_CANCEL_SHOWN }
+        acceptedAfterCancel.entries.lastOrNull()?.let { (deal, sighting) ->
+            raise(
+                ProblemCode.OFFER_ACCEPTED_AFTER_CANCEL,
+                "DMarket asked to cancel the Steam offer ${sighting.first} of deal $deal, and Steam shows it accepted: the trade " +
+                    "went through after the deal was cancelled, and a person has to look at it",
+                acceptedAfterCancel.keys,
+            )
+        }
         if (proofFailures.isNotEmpty()) raise(ProblemCode.PROOF_FAILED, proofFailures.values.first(), proofFailures.keys)
         // A refused proof can name a problem a heartbeat already raised (a refused key, a skewed clock): its deals join.
         proverFailures.entries.groupBy { ProofProblems.problemFor(it.value, state.clockSkewed) }.forEach { (code, entries) ->
@@ -411,5 +427,12 @@ class HealthTracker(
          * after as long without a lease: by then DMarket has stopped issuing it.
          */
         val CANCEL_REISSUED_WITHIN: Duration = 35.minutes
+
+        /**
+         * How long a trade made after its cancel is named. Nothing on this side can resolve it, and a cancel whose offer
+         * is traded is not issued again once it is reported spent, so the problem is told for a day and the `warn` log
+         * line is its lasting record.
+         */
+        val ACCEPTED_AFTER_CANCEL_SHOWN: Duration = 1.days
     }
 }

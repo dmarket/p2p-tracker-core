@@ -333,10 +333,41 @@ class HealthTrackerTest {
         for (kind in listOf("already_traded", "still_open", "unread")) {
             tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", kind, 3))
         }
-        assertEquals(listOf("deal-1", "deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        val failed = { tracker.snapshot(state()).problems.single { it.code == ProblemCode.DIRECTIVE_FAILED } }
+        assertEquals(listOf("deal-1", "deal-2"), failed().affectedDeals.map { it.dealId })
 
         tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_inactive", 6))
-        assertEquals(listOf("deal-2"), tracker.snapshot(state()).problems.single().affectedDeals.map { it.dealId })
+        assertEquals(listOf("deal-2"), failed().affectedDeals.map { it.dealId })
+    }
+
+    @Test
+    fun a_cancelled_offer_steam_shows_traded_needs_a_person_for_a_day() = runTest {
+        tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_traded", 3))
+        tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-2", "556", "already_inactive", 6))
+        val problem = tracker.snapshot(state()).problems.single()
+        assertEquals(ProblemCode.OFFER_ACCEPTED_AFTER_CANCEL, problem.code)
+        assertEquals("degraded", problem.severity)
+        assertEquals(listOf("deal-1"), problem.affectedDeals.map { it.dealId })
+        assertTrue("555" in problem.message && "deal-1" in problem.message, problem.message)
+
+        clock.advance(23.hours)
+        tracker.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_traded", 11))
+        clock.advance(23.hours)
+        val tokenHeld = state(tokenExpiresIn = 7.days)
+        assertEquals(listOf(ProblemCode.OFFER_ACCEPTED_AFTER_CANCEL), codes(tokenHeld), "seen again an hour ago")
+        clock.advance(1.hours + 1.seconds)
+        assertEquals(emptyList(), codes(tokenHeld))
+    }
+
+    @Test
+    fun a_trade_after_cancel_is_a_warn_line_naming_the_deal_and_the_offer() = runTest {
+        val lines = mutableListOf<String>()
+        val log = SdkLog(clock) { lines += it }
+        log.onEvent(LifecycleEvent.FailedCancelChecked("deal-1", "555", "already_traded", 3))
+        log.onEvent(LifecycleEvent.FailedCancelChecked("deal-2", "556", "already_inactive", 6))
+
+        val warn = lines.single { "\"level\":\"warn\"" in it }
+        assertTrue("offer accepted after cancel" in warn && "\"dealId\":\"deal-1\"" in warn && "\"offerId\":\"555\"" in warn, warn)
     }
 
     // ---- a proof due with no prover ----------------------------------------------------------------

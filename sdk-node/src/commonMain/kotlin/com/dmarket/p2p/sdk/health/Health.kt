@@ -105,6 +105,13 @@ enum class ProblemCode(val severity: Severity) {
      * the report goes or DMarket no longer tracks the deal.
      */
     PROVER_DISABLED(Severity.DEGRADED),
+
+    /**
+     * DMarket asked to cancel a deal's Steam offer, and Steam shows the offer accepted (`3`) or in escrow (`11`): the
+     * items changed hands after DMarket gave up on the deal. Nothing here can undo it; a person has to look at the deal.
+     * Named for a day after it was last seen.
+     */
+    OFFER_ACCEPTED_AFTER_CANCEL(Severity.DEGRADED),
 }
 
 /** A deal a problem holds up. [deadline] is the time it lapses, when the SDK knows it. */
