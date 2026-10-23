@@ -2,6 +2,7 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.STEAM_ID
 import com.dmarket.p2p.headless.TestClock
+import com.dmarket.p2p.headless.golden
 import com.dmarket.p2p.headless.node.join
 import com.dmarket.p2p.headless.node.nodeFs
 import com.dmarket.p2p.headless.node.nodeProcess
@@ -20,6 +21,7 @@ import kotlinx.coroutines.await
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.js.Promise
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -35,11 +37,12 @@ import kotlin.time.Duration.Companion.seconds
  * The host's side of a prover process, against a fake child: a Node script that speaks the IPC and, depending on
  * its mode, proves, refuses, wedges, exits or kills itself. It also prints what it was sent, as a careless prover's
  * trace would, so the redaction is tested on the real output path. [lines] is everything the host hands on: the
- * child's output and its own notices.
+ * child's output and its own notices; [notices] are those notices as the facade hands them to a host.
  */
 class ForkedProofHostTest {
     private val clock = TestClock()
     private val lines = mutableListOf<String>()
+    private val notices = mutableListOf<String>()
     private val token = steamToken()
     private val signature = "dmar ed25519 " + "ef".repeat(64)
     private val upgrade = NotaryUpgradeSigner {
@@ -76,7 +79,10 @@ class ForkedProofHostTest {
                 exitGrace = 500.milliseconds,
             ),
             onLine = { pid, stream, line -> lines += "prover output pid=$pid stream=$stream line=$line" },
-            onNotice = { message, warning, fields -> lines += "$message warning=$warning $fields" },
+            onNotice = { message, warning, fields ->
+                lines += "$message warning=$warning $fields"
+                notices += ProofOutcomeJson.notice(message, warning, fields)
+            },
             onOutcome = { deal, failure -> outcomes += deal to failure },
         ).also { hosts += it }
     }
@@ -175,6 +181,22 @@ class ForkedProofHostTest {
         host("prove", report).proveNow()
         withContext(Dispatchers.Default) { delay(1.seconds) }
         assertTrue(lines.any { "prover exited" in it }, "$lines")
+    }
+
+    /** The host's own lines, as the facade hands them on as `host`: a proof made, then one killed at its deadline. */
+    @Test
+    fun the_hosts_own_lines_match_their_golden_file() = runTest {
+        host("prove").proveNow()
+        awaitExits(1)
+        host("hang-after-connect").proveNow()
+        awaitExits(2)
+        val pid = Regex("\"pid\":\"\\d+\"")
+        val actual = notices.joinToString("\n") { it.replace(pid, "\"pid\":\"<pid>\"") }
+        assertEquals(golden("prover-host-lines.golden.jsonl").trimEnd('\n'), actual)
+    }
+
+    private suspend fun awaitExits(count: Int) = withContext(Dispatchers.Default) {
+        withTimeout(5.seconds) { while (notices.count { "\"prover exited\"" in it } < count) delay(20.milliseconds) }
     }
 
     private companion object {
