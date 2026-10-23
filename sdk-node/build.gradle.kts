@@ -27,6 +27,8 @@ kotlin {
         commonMain.dependencies {
             implementation(project(":core"))
             implementation(project(":domain"))
+            // The file-backed device store comes from the headless JS library, which owns it.
+            implementation(project(":headless-js"))
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             // The platform hands the tracker an optional Ktor engine (a mock one in tests); :core keeps Ktor as

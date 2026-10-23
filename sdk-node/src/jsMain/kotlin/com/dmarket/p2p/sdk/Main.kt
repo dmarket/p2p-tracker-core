@@ -1,7 +1,7 @@
 package com.dmarket.p2p.sdk
 
+import com.dmarket.p2p.headless.node.AccountDirectories
 import com.dmarket.p2p.sdk.api.ManagementApi
-import com.dmarket.p2p.sdk.node.AccountDirectories
 import com.dmarket.p2p.sdk.node.NodeManagementServer
 import com.dmarket.p2p.sdk.node.NodeModules
 import com.dmarket.p2p.sdk.prover.ForkedProofHost

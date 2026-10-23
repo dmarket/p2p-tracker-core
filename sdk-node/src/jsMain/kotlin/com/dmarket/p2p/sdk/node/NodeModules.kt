@@ -17,12 +17,3 @@ internal object NodeModules {
     val url: dynamic = js("require('node:url')")
     val ws: dynamic = js("require('ws')")
 }
-
-/** [bytes] cryptographically random bytes, hex-encoded. */
-internal fun randomHex(bytes: Int): String = NodeModules.crypto.randomBytes(bytes).toString("hex") as String
-
-/** The `code` of a Node system error (`ENOENT`, …), or `null`. */
-internal fun Throwable.nodeErrorCode(): String? {
-    val error: dynamic = this
-    return error.code as? String
-}
