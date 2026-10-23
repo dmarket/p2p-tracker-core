@@ -461,6 +461,8 @@ class HeadlessTracker(
                 reportUnsentCreates = false,
                 unansweredCreateGrace = UNANSWERED_CREATE_GRACE,
                 checkFailedCancels = true,
+                // Off until DMarket accepts `not_actionable`: until then a spent cancel reports `failed`, as before.
+                reportNotActionable = false,
             ),
             marketplace = AccountWatch(
                 KtorMarketplaceClient(
