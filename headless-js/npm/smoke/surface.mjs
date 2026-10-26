@@ -46,7 +46,7 @@ assert.deepEqual(pkg.exports, {
   './prover-child.mjs': './prover-child.mjs',
   './package.json': './package.json',
 });
-assert.deepEqual(pkg.dependencies, { ws: '8.20.1' });
+assert.deepEqual(pkg.dependencies, { ws: '8.22.0' });
 assert.ok(pkg.version.startsWith(headless.headlessVersion()), `${pkg.version} is not ${headless.headlessVersion()}`);
 
 await assert.rejects(import('@dmarket/p2p-tracker-headless/p2p-tracker-core.mjs'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });

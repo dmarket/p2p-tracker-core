@@ -44,6 +44,6 @@
     "VERSION"
   ],
   "dependencies": {
-    "ws": "8.20.1"
+    "ws": "8.22.0"
   }
 }

@@ -34,7 +34,7 @@ kotlin {
         jsMain.dependencies {
             // The notary socket of a prover process: sends the signed upgrade headers and names a refused upgrade's
             // status. The version Ktor's JS client already brings, so the lock does not move.
-            implementation(npm("ws", "8.20.1"))
+            implementation(npm("ws", "8.22.0"))
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
