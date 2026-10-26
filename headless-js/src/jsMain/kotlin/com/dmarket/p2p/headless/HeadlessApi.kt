@@ -162,7 +162,7 @@ private fun create(options: HeadlessOptions, httpEngine: HttpClientEngine?, back
         clock = clock,
         eventObserver = options.eventObserver() ?: NoOpEventObserver,
         httpEngine = httpEngine,
-        proving = proofHost?.let { HeadlessProving(it, options.prover?.maxConcurrency ?: 1) },
+        proving = proofHost?.let { HeadlessProving(it, options.prover.maxConcurrency) },
     )
     val tracker = HeadlessTracker(
         platform = platform,
