@@ -46,6 +46,10 @@ GitHub Release.
   generated from `VERSION_NAME` at build time.
 - History states 4, 5, 6, 7, 9 and 11 are decisive transitions, alongside 3 and 12. A reversal Steam
   reported as 4, 5, 6, 7 or 11 went out unproven, and a refund is never moved on an unproven report.
+- A heartbeat that comes due while a cycle runs goes out right after that cycle. The next wake took it for a failed
+  heartbeat and retried it a poll floor later, so a watch cycle that ran past the beat pushed `HeadlessTracker`'s
+  heartbeat from 80 s to ~140 s at a `ttlSeconds` of 85. A heartbeat that was tried and failed is still retried after
+  a poll floor. In the browser the alarm's one-minute floor applies either way.
 
 ### Added
 

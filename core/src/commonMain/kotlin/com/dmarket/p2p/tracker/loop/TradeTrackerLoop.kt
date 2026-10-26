@@ -949,6 +949,9 @@ class TradeTrackerLoop(
     /** In-memory cache of when the next heartbeat is due, mirrored to [loopState] for respawn survival. */
     private var nextHeartbeatAt: Instant? = null
 
+    /** When the last cycle started: a heartbeat that came due after it has not been tried yet. */
+    private var cycleStartedAt: Instant? = null
+
     /**
      * The last heartbeat's `active_tracking[]`, so between-heartbeat wakes (the heartbeat runs on its
      * own `ttl_seconds` cadence) can still watch Steam. In-memory only, deliberately not persisted:
@@ -1273,6 +1276,7 @@ class TradeTrackerLoop(
      * summary ([TickOutcome.EMPTY] when idle or logged out).
      */
     suspend fun runOnce(): TickOutcome = cycleMutex.withLock {
+        cycleStartedAt = clock.now()
         // Restore BEFORE the first emit: a host mirrors [blockingState] synchronously from inside the
         // event handler, so on a fresh (respawned) instance emitting first would hand it the
         // pre-restore, all-clear state — overwriting a correct persisted prompt with "nothing is
@@ -1635,7 +1639,12 @@ class TradeTrackerLoop(
 
     /** The delay until the next cycle: the sooner of the deal-watch poll cadence and the next heartbeat. */
     fun nextWakeDelay(): Duration {
-        val untilHeartbeat = nextHeartbeatAt?.let { cadence.heartbeatWakeDelay(it - clock.now(), config.surface, config.mode) }
+        val untilHeartbeat = nextHeartbeatAt?.let { at ->
+            val remaining = at - clock.now()
+            // Came due while a cycle ran, so no cycle has tried it: wake now, not a failed beat's poll floor later.
+            val untried = cycleStartedAt.let { it == null || it < at }
+            if (remaining <= Duration.ZERO && untried) Duration.ZERO else cadence.heartbeatWakeDelay(remaining, config.surface, config.mode)
+        }
         // A fresh instance with nothing to watch can only idle until the heartbeat is due — don't burn
         // poll/expedited-cadence wakes on cycles that would do nothing (a restored expedited window
         // matters only to a worker that has a tracking list to fast-poll).

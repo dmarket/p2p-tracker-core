@@ -41,6 +41,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -1032,6 +1033,26 @@ class HeadlessTrackerTest {
 
         clock.advance(88.seconds)
         assertEquals(5.seconds, tracker.loop.nextWakeDelay(), "a wake 2 s short of the beat still lands inside the ttl")
+    }
+
+    @Test
+    fun a_beat_that_comes_due_during_a_cycle_runs_at_once_and_a_failed_one_waits_a_poll_floor() = runTest {
+        heartbeatBody = """{"activeTracking":[],"ttlSeconds":85,"linkedSteamId":"$STEAM_ID"}"""
+        val tracker = tracker().also {
+            it.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+            it.pushSteamToken(token)
+            it.cycle()
+        }
+        clock.advance(60.seconds)
+        tracker.cycle()
+        assertEquals(1, heartbeats().size, "the 60 s wake only watches")
+        clock.advance(25.seconds)
+        assertEquals(Duration.ZERO, tracker.loop.nextWakeDelay(), "that cycle ran past the 80 s beat: no retry's 60 s on top")
+
+        heartbeatStatus = HttpStatusCode.BadGateway
+        tracker.cycle()
+        assertEquals(2, heartbeats().size)
+        assertEquals(60.seconds, tracker.loop.nextWakeDelay(), "a beat tried and failed is retried after a poll floor")
     }
 
     @Test
