@@ -54,7 +54,7 @@ fun headlessVersion(): String = TradeTrackerCore.VERSION
  * - `nowMs()`: the clock, in epoch milliseconds; the system clock by default.
  * - `prover`: with it the tracker proves, each proof in a forked prover process; without it, it makes none. A plain
  *   object of `notaryUrl` (overrides the tracker's), `maxConcurrency` (1..2, 1 by default), `proofsPerChild` (1..5,
- *   1), `threadCount` (1..16, 4), `assetsDir` (the prover's `pkg/` and `transport/`; this package's directory by
+ *   1), `threadCount` (1..16, 2), `assetsDir` (the prover's `pkg/` and `transport/`; this package's directory by
  *   default), `connectDeadlineMs` (30 000) and `sessionDeadlineMs` (240 000).
  * - `onProofOutcome({dealId, failure})`: how each proof ended, before the loop's event about it. `failure` is `null`
  *   for a proof made, else a plain object keyed by `type`, with every text in it, `summary` included, redacted.

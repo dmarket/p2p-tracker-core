@@ -25,7 +25,7 @@ export interface ProverOptions {
     maxConcurrency?: number;
     /** Proofs one prover process serves before it is ended, 1 to 5 (1 by default). */
     proofsPerChild?: number;
-    /** The prover's MPC threads per process, 1 to 16 (4 by default). */
+    /** The prover's MPC threads per process, 1 to 16 (2 by default). */
     threadCount?: number;
     /** Where the prover's `pkg/` and `transport/` are; this package's directory by default. */
     assetsDir?: string;

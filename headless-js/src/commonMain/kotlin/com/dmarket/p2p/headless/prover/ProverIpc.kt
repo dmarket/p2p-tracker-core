@@ -25,8 +25,11 @@ data class ProverSettings(
     @SerialName("targetAddress") val targetAddress: String? = null,
 ) {
     companion object {
-        /** The prover's MPC threads per process, unless a host sets its own. */
-        const val DEFAULT_THREADS: Int = 4
+        /**
+         * The prover's MPC threads per process, unless a host sets its own. Each thread adds about 12 MB to a proof's
+         * peak; four instead of two save about a second of a 6 s proof and need a 64 MB larger container.
+         */
+        const val DEFAULT_THREADS: Int = 2
 
         /** The most MPC threads a prover process runs. */
         const val MAX_THREADS: Int = 16
