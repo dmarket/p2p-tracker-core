@@ -15,6 +15,10 @@ kotlin {
         // The entry point is p2p-tracker-headless.mjs / .d.mts rather than the generated
         // "dmarket-p2p-tracker-core-headless-js".
         outputModuleName = "p2p-tracker-headless"
+        nodejs {
+            // The stand test waits on a real proof under its own 5-minute timeout; mocha's 2 s default ends it first.
+            testTask { useMocha { timeout = "6m" } }
+        }
         binaries.library()
         useEsModules()
         generateTypeScriptDefinitions()
