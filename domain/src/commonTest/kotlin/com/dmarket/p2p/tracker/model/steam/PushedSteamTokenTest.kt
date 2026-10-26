@@ -28,8 +28,8 @@ class PushedSteamTokenTest {
     }
 
     @Test
-    fun mobile_app_steam_client_and_plain_web_tokens_are_accepted() {
-        for (aud in listOf(listOf("web", "mobile"), listOf("client", "web"), listOf("web"))) {
+    fun mobile_app_steam_client_community_cookie_and_plain_web_tokens_are_accepted() {
+        for (aud in listOf(listOf("web", "mobile"), listOf("client", "web"), listOf("web"), listOf("web:community"))) {
             val token = steamToken(aud = aud)
             val check = PushedSteamToken.check(token, now)
             assertIs<SteamTokenCheck.Accepted>(check, "aud=$aud")
@@ -57,6 +57,7 @@ class PushedSteamTokenTest {
             "refresh" to steamToken(aud = listOf("web", "renew", "derive")),
             "derive only" to steamToken(aud = listOf("web", "derive")),
             "no web" to steamToken(aud = listOf("mobile")),
+            "store cookie" to steamToken(aud = listOf("web:store")),
             "expired" to steamToken(exp = now - 1.hours),
             "no expiry" to steamToken(exp = null),
             "no steamid" to steamToken(sub = "1234"),
