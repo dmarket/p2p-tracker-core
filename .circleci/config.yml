@@ -275,9 +275,9 @@ jobs:
               fi
 
               awk "/^## \[$VERSION\]/{f=1;next} /^## \[/{f=0} /^\[[^]]*\]:/{f=0} f" CHANGELOG.md >/tmp/notes.md
-              # A hyphenated version is a SemVer prerelease (e.g. 1.0.0-beta.1) — flag the GitHub
-              # Release as one. A plain x.y.z stays a full release.
-              node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:v.includes("-")}))' >/tmp/release.json
+              # Every version that reaches this step is a full release, `-beta` ones included (the suffix
+              # names the service's beta, not an unfinished build), so the Release is never a prerelease.
+              node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:false}))' >/tmp/release.json
               if curl -sSf -o /dev/null \
                 -H "Authorization: token ${GITHUB_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
