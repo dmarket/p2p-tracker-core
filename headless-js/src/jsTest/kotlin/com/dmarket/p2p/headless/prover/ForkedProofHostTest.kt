@@ -104,8 +104,8 @@ class ForkedProofHostTest {
 
         val proved = assertIs<HostedProofOutcome.Proved>(outcome)
         assertTrue(proved.presentation.startsWith("cHJvb2Y=:"))
-        assertTrue(lines.any { "prover output" in it && "<redacted>" in it }, "the child's output is logged, redacted: $lines")
-        assertTrue(lines.any { "prover output" in it && "stream=stderr" in it })
+        awaitLine { "prover output" in it && "<redacted>" in it }
+        awaitLine { "prover output" in it && "stream=stderr" in it }
         assertNoSecretLogged()
         assertEquals(listOf<Pair<String, ProofFailure?>>("deal-1" to null), outcomes)
     }
@@ -193,6 +193,11 @@ class ForkedProofHostTest {
         val pid = Regex("\"pid\":\"\\d+\"")
         val actual = notices.joinToString("\n") { it.replace(pid, "\"pid\":\"<pid>\"") }
         assertEquals(golden("prover-host-lines.golden.jsonl").trimEnd('\n'), actual)
+    }
+
+    /** The child's output pipes and its IPC channel are not ordered: a line written before its answer may land after it. */
+    private suspend fun awaitLine(match: (String) -> Boolean) = withContext(Dispatchers.Default) {
+        withTimeout(5.seconds) { while (lines.none(match)) delay(20.milliseconds) }
     }
 
     private suspend fun awaitExits(count: Int) = withContext(Dispatchers.Default) {
