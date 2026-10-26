@@ -94,6 +94,7 @@ class HostedNotaryProverTest {
         assertEquals(ProofFailure.Other("fork failed: EAGAIN"), failure.failure)
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
     fun one_proof_at_a_time_by_default_and_two_when_configured() = runTest {
         for (limit in 1..2) {

@@ -252,8 +252,8 @@ class KtorSteamReadClientTest {
         val rows = KtorSteamReadClient(httpClient = createHttpClient(engine), endpoints = endpoints)
             .transfersByTradeId(credential, TradeId("731422815690175777"))
 
-        assertTrue(query!!.contains("${endpoints.paramTradeId}=731422815690175777"), query!!)
-        assertTrue(query!!.contains("${endpoints.paramAccessToken}="), "the read is authorised by the device token")
+        assertTrue(query!!.contains("${endpoints.paramTradeId}=731422815690175777"), query)
+        assertTrue(query.contains("${endpoints.paramAccessToken}="), "the read is authorised by the device token")
         assertEquals(listOf(3, 3, 12, 12, 3), rows.map { it.status }, "same parser, same rows")
     }
 
