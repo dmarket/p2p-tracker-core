@@ -9,7 +9,8 @@
 -->
 
 [![CircleCI](https://dl.circleci.com/status-badge/img/gh/dmarket/p2p-tracker-core/tree/main.svg?style=shield&circle-token=CCIPRJ_Achx1Gudu1PvZFyug1DvBq_3de7e84ca282b5fbb4991471da9cad4b0abfdd41)](https://dl.circleci.com/status-badge/redirect/gh/dmarket/p2p-tracker-core/tree/main)
-[![npm](https://img.shields.io/npm/v/@dmarket/p2p-tracker-core?logo=npm)](https://www.npmjs.com/package/@dmarket/p2p-tracker-core)
+[![npm core](https://img.shields.io/npm/v/@dmarket/p2p-tracker-core?logo=npm&label=p2p-tracker-core)](https://www.npmjs.com/package/@dmarket/p2p-tracker-core)
+[![npm headless](https://img.shields.io/npm/v/@dmarket/p2p-tracker-headless?logo=npm&label=p2p-tracker-headless)](https://www.npmjs.com/package/@dmarket/p2p-tracker-headless)
 
 A **Kotlin Multiplatform** library that is the shared brain of the DMarket P2P trade-tracker. One
 Kotlin codebase compiles to:
