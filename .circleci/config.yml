@@ -25,11 +25,14 @@ version: 2.1
 # only brake. Now the trigger is explicit and revocable — a release branch that is never approved
 # ships nothing, and a push to any other branch cannot reach the publish job at all.
 #
-# After the release: `delete_release_branch` deletes `release/v<x.y.z>` once its version is tagged
-# (scripts/ci/delete-release-branch.sh, the same script and job as the extension repository). The branch
-# is never merged back — it carries nothing `main` lacks, because the bump went through `main` first — and
-# the released commit stays reachable from its tag. A branch whose push released nothing is kept: every
-# `-SNAPSHOT` branch (never tagged), and a `[skip publish]` commit on top of a released tag.
+# After the release: `delete_release_branch` deletes the release branch (scripts/ci/delete-release-branch.sh,
+# the same script and job as the extension repository, which has no snapshots). A stable `release/v<x.y.z>`
+# goes once its version is tagged: it is never merged back — it carries nothing `main` lacks, because the
+# bump went through `main` first — and the released commit stays reachable from its tag. A snapshot branch
+# goes once another, non-release branch holds its commit (`main`, or the branch a labelled snapshot was
+# built from); the next snapshot push creates it again. Kept: a branch that moved on to a newer push still
+# waiting for approval, a `[skip publish]` commit on top of a released tag, a snapshot commit no other
+# branch has.
 #
 # Opt-out: a commit message containing "[skip publish]" (case-insensitive) makes the publish job a
 # no-op — build, tests and the JS dist packaging still run. Less load-bearing than it was, now that
@@ -290,7 +293,7 @@ jobs:
               fi
             fi
 
-  # The last job of a release: deletes the `release/vX.Y.Z` branch. Last rather than a step inside
+  # The last job of a release: deletes the release branch, snapshots included. Last rather than a step inside
   # publish_npm, because publish_npm checks the branch out — and a failed publish is retried by
   # re-running this workflow, which needs the branch to still exist.
   delete_release_branch:
