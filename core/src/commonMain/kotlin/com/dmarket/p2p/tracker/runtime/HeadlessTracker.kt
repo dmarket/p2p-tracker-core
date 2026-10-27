@@ -152,7 +152,7 @@ data class HeadlessTrackerState(
  *  - A `create_offer` Steam did not answer (a timeout, a refused connection) is not reported `FAILED` either: its deal
  *    is held and later cycles look for the offer among the account's sent offers — reported with its id when found,
  *    `failed` when still missing [UNANSWERED_CREATE_GRACE] after the attempt (`LoopConfig.unansweredCreateGrace`).
- *  - `foreground` follows the token, not a mode: `true` while the token has [MIN_WRITE_TOKEN_LIFETIME] left and no
+ *  - `foreground` follows the token, not a mode: `true` while the token has [MIN_FOREGROUND_TOKEN_LIFETIME] left and no
  *    heartbeat has named another account as linked — from the first heartbeat on, since the gateway checks the
  *    account itself. DMarket counts the tracker present only then.
  *  - It does not heartbeat at all until a key and a live token are held. Once a heartbeat has bound the account, a
@@ -455,7 +455,7 @@ class HeadlessTracker(
                 tunables = tunables,
                 requireLinkedSteamId = true,
                 minWriteTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
-                foregroundMinTokenLifetime = MIN_WRITE_TOKEN_LIFETIME,
+                foregroundMinTokenLifetime = MIN_FOREGROUND_TOKEN_LIFETIME,
                 heartbeatWithoutCredential = true,
                 steamWrites = steamWrites,
                 reportUnsentCreates = false,
@@ -505,11 +505,16 @@ class HeadlessTracker(
     }
 
     companion object {
-        /**
-         * Under this much token life no create starts — the seller could not confirm it before the session ends — and
-         * the heartbeat stops claiming the device present.
-         */
+        /** Under this much token life no create starts: the seller could not confirm it before the session ends. */
         val MIN_WRITE_TOKEN_LIFETIME: Duration = 30.minutes
+
+        /**
+         * Under this much token life the heartbeat stops claiming the device present. DMarket keeps a seller present
+         * for a few heartbeat cadences after the last `foreground: true` (about 5 minutes), and a buyer can
+         * accept a deal against that tail; the margin over [MIN_WRITE_TOKEN_LIFETIME] lets the create of such a deal
+         * still start, instead of being deferred until the deal freezes with the buyer's funds held.
+         */
+        val MIN_FOREGROUND_TOKEN_LIFETIME: Duration = MIN_WRITE_TOKEN_LIFETIME + 10.minutes
 
         /**
          * Default report body cap ([com.dmarket.p2p.tracker.config.HttpConfig.maxReportBodyBytes]). Every request

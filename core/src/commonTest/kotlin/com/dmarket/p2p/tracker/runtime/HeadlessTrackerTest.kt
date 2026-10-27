@@ -257,7 +257,7 @@ class HeadlessTrackerTest {
     private fun HttpRequestData.steamId(): String = Json.parseToJsonElement(text()).jsonObject.getValue("steamId").jsonPrimitive.content
 
     @Test
-    fun the_tracker_is_foreground_from_the_first_heartbeat_while_the_token_has_thirty_minutes_left() = runTest {
+    fun the_tracker_is_foreground_from_the_first_heartbeat_while_the_token_has_forty_minutes_left() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
         tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 2.hours))
@@ -268,19 +268,42 @@ class HeadlessTrackerTest {
         tracker.cycle()
         assertEquals(true, heartbeats().last().foreground(), "bound, with two hours left")
 
-        clock.advance(91.minutes)
+        clock.advance(79.minutes)
         tracker.loop.forceHeartbeatNow()
         tracker.cycle()
-        assertEquals(false, heartbeats().last().foreground(), "29 minutes left")
+        assertEquals(true, heartbeats().last().foreground(), "41 minutes left")
+
+        clock.advance(2.minutes)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(false, heartbeats().last().foreground(), "39 minutes left")
     }
 
     @Test
-    fun a_first_heartbeat_on_a_token_with_less_than_thirty_minutes_is_not_foreground() = runTest {
+    fun a_first_heartbeat_on_a_token_with_less_than_forty_minutes_is_not_foreground() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
-        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 29.minutes))
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 39.minutes))
         tracker.cycle()
         assertEquals(false, heartbeats().single().foreground())
+    }
+
+    @Test
+    fun presence_ends_before_creates_stop_so_a_deal_accepted_on_its_tail_still_gets_its_offer() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1",
+               "partnerSteamId":"$OTHER_STEAM_ID","assetIds":["asset-7"],"tradeToken":"tok","contextId":2}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(steamAccessToken(STEAM_ID, clock.now() + 35.minutes))
+        tracker.cycle()
+
+        assertEquals(false, heartbeats().single().foreground(), "35 minutes left: no longer present")
+        assertEquals(1, requests.count { it.url.encodedPath.endsWith("/tradeoffer/new/send") }, "but the create still runs")
+        assertTrue(events.none { it is LifecycleEvent.SteamWriteDeferred }, "$events")
     }
 
     @Test
