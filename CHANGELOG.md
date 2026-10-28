@@ -14,6 +14,8 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.1.0-beta] - 2026-10-28
+
 ### Fixed
 
 - A `cancel_offer`'s answer is read from Steam's body on every HTTP status. Steam serves its EResult envelope
@@ -162,8 +164,10 @@ GitHub Release.
     `WasmProverHost` seams; the notary socket must authenticate by headers. `HeaderSteamProofCookieSource`
     (and `PushedSteamSession.proofCookies`) builds the Steam web session a cookie-authenticated proven read
     sends from the token. `TradingApiSignature.redact` blanks signed-header values in a log line.
-  - `HeadlessTracker`'s heartbeat reports `foreground` from the token: `true` while the token has 30 minutes
-    left and no heartbeat has named another Steam account as linked, from the first heartbeat on. Once an
+  - `HeadlessTracker`'s heartbeat reports `foreground` from the token: `true` while the token has 40 minutes
+    left and no heartbeat has named another Steam account as linked, from the first heartbeat on. That is 10
+    minutes more than a create needs: DMarket keeps a seller present for a few heartbeat cadences after the last
+    `foreground: true`, and a deal a buyer accepts on that tail still gets its create. Once an
     account is bound, a token that expires or is
     missing no longer stops the heartbeat: it goes on for the bound account with `foreground: false` and
     touches nothing on Steam. In the loop these are `LoopConfig.foregroundMinTokenLifetime` and
@@ -508,7 +512,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...HEAD
+[1.1.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...v1.1.0-beta
 [1.0.3-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...v1.0.3-beta
 [1.0.2-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.1-beta...v1.0.2-beta
 [1.0.1-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.0-beta.1...v1.0.1-beta
