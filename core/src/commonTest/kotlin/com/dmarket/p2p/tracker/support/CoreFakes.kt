@@ -86,6 +86,9 @@ class FakeMarketplaceClient(
     private val dealsForGet: List<Deal> = emptyList(),
 ) : MarketplaceClient {
     val heartbeatsSent = mutableListOf<HeartbeatRequest>()
+
+    /** Every `/heartbeat` call, answered or not: [heartbeatsSent] holds only the ones that were. */
+    var heartbeatAttempts = 0
     val tradeStatusReports = mutableListOf<TradeStatusReport>()
     val proofsSubmitted = mutableListOf<ProofSubmission>()
     val directiveOutcomes = mutableListOf<DirectiveOutcome>()
@@ -133,6 +136,7 @@ class FakeMarketplaceClient(
     var tradeStatusResults: ((List<TradeStatusReport>) -> List<TradeStatusResult>)? = null
 
     override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse {
+        heartbeatAttempts += 1
         heartbeatThrowable?.let { throw it }
         if (heartbeatThrows) error("simulated /heartbeat failure")
         heartbeatsSent += request

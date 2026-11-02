@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /**
@@ -136,7 +137,24 @@ class CadencePolicy(private val cadence: CadenceConfig) {
         return if (elapsed >= floor) Duration.ZERO else floor - elapsed
     }
 
+    /**
+     * How long to leave `/heartbeat` alone after the [streak]-th refusal of the credential in a row (a `401`): one
+     * [heartbeatFloor] after the first (30 s on the headless surface), then doubling, to [AUTH_BACKOFF_CAP]. A refused
+     * key cannot fix itself, so retrying it at the floor only hammers the backend; the streak ends when a heartbeat
+     * gets through or the host pushes a new credential.
+     */
+    fun authFailureBackoff(streak: Int, surface: RuntimeSurface, mode: TrackerMode): Duration {
+        val doublings = (streak - 1).coerceIn(0, MAX_AUTH_BACKOFF_DOUBLINGS)
+        return (heartbeatFloor(surface, mode) * (1 shl doublings)).coerceAtMost(AUTH_BACKOFF_CAP)
+    }
+
     companion object {
+        /** The longest wait [authFailureBackoff] reaches. */
+        val AUTH_BACKOFF_CAP: Duration = 15.minutes
+
+        // Past this the cap has long been reached; it only keeps the shift from overflowing on a long streak.
+        private const val MAX_AUTH_BACKOFF_DOUBLINGS = 20
+
         /** The cadence policy backed by [CadenceConfig] defaults (the in-code baseline). */
         fun defaults(): CadencePolicy = CadencePolicy(CadenceConfig())
     }

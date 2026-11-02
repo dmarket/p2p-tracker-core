@@ -953,6 +953,14 @@ class TradeTrackerLoop(
     private var cycleStartedAt: Instant? = null
 
     /**
+     * Consecutive heartbeats DMarket refused with a `401`, for [CadencePolicy.authFailureBackoff]. In memory on
+     * purpose, like the due-time it pushes out: a respawned worker starts at 0 and heartbeats at once, so a blocked
+     * state is re-derived by the first cycle instead of an idle one publishing a stale `NONE` over it. Cleared by a
+     * heartbeat that round-trips and by [forceHeartbeatNow].
+     */
+    private var consecutiveAuthFailures = 0
+
+    /**
      * The last heartbeat's `active_tracking[]`, so between-heartbeat wakes (the heartbeat runs on its
      * own `ttl_seconds` cadence) can still watch Steam. In-memory only, deliberately not persisted:
      * the backend orchestrates what to monitor, so a fresh instance never watches from stale local
@@ -1294,6 +1302,9 @@ class TradeTrackerLoop(
         val heartbeatDue = nextHeartbeatAt?.let { clock.now() >= it } ?: true
         val action = CyclePolicy.decide(heartbeatDue, hasTrackingList = cached != null)
         if (action == CycleAction.IDLE) return@withLock TickOutcome.EMPTY
+        // Backing off a refused credential: until the retry is due the cycle does nothing, so the watch pass on a
+        // cached tracking list cannot keep sending DMarket reports the same refused credential signs.
+        if (!heartbeatDue && consecutiveAuthFailures > 0) return@withLock TickOutcome.EMPTY
         // Proactive missing-connection guard (web), and the FIRST thing a non-idle cycle establishes: if
         // the DMarket provider already knows there is no session (no token, or one that could not be
         // refreshed), don't fire an unauthenticated `/heartbeat` that the gateway would only 401 — set the
@@ -1467,6 +1478,9 @@ class TradeTrackerLoop(
         } catch (_: MarketplaceUnauthorizedException) {
             marketplaceConnectionMissingSticky = true
             clearServerErrorStreak()
+            consecutiveAuthFailures += 1
+            // Not persisted: see [consecutiveAuthFailures].
+            nextHeartbeatAt = clock.now() + cadence.authFailureBackoff(consecutiveAuthFailures, config.surface, config.mode)
             if (!marketplaceReLoginAnnounced) {
                 marketplaceReLoginAnnounced = true
                 emit(LifecycleEvent.ReLoginNeeded("marketplace"))
@@ -1524,6 +1538,7 @@ class TradeTrackerLoop(
         marketplaceConnectionMissingSticky = false
         marketplaceReLoginAnnounced = false
         marketplaceServerErrorSticky = false
+        consecutiveAuthFailures = 0
         clearServerErrorStreak()
     }
 
@@ -1625,6 +1640,8 @@ class TradeTrackerLoop(
     suspend fun forceHeartbeatNow() {
         val now = clock.now()
         nextHeartbeatAt = now
+        // A host that pushes a new credential, or asks for a retry, starts the backoff over.
+        consecutiveAuthFailures = 0
         runCatching { loopState.setNextHeartbeatAt(now) }
         // An explicit "run a cycle now" is also a request to retry the session mint, which is otherwise
         // once-per-episode. That is what makes the host's force-tick a usable retry button for a user

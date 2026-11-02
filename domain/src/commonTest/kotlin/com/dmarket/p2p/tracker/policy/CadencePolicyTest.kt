@@ -296,4 +296,18 @@ class CadencePolicyTest {
             withFallback(300_000).nextHeartbeatDelay(0, RuntimeSurface.WebChrome, TrackerMode.Background),
         )
     }
+
+    @Test
+    fun an_auth_failure_backs_off_from_the_heartbeat_floor_doubling_to_fifteen_minutes() {
+        val steps = (1..8).map { cadence.authFailureBackoff(it, RuntimeSurface.Headless, TrackerMode.Background) }
+        assertEquals(
+            listOf(30.seconds, 1.minutes, 2.minutes, 4.minutes, 8.minutes, 15.minutes, 15.minutes, 15.minutes),
+            steps,
+        )
+    }
+
+    @Test
+    fun an_auth_failure_backoff_never_overflows_on_a_long_streak() {
+        assertEquals(15.minutes, cadence.authFailureBackoff(Int.MAX_VALUE, RuntimeSurface.Headless, TrackerMode.Background))
+    }
 }

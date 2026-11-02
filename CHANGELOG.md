@@ -14,6 +14,11 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Changed
+
+- After a refused credential (401 on the heartbeat) the next heartbeat waits one floor, then doubles, capped at 15 min;
+  a heartbeat that gets through or a new credential resets the streak. It retried every due cycle before.
+
 ### Fixed
 
 - `FetchMarketplaceCookieTokenStore` keeps the `HttpOnly` flag when it rewrites the session cookies after a token

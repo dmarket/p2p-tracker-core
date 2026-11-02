@@ -184,6 +184,7 @@ class TradeTrackerLoopTest {
         unansweredCreateGrace: Duration? = null,
         checkFailedCancels: Boolean = false,
         reportNotActionable: Boolean = false,
+        surface: RuntimeSurface = RuntimeSurface.WebChrome,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -195,7 +196,7 @@ class TradeTrackerLoopTest {
         return TradeTrackerLoop(
             config = LoopConfig(
                 "1.0.0",
-                RuntimeSurface.WebChrome,
+                surface,
                 TrackerMode.Background,
                 tunables,
                 requireLinkedSteamId,
@@ -293,6 +294,60 @@ class TradeTrackerLoopTest {
             events.events.any { it is LifecycleEvent.ReLoginNeeded && it.axis == "marketplace" },
             "should emit ReLoginNeeded(\"marketplace\") on entering the missing-connection state",
         )
+    }
+
+    @Test
+    fun a_refused_credential_is_retried_on_a_growing_interval_up_to_fifteen_minutes() = runTest {
+        val mp = FakeMarketplaceClient().apply { heartbeatThrowable = MarketplaceUnauthorizedException() }
+        val clock = FakeClock()
+        val l = loop(marketplace = mp, clock = clock, surface = RuntimeSurface.Headless)
+        val waits = mutableListOf<Duration>()
+        repeat(7) {
+            l.runOnce()
+            val wait = l.nextWakeDelay()
+            waits += wait
+            clock.advance(wait / 2)
+            l.runOnce()
+            assertEquals(it + 1, mp.heartbeatAttempts, "no heartbeat before the retry is due")
+            clock.advance(wait - wait / 2)
+        }
+        assertEquals(
+            listOf(30.seconds, 1.minutes, 2.minutes, 4.minutes, 8.minutes, 15.minutes, 15.minutes),
+            waits,
+        )
+    }
+
+    @Test
+    fun a_new_credential_restarts_the_auth_backoff() = runTest {
+        val mp = FakeMarketplaceClient().apply { heartbeatThrowable = MarketplaceUnauthorizedException() }
+        val clock = FakeClock()
+        val l = loop(marketplace = mp, clock = clock, surface = RuntimeSurface.Headless)
+        repeat(4) {
+            l.runOnce()
+            clock.advance(l.nextWakeDelay())
+        }
+        l.runOnce()
+        assertEquals(8.minutes, l.nextWakeDelay())
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(30.seconds, l.nextWakeDelay(), "a pushed credential starts the ladder over")
+    }
+
+    @Test
+    fun a_heartbeat_that_gets_through_ends_the_auth_backoff() = runTest {
+        val mp = FakeMarketplaceClient().apply { heartbeatThrowable = MarketplaceUnauthorizedException() }
+        val clock = FakeClock()
+        val l = loop(marketplace = mp, clock = clock, surface = RuntimeSurface.Headless)
+        l.runOnce()
+        clock.advance(l.nextWakeDelay())
+        l.runOnce()
+        mp.heartbeatThrowable = null
+        clock.advance(l.nextWakeDelay())
+        l.runOnce()
+        mp.heartbeatThrowable = MarketplaceUnauthorizedException()
+        clock.advance(2.hours)
+        l.runOnce()
+        assertEquals(30.seconds, l.nextWakeDelay(), "the next refusal starts at the first rung again")
     }
 
     @Test
