@@ -46,6 +46,8 @@ GitHub Release.
 
 - `FetchMarketplaceCookieTokenStore` keeps the `HttpOnly` flag when it rewrites the session cookies after a token
   rotation; `cookies.set` treated an absent flag as non-HttpOnly (DMA-815).
+- The single-trade history read (`transfersByTradeId`, `GetTradeStatus`) built its URL from the literal text
+  `${endpoints.steamApiBaseUrl}${endpoints.getTradeStatusPath}` and never reached Steam, since DMA-318.
 
 ## [1.1.0-beta] - 2026-10-28
 

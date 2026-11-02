@@ -242,8 +242,10 @@ class KtorSteamReadClientTest {
         // `GetTradeHistory` row shape, so a second decoder here would be a second thing to keep in step.
         val endpoints = SteamEndpointsConfig()
         var query: String? = null
+        var url: String? = null
         val engine = MockEngine { request ->
             query = request.url.encodedQuery
+            url = "${request.url.protocol.name}://${request.url.host}${request.url.encodedPath}"
             respond(
                 content = fixture("steam_trade_history.json"),
                 headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()),
@@ -252,6 +254,9 @@ class KtorSteamReadClientTest {
         val rows = KtorSteamReadClient(httpClient = createHttpClient(engine), endpoints = endpoints)
             .transfersByTradeId(credential, TradeId("731422815690175777"))
 
+        // The whole address, not just the query: the template once escaped its `$` signs, so the request
+        // carried the right parameters to a URL that does not exist.
+        assertEquals("${endpoints.steamApiBaseUrl}${endpoints.getTradeStatusPath}", url)
         assertTrue(query!!.contains("${endpoints.paramTradeId}=731422815690175777"), query)
         assertTrue(query.contains("${endpoints.paramAccessToken}="), "the read is authorised by the device token")
         assertEquals(listOf(3, 3, 12, 12, 3), rows.map { it.status }, "same parser, same rows")

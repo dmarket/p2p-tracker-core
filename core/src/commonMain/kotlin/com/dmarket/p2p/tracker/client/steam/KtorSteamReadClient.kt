@@ -99,7 +99,7 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
     }
 
     override suspend fun transfersByTradeId(credential: SteamCredential, tradeId: TradeId): List<SteamTransfer> {
-        val responseText = httpClient.get("${'$'}{endpoints.steamApiBaseUrl}${'$'}{endpoints.getTradeStatusPath}") {
+        val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeStatusPath}") {
             parameter(endpoints.paramAccessToken, credential.token)
             parameter(endpoints.paramTradeId, tradeId.value)
             parameter(endpoints.paramGetDescriptions, 0)
