@@ -35,18 +35,13 @@ export function hasSession() {
   return handle !== null;
 }
 
-/** FE "create trade" trigger → library POSTs the Steam offer to live Steam + reports steam_offer_id to the BE. */
-export async function createTrade({ directiveId, dealId, partnerSteamId, assetIds, tradeToken, linkedSteamId }) {
+/**
+ * FE "create trade" trigger → forces a heartbeat and returns the outcome of the backend's create_offer
+ * directive for the deal. Only the deal id is passed: nothing from the page reaches Steam.
+ */
+export async function awaitCreate({ dealId, timeoutMs = 30000 }) {
   if (!handle) throw new Error("no running debug session");
-  return await mod.createTradeInSession(
-    handle,
-    directiveId || "",
-    dealId || "",
-    partnerSteamId,
-    assetIds || [],
-    tradeToken || null,
-    linkedSteamId || null,
-  );
+  return await mod.awaitCreateInSession(handle, dealId || "", timeoutMs);
 }
 
 /** Run one heartbeat cycle now (fallback when a CreateTrade postMessage has no directive_id). */

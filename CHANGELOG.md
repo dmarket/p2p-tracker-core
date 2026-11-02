@@ -18,6 +18,14 @@ GitHub Release.
 
 - After a refused credential (401 on the heartbeat) the next heartbeat waits one floor, then doubles, capped at 15 min;
   a heartbeat that gets through or a new credential resets the streak. It retried every due cycle before.
+- **BREAKING (JS): `createTrade(...)` and `TradeTrackerLoop.createTrade` are removed (DMA-814).** The host built the
+  Steam offer from whatever the page sent. `awaitDirectiveOutcome(handle, dealId, timeoutMs)` /
+  `TradeTrackerLoop.awaitDirectiveOutcome(dealId, timeout, cycleScope)` takes only a deal id, forces a heartbeat and
+  resolves with the outcome of the deal's `create_offer` directive from it, run through the heartbeat's directive path.
+  The outcome JSON is unchanged (`failed`/`OTHER` with no directive, `duplicate:true`, `create_in_flight` on timeout).
+  Debug harness: `createTradeInSession` is now `awaitCreateInSession(handle, dealId, timeoutMs)`.
+- `DealRoleBinding.allowsWrite` refuses a write before the first heartbeat (`activeTracking == null`); within a
+  heartbeat an absent or `UNKNOWN` role still allows it, as before.
 
 ### Fixed
 

@@ -39,7 +39,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.promise
 
 /**
- * A self-driving debug loop + the teardown to stop it. [loop.createTrade] is the FE-triggered create;
+ * A self-driving debug loop + the teardown to stop it. [loop.awaitDirectiveOutcome] answers the FE create trigger;
  * [nudge] forces one loop cycle now — a fresh `/heartbeat` (bypassing both the `ttl_seconds` cadence
  * gate and the coalesce guard) → watch — so a just-created offer's `active_tracking` and any leased
  * directives are picked up immediately instead of waiting for the next alarm.
@@ -62,8 +62,8 @@ private const val CYCLE_COALESCE_MS: Double = 5_000.0
  * `heartbeat.steam_id == account.linked_steam_id`, so identity must be real.
  *
  * `directivesEnabled = true` keeps the real C1 behaviour (the backend may lease `create_offer` and the
- * loop executes it). Independently, the FE "create trade" postMessage is routed to
- * [TradeTrackerLoop.createTrade] by the debug facade — both paths appear in the session log.
+ * loop executes it). The FE "create trade" postMessage only forces a heartbeat through
+ * [TradeTrackerLoop.awaitDirectiveOutcome] and waits for that directive's outcome.
  */
 internal fun startDebugTracker(
     baseUrl: String,

@@ -20,9 +20,9 @@ import kotlin.time.Instant
  * The write-claim guard under **genuine parallelism**, on a real multi-threaded dispatcher.
  *
  * The web target is a single-threaded service worker, so the common-source concurrency test can only
- * produce a cooperative interleave. Android and iOS drivers are not single-threaded — and
- * `TradeTrackerLoop.createTrade` is a host entry point that runs outside the cycle mutex — so the claim
- * store's own lock is the only thing standing between two threads and two live Steam offers for one deal.
+ * produce a cooperative interleave. Android and iOS drivers are not single-threaded — and a cycle runs each
+ * counterparty's create chain concurrently (`TradeTrackerLoop.executeCreateChains`), so on those targets the
+ * claim store's own lock is what stands between two threads and two live Steam offers for one deal.
  * This is the closest proxy for that available before those targets are enabled.
  */
 class DealWriteClaimStoreThreadingTest {

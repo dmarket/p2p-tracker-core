@@ -31,8 +31,9 @@ import kotlin.time.Duration
  *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the
  *   default) keeps the browser behaviour: no Steam session, no heartbeat.
  * @param steamWrites When `false`, the loop writes no Steam offer, whatever is leased or asked: a `create_offer` or
- *   `cancel_offer` is dropped unreported (its lease lapses to a device that writes) and [TradeTrackerLoop.createTrade]
- *   refuses. For a client whose account only buys. `true` by default.
+ *   `cancel_offer` is dropped unreported (its lease lapses to a device that writes), and
+ *   [TradeTrackerLoop.awaitDirectiveOutcome] answers with that refusal. For a client whose account only buys. `true`
+ *   by default.
  * @param reportUnsentCreates When `false`, a `create_offer` that never reached Steam is not reported `FAILED`: one
  *   refused by the account or the buyer-role guard, or deferred (the token, a cooldown, a stopped chain — even with
  *   `SteamWriteConfig.reportThrottledWrites` on). The backend reads `FAILED` as the seller failing to deliver, and

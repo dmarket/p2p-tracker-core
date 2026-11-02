@@ -51,17 +51,23 @@ class DealRoleBindingTest {
     }
 
     /**
-     * The fail-open rule, and the reason it is not timidity: `role` is not in the frozen contract yet, so
-     * refusing on its absence would block every legitimate sale against a backend that does not send it —
-     * whereas failing open only allows a write the backend already declines to lease.
+     * Within a heartbeat an unknown role fails open: `role` is not in the frozen contract yet, so refusing on
+     * its absence would block every legitimate sale against a backend that does not send it — whereas failing
+     * open only allows a write the backend leased in that same heartbeat.
      */
     @Test
-    fun every_unknown_shape_fails_open() {
+    fun an_unknown_role_within_a_heartbeat_fails_open() {
         assertTrue(DealRoleBinding.allowsWrite(tracking, DealId("legacy-1")), "explicit UNKNOWN role")
         assertTrue(DealRoleBinding.allowsWrite(tracking, DealId("absent")), "deal not in active_tracking")
-        assertTrue(DealRoleBinding.allowsWrite(null, DealId("sale-1")), "no heartbeat has landed yet")
         assertTrue(DealRoleBinding.allowsWrite(emptyList(), DealId("sale-1")), "watching nothing")
         assertTrue(DealRoleBinding.allowsWrite(tracking, null), "deal-less directive")
+    }
+
+    /** No heartbeat means no lease, so no write: the cold-worker exception for a host-built create is gone. */
+    @Test
+    fun no_heartbeat_refuses_every_write() {
+        assertFalse(DealRoleBinding.allowsWrite(null, DealId("sale-1")))
+        assertFalse(DealRoleBinding.allowsWrite(null, null))
     }
 
     // ---- wire parsing ------------------------------------------------------------------------------

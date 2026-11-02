@@ -133,7 +133,7 @@ rather than being silently replaced with a default. See the conformance section 
 
 ```
 dmarket.com page (real FE) ──window.postMessage(CreateTrade)──▶ content.js ──relay──▶ service worker
-                                                                                          │ createTradeInSession
+                                                                                          │ awaitCreateInSession
 real DMarket backend ◀── heartbeat / trade-events / trade-actions ── self-driving loop ◀──┤
 live Steam           ◀── reads / tradeoffer writes ────────────────────────────────────────┘
 ```

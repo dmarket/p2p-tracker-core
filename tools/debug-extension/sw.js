@@ -261,25 +261,9 @@ async function handle(msg) {
       // The `tradeoffer/new/send` anti-CSRF Origin/Referer rewrite is a STANDING rule installed at boot
       // (see installSteamAntiCsrfHeaderRules) — it covers this message path AND directive-driven creates
       // from the library's alarm loop, so no per-create install/teardown is needed here.
-      const result = await harness.createTrade({
-        directiveId: msg.directiveId,
-        dealId: msg.dealId,
-        partnerSteamId: msg.partnerSteamId,
-        assetIds: msg.assetIds,
-        tradeToken: msg.tradeToken,
-        linkedSteamId: msg.linkedSteamId,
-      });
-      onLog(
-        JSON.stringify({
-          category: "command",
-          event: "CreateTrade",
-          directiveId: msg.directiveId,
-          dealId: msg.dealId,
-          partnerSteamId: msg.partnerSteamId,
-          linkedSteamId: msg.linkedSteamId,
-          result,
-        }),
-      );
+      // Only the deal id is used: the offer is built from the backend's create_offer directive.
+      const result = await harness.awaitCreate({ dealId: msg.dealId });
+      onLog(JSON.stringify({ category: "command", event: "CreateTrade", dealId: msg.dealId, result }));
       return { ok: true, result };
     }
 

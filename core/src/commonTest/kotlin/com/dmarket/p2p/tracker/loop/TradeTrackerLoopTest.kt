@@ -1028,38 +1028,148 @@ class TradeTrackerLoopTest {
         assertEquals(1, creator.created.size, "an UNKNOWN role must not block a legitimate create")
     }
 
+    // ---- awaitDirectiveOutcome (the page's create trigger) -----------------------------------------
+    // The page hands over a deal id and nothing else: what it waits on is the create the backend leased.
+
     @Test
-    fun host_create_trade_is_refused_for_a_buyer_role_deal() = runTest {
-        // The host path synthesises its own directive, so the backend's decision not to lease this write
-        // never reaches it — the last heartbeat's tracking list is the only thing that can refuse it.
+    fun the_create_trigger_sends_the_leased_offer_whatever_the_page_wanted() = runTest {
+        // The point of the entry taking only a deal id: a forged partner, item list or trade token on the page
+        // has no parameter to travel through, so what reaches Steam is the directive's draft, verbatim.
         val creator = FakeSteamOfferCreator()
-        val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked(role = DealRole.BUYER)), ttlSeconds = 60),
+        val leased = createDirective(partner = "76561198000000777", assetId = "asset-leased")
+        val l = loop(marketplace = createLease(leased), creator = creator, directivesEnabled = true)
+
+        l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+
+        assertEquals(
+            TradeDraft(SteamId("76561198000000777"), listOf(AssetId("asset-leased")), "trade-token"),
+            creator.created.single(),
         )
-        val l = loop(marketplace = mp, creator = creator)
-        l.runOnce() // caches active_tracking
-        val result = l.createTrade(
-            directiveId = DirectiveId("dir-host"),
-            dealId = DealId("deal-1"),
-            draft = TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
-        assertIs<CreateOfferResult.Failed>(result)
-        assertTrue(creator.created.isEmpty(), "the host must not be able to write on a deal we are buying")
-        assertEquals(DirectiveStatus.FAILED, mp.directiveOutcomes.single().status)
     }
 
     @Test
-    fun host_create_trade_still_works_before_the_first_heartbeat() = runTest {
-        // A cold worker has no tracking list at all; the FE's create trigger must keep working.
-        val creator = FakeSteamOfferCreator()
-        val mp = FakeMarketplaceClient()
-        val result = loop(marketplace = mp, creator = creator).createTrade(
-            directiveId = DirectiveId("dir-host"),
-            dealId = DealId("deal-1"),
-            draft = TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
+    fun the_create_trigger_answers_with_its_own_deals_create_result() = runTest {
+        // Two creates in one lease: the waiter gets its deal's offer, not whichever create happened to finish.
+        val creator = FakeSteamOfferCreator(
+            resultsByPartner = mapOf(
+                SteamId(PARTNER) to listOf(
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-a")),
+                    CreateOfferResult.NeedsConfirmation(OfferId("offer-b")),
+                ),
+            ),
         )
-        assertIs<CreateOfferResult.NeedsConfirmation>(result)
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(
+                    createDirective(id = "dir-a", dealId = "deal-a"),
+                    createDirective(id = "dir-b", dealId = "deal-b", assetId = "asset-2"),
+                ),
+                ttlSeconds = 300,
+            ),
+        )
+        val result = loop(marketplace = mp, creator = creator, directivesEnabled = true)
+            .awaitDirectiveOutcome(DealId("deal-b"), 30.seconds, this)
+
+        assertEquals(OfferId("offer-b"), assertIs<CreateOfferResult.NeedsConfirmation>(result).offerId)
+        assertEquals(2, creator.created.size)
+    }
+
+    @Test
+    fun the_create_trigger_without_a_leased_create_fails_and_writes_nothing() = runTest {
+        // A cold worker used to build the offer from the page's fields. Now there is nothing to write unless the
+        // backend leases it — with or without an earlier heartbeat.
+        val creator = FakeSteamOfferCreator()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked(role = DealRole.SELLER)), ttlSeconds = 300),
+        )
+        val result = loop(marketplace = mp, creator = creator, directivesEnabled = true)
+            .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+
+        assertEquals(SteamCreateFailureCause.OTHER, assertIs<CreateOfferResult.Failed>(result).cause)
+        assertTrue(creator.created.isEmpty())
+        assertEquals(1, mp.heartbeatsSent.size, "the trigger forces one heartbeat")
+    }
+
+    @Test
+    fun the_create_trigger_for_an_already_created_deal_returns_the_first_offer() = runTest {
+        // A page retrying "create trade" must render the real offer and never earn a second one: through a
+        // re-lease under a fresh directive id (the duplicate guard), and once the backend stops leasing a create
+        // (answered from the deal's claim).
+        val creator = FakeSteamOfferCreator()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
+        )
+        val l = loop(marketplace = mp, creator = creator, directivesEnabled = true)
+        val first = assertIs<CreateOfferResult.NeedsConfirmation>(l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this))
+        // Each retry comes after the previous cycle has finished; until then a caller shares that cycle's answer.
+        testScheduler.advanceUntilIdle()
+
+        val tracking = listOf(tracked("deal-1", "offer-created"))
+        mp.heartbeatResponse =
+            HeartbeatResponse(activeTracking = tracking, directives = listOf(createDirective(id = "dir-2")), ttlSeconds = 300)
+        val reLeased = l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        testScheduler.advanceUntilIdle()
+        mp.heartbeatResponse = HeartbeatResponse(activeTracking = tracking, ttlSeconds = 300)
+        val unleased = l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+
+        assertEquals(1, creator.created.size, "a fresh directive_id must not buy a second Steam write")
+        assertEquals(first.offerId, assertIs<CreateOfferResult.AlreadyCreated>(reLeased).offerId)
+        assertEquals(first.offerId, assertIs<CreateOfferResult.AlreadyCreated>(unleased).offerId)
+    }
+
+    @Test
+    fun the_create_trigger_on_a_wrong_account_session_returns_account_mismatch_and_writes_nothing() = runTest {
+        val creator = FakeSteamOfferCreator()
+        val observer = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+                linkedSteamId = mismatchSteamId,
+            ),
+        )
+        val result = loop(marketplace = mp, creator = creator, directivesEnabled = true, eventObserver = observer)
+            .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+
+        val mismatch = assertIs<CreateOfferResult.AccountMismatch>(result)
+        assertEquals(mismatchSteamId to matchingSteamId, mismatch.linkedSteamId to mismatch.tokenSteamId)
+        assertTrue(creator.created.isEmpty())
+        assertTrue(observer.events.any { it is LifecycleEvent.LinkedSteamIdMismatch })
+    }
+
+    @Test
+    fun the_create_trigger_for_a_buyer_role_deal_fails_and_writes_nothing() = runTest {
+        // Even a create the backend did lease: only the seller writes to Steam.
+        val creator = FakeSteamOfferCreator()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked(role = DealRole.BUYER)),
+                directives = listOf(createDirective()),
+                ttlSeconds = 60,
+            ),
+        )
+        val result = loop(marketplace = mp, creator = creator, directivesEnabled = true)
+            .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+
+        assertIs<CreateOfferResult.Failed>(result)
+        assertTrue(creator.created.isEmpty(), "no write on a deal we are buying")
+    }
+
+    @Test
+    fun concurrent_create_triggers_for_one_deal_share_one_heartbeat_and_one_write() = runTest {
+        // The incident behind the deal guard: the page relayed one "create trade" three times. The three waits
+        // now collapse into one forced cycle, so there is one heartbeat to lease from and one create to run.
+        val creator = FakeSteamOfferCreator()
+        val mp = createLease(createDirective())
+        val l = loop(marketplace = mp, creator = creator, directivesEnabled = true)
+        val results = (1..3)
+            .map { async { l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this@runTest) } }
+            .map { it.await() }
+
+        assertEquals(1, mp.heartbeatsSent.size, "one forced cycle, not three")
         assertEquals(1, creator.created.size)
+        assertIs<CreateOfferResult.NeedsConfirmation>(results.first())
+        assertEquals(1, results.distinct().size, "every caller hears the same answer")
     }
 
     // ---- watch: read failures + assetId caching --------------------------------------------
@@ -2073,24 +2183,6 @@ class TradeTrackerLoopTest {
             f.observer.events.filterIsInstance<LifecycleEvent.DirectiveReportFailed>().size,
             "both the original throw and the rejected resend must be visible",
         )
-    }
-
-    @Test
-    fun create_trade_outcome_is_resent_by_next_heartbeat_when_report_fails() = runTest {
-        val f = ReleaseFixture(createDirective(id = "dir-ft", dealId = "deal-ft"))
-        val l = f.loop()
-        l.createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        ) // report throws → outcome stays stored
-        f.mp.reportDirectiveThrows = false
-        l.runOnce() // heartbeat re-serves the same directive_id
-        assertEquals(1, f.creator.created.size, "the FE-triggered create must not re-execute")
-        val resent = f.mp.directiveOutcomes.single()
-        assertEquals(DirectiveId("dir-ft"), resent.directiveId)
-        assertEquals(DealId("deal-ft"), resent.dealId)
-        assertEquals(OfferId("offer-created"), resent.steamOfferId)
     }
 
     @Test
@@ -4280,29 +4372,29 @@ class TradeTrackerLoopTest {
     }
 
     @Test
-    fun create_trade_arms_expedited_and_rearms_the_alarm_immediately() = runTest {
+    fun the_create_trigger_rearms_the_alarm_for_the_expedited_window() = runTest {
         val scheduler = FakeScheduler()
-        val l = loop(scheduler = scheduler) // default creator → NeedsConfirmation
-        val result = l.createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 3600),
         )
-        assertTrue(result is CreateOfferResult.NeedsConfirmation)
-        // The out-of-band FE trigger re-arms the wake now (no heartbeat yet → poll cadence is direct):
-        // the expedited 60s, so we don't idle on a stale ~3-min alarm before the first re-check.
+        val result = loop(marketplace = mp, scheduler = scheduler, directivesEnabled = true)
+            .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        assertIs<CreateOfferResult.NeedsConfirmation>(result)
+        testScheduler.advanceUntilIdle() // the re-arm follows the cycle, which outlives the answer
+        // The trigger runs outside the alarm, so it re-arms the wake itself: the expedited 60s, not the stale
+        // ~3-min alarm the worker was spawned on.
         assertEquals(60.seconds, scheduler.scheduledDelays.last())
     }
 
     @Test
-    fun create_trade_reports_deal_id_on_trade_actions() = runTest {
-        val mp = FakeMarketplaceClient()
-        val l = loop(marketplace = mp)
-        l.createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
+    fun a_create_reports_deal_id_on_trade_actions() = runTest {
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective(id = "dir-ft", dealId = "deal-ft")),
+                ttlSeconds = 300,
+            ),
         )
+        loop(marketplace = mp, directivesEnabled = true).runOnce()
         // The /trade-actions outcome must carry the DMarket deal key — the backend rejects the
         // report ("deal_id is required") and holds the directive lease without it.
         assertEquals(1, mp.directiveOutcomes.size)
@@ -4312,16 +4404,17 @@ class TradeTrackerLoopTest {
 
     @Test
     fun rejected_trade_actions_report_emits_directive_report_failed() = runTest {
-        val mp = FakeMarketplaceClient().apply {
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective(id = "dir-ft", dealId = "deal-ft")),
+                ttlSeconds = 300,
+            ),
+        ).apply {
             directiveAccepted = false
             directiveRejectReason = "deal_id is required"
         }
         val observer = RecordingEventObserver()
-        loop(marketplace = mp, eventObserver = observer).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
+        loop(marketplace = mp, eventObserver = observer, directivesEnabled = true).runOnce()
         val failed = observer.events.filterIsInstance<LifecycleEvent.DirectiveReportFailed>().single()
         assertEquals("create_offer", failed.kind)
         assertEquals("dir-ft", failed.directiveId)
@@ -4330,13 +4423,14 @@ class TradeTrackerLoopTest {
 
     @Test
     fun thrown_trade_actions_report_emits_directive_report_failed() = runTest {
-        val mp = FakeMarketplaceClient().apply { reportDirectiveThrows = true }
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective(id = "dir-ft", dealId = "deal-ft")),
+                ttlSeconds = 300,
+            ),
+        ).apply { reportDirectiveThrows = true }
         val observer = RecordingEventObserver()
-        loop(marketplace = mp, eventObserver = observer).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
+        loop(marketplace = mp, eventObserver = observer, directivesEnabled = true).runOnce()
         val failed = observer.events.filterIsInstance<LifecycleEvent.DirectiveReportFailed>().single()
         assertEquals("create_offer", failed.kind)
         // A `redactedSummary()`: exception class + scrubbed, capped message (this reason reaches the host).
@@ -4350,12 +4444,9 @@ class TradeTrackerLoopTest {
     fun expedited_window_survives_a_worker_respawn() = runTest {
         val clock = FakeClock()
         val store = InMemoryLoopStateStore()
-        // Worker 1: FE create → NeedsConfirmation arms + persists the expedited window, then dies.
-        loop(clock = clock, loopState = store).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
+        // Worker 1: a leased create → NeedsConfirmation arms + persists the expedited window, then dies.
+        loop(marketplace = createLease(createDirective()), clock = clock, loopState = store, directivesEnabled = true).runOnce()
+        clock.advance(61.seconds) // past worker 1's heartbeat ttl, still inside the 5-min window
         // Worker 2: fresh instance; the backend does NOT yet track the deal (empty active_tracking),
         // so state 9 cannot be observed — the restored window alone must keep the wake expedited.
         val respawned = loop(
@@ -4371,11 +4462,7 @@ class TradeTrackerLoopTest {
     fun expired_expedited_window_is_not_restored_after_respawn() = runTest {
         val clock = FakeClock()
         val store = InMemoryLoopStateStore()
-        loop(clock = clock, loopState = store).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
+        loop(marketplace = createLease(createDirective()), clock = clock, loopState = store, directivesEnabled = true).runOnce()
         clock.advance(6.minutes) // past the 5-min window before the respawn
         val respawned = loop(
             marketplace = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 3600)),
@@ -4577,17 +4664,15 @@ class TradeTrackerLoopTest {
     fun idle_wake_is_bound_to_the_due_tick_not_the_expedited_cadence() = runTest {
         val clock = FakeClock()
         val store = InMemoryLoopStateStore()
-        // Worker 1: an offer create arms + persists the 5-min expedited window, then a heartbeat
+        // Worker 1: a leased create arms + persists the 5-min expedited window, and the same heartbeat
         // schedules due = t0+10min. Both survive to the respawn.
         val w1 = loop(
-            marketplace = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 600)),
+            marketplace = FakeMarketplaceClient(
+                heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 600),
+            ),
             clock = clock,
             loopState = store,
-        )
-        w1.createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
+            directivesEnabled = true,
         )
         w1.runOnce()
         // Worker 2 has nothing to watch: the restored expedited window must not burn 60s wakes on
@@ -5011,176 +5096,62 @@ class TradeTrackerLoopTest {
         assertEquals(1, creator.created.size, "directives resume once the account matches")
     }
 
-    @Test
-    fun create_trade_with_mismatched_linked_steam_id_blocks_write_and_returns_account_mismatch() = runTest {
-        val creator = FakeSteamOfferCreator()
-        val mp = FakeMarketplaceClient()
-        val observer = RecordingEventObserver()
-        val result = loop(marketplace = mp, creator = creator, eventObserver = observer).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-            linkedSteamId = mismatchSteamId,
-        )
-        assertTrue(creator.created.isEmpty(), "no Steam write when the FE-supplied linkedSteamId mismatches")
-        assertTrue(result is CreateOfferResult.AccountMismatch)
-        assertEquals(mismatchSteamId, result.linkedSteamId)
-        assertEquals(matchingSteamId, result.tokenSteamId)
-        assertEquals(1, mp.directiveOutcomes.size, "a FAILED outcome is reported to release the lease")
-        assertEquals(DirectiveStatus.FAILED, mp.directiveOutcomes.single().status)
-        assertTrue(observer.events.any { it is LifecycleEvent.LinkedSteamIdMismatch })
-    }
-
-    @Test
-    fun create_trade_with_matching_linked_steam_id_creates() = runTest {
-        val creator = FakeSteamOfferCreator()
-        val result = loop(creator = creator).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-            linkedSteamId = matchingSteamId,
-        )
-        assertEquals(1, creator.created.size)
-        assertTrue(result is CreateOfferResult.NeedsConfirmation)
-    }
-
-    @Test
-    fun create_trade_without_a_host_linked_steam_id_still_honours_a_known_mismatch() = runTest {
-        // The host argument is optional, so omitting it must not buy a Steam write on a session the last
-        // heartbeat already proved is wrong-account. The guard falls back to the loop's own verdict.
-        val creator = FakeSteamOfferCreator()
-        val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(ttlSeconds = 300, linkedSteamId = mismatchSteamId),
-        )
-        val observer = RecordingEventObserver()
-        val l = loop(marketplace = mp, creator = creator, eventObserver = observer)
-        l.runOnce()
-        assertTrue(l.linkedSteamIdMismatch, "precondition: the heartbeat detected the mismatch")
-
-        val result = l.createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-            // linkedSteamId deliberately omitted, as a forgetful host would.
-        )
-        assertTrue(creator.created.isEmpty(), "the library already knew the account was wrong")
-        assertTrue(result is CreateOfferResult.AccountMismatch)
-        assertEquals(mismatchSteamId, result.linkedSteamId, "the id the heartbeat reported is surfaced")
-        assertTrue(observer.events.any { it is LifecycleEvent.LinkedSteamIdMismatch })
-    }
-
-    @Test
-    fun create_trade_without_a_host_linked_steam_id_creates_when_no_mismatch_is_known() = runTest {
-        // The fallback must not become a block-by-default: with no mismatch on record, an omitted argument
-        // stays "unknown" and the write proceeds (matching AccountBinding's fail-open on an absent id).
-        val creator = FakeSteamOfferCreator()
-        val result = loop(creator = creator).createTrade(
-            DirectiveId("dir-ft"),
-            DealId("deal-ft"),
-            TradeDraft(SteamId(PARTNER), listOf(AssetId("asset-1")), "trade-token"),
-        )
-        assertEquals(1, creator.created.size)
-        assertTrue(result is CreateOfferResult.NeedsConfirmation)
-    }
-
     // ---- deal-keyed duplicate guard (one live Steam write per deal, whatever the caller sends) -----
 
     private fun draft(assetId: String = "asset-1") = TradeDraft(SteamId(PARTNER), listOf(AssetId(assetId)), "trade-token")
 
-    /**
-     * The incident this guard exists for: the FE relayed one "create trade" three times and the extension
-     * POSTed `tradeoffer/new/send` three times — three live Steam offers for one deal.
-     */
-    @Test
-    fun three_concurrent_create_trade_calls_for_one_deal_write_to_steam_once() = runTest {
-        val creator = FakeSteamOfferCreator()
-        val observer = RecordingEventObserver()
-        val l = loop(creator = creator, eventObserver = observer)
-        val results = (1..3).map { async { l.createTrade(DirectiveId("dir-ft"), DealId("deal-ft"), draft()) } }.map { it.await() }
-
-        assertEquals(1, creator.created.size, "only one create may reach Steam")
-        assertEquals(1, results.count { it is CreateOfferResult.NeedsConfirmation })
-        assertEquals(2, observer.events.count { it is LifecycleEvent.DuplicateWriteSuppressed })
-    }
-
-    /** The worst case: the host presents a *fresh* directive_id each time, which directive-id dedup cannot see. */
-    @Test
-    fun repeated_create_trade_calls_under_distinct_directive_ids_write_to_steam_once() = runTest {
-        val creator = FakeSteamOfferCreator()
-        val l = loop(creator = creator)
-        val first = l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
-        val second = l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
-        val third = l.createTrade(DirectiveId("dir-3"), DealId("deal-ft"), draft())
-
-        assertEquals(1, creator.created.size, "a fresh directive_id must not buy a second Steam write")
-        assertIs<CreateOfferResult.NeedsConfirmation>(first)
-        // The duplicates replay the FIRST result, so a retrying caller renders the real offer, not an error.
-        assertEquals(first.offerId, assertIs<CreateOfferResult.AlreadyCreated>(second).offerId)
-        assertEquals(first.offerId, assertIs<CreateOfferResult.AlreadyCreated>(third).offerId)
-    }
-
-    /** A suppressed duplicate still answers the lease it was given, or the backend parks the deal to its TTL. */
-    @Test
-    fun a_suppressed_duplicate_reports_the_first_offer_id_under_its_own_directive_id() = runTest {
-        val mp = FakeMarketplaceClient()
-        val l = loop(marketplace = mp, creator = FakeSteamOfferCreator())
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
-        l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
-
-        assertEquals(listOf(DirectiveId("dir-1"), DirectiveId("dir-2")), mp.directiveOutcomes.map { it.directiveId })
-        val restated = mp.directiveOutcomes.last()
-        assertEquals(OfferId("offer-created"), restated.steamOfferId, "the restatement names the SAME offer")
-        assertEquals(DealId("deal-ft"), restated.dealId)
-    }
-
-    /** Nothing was written, so the claim must not linger and block the user's next attempt. */
+    /** Nothing was written, so the claim must not linger and block the next lease. */
     @Test
     fun a_failed_create_releases_the_claim_so_a_retry_can_write() = runTest {
-        val creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed("steam said no"))
         val claims = PersistedDealWriteClaimStore()
-        val l = loop(creator = creator, claims = claims)
-        assertIs<CreateOfferResult.Failed>(l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft()))
+        val failing = FakeSteamOfferCreator(result = CreateOfferResult.Failed("steam said no"))
+        loop(marketplace = createLease(createDirective(id = "dir-1")), creator = failing, claims = claims, directivesEnabled = true)
+            .runOnce()
         assertTrue(claims.all().isEmpty(), "a create that wrote nothing leaves no claim behind")
 
         val retryCreator = FakeSteamOfferCreator()
-        assertIs<CreateOfferResult.NeedsConfirmation>(
-            loop(creator = retryCreator, claims = claims).createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft()),
-        )
+        loop(marketplace = createLease(createDirective(id = "dir-2")), creator = retryCreator, claims = claims, directivesEnabled = true)
+            .runOnce()
         assertEquals(1, retryCreator.created.size)
     }
 
-    /**
-     * The reported bug: a create Steam refused over its 5-offers-per-partner cap reached the host as a bare
-     * "failed" plus one English sentence, so the page could only say "failed". The loop reads that sentence
-     * once, here, and hands back a code — nobody downstream re-parses Steam's prose.
-     */
     @Test
-    fun a_refused_create_names_its_cause_on_both_write_paths() = runTest {
+    fun a_refused_create_names_its_cause() = runTest {
+        suspend fun causeOf(creator: FakeSteamOfferCreator) = assertIs<CreateOfferResult.Failed>(
+            loop(marketplace = createLease(createDirective()), creator = creator, directivesEnabled = true)
+                .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this),
+        ).cause
+
         val perPartner = "Steam create returned HTTP 500: {\"strError\":\"You have sent too many trade offers, " +
             "or have too many outstanding trade offers with luckydm07. Please cancel some before sending more.\"}"
-        val fastPath = loop(creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed(perPartner)))
-            .createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
-        assertEquals(SteamCreateFailureCause.COUNTERPARTY_OFFER_LIMIT, assertIs<CreateOfferResult.Failed>(fastPath).cause)
+        assertEquals(
+            SteamCreateFailureCause.COUNTERPARTY_OFFER_LIMIT,
+            causeOf(FakeSteamOfferCreator(result = CreateOfferResult.Failed(perPartner))),
+        )
 
         // Steam named no partner: the account-wide cap, which no amount of cancelling with *this* partner fixes.
         val accountWide = "Steam create returned HTTP 500: {\"strError\":\"You have sent too many trade offers.\"}"
-        val wide = loop(creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed(accountWide)))
-            .createTrade(DirectiveId("dir-2"), DealId("deal-ft2"), draft())
-        assertEquals(SteamCreateFailureCause.OUTGOING_OFFER_LIMIT, assertIs<CreateOfferResult.Failed>(wide).cause)
+        assertEquals(
+            SteamCreateFailureCause.OUTGOING_OFFER_LIMIT,
+            causeOf(FakeSteamOfferCreator(result = CreateOfferResult.Failed(accountWide))),
+        )
 
         // A creator that throws is a failure too, and its cause is read from the same text.
-        val threw = loop(creator = FakeSteamOfferCreator(throwable = IllegalStateException("Failed to fetch")))
-            .createTrade(DirectiveId("dir-3"), DealId("deal-ft3"), draft())
-        assertEquals(SteamCreateFailureCause.TRANSPORT, assertIs<CreateOfferResult.Failed>(threw).cause)
+        assertEquals(
+            SteamCreateFailureCause.TRANSPORT,
+            causeOf(FakeSteamOfferCreator(throwable = IllegalStateException("Failed to fetch"))),
+        )
         // And as the browser's create really fails: Ktor's JS engine wraps the rejected fetch.
-        val ktor = loop(creator = FakeSteamOfferCreator(throwable = IllegalStateException("Fail to fetch")))
-            .createTrade(DirectiveId("dir-5"), DealId("deal-ft5"), draft())
-        assertEquals(SteamCreateFailureCause.TRANSPORT, assertIs<CreateOfferResult.Failed>(ktor).cause)
+        assertEquals(
+            SteamCreateFailureCause.TRANSPORT,
+            causeOf(FakeSteamOfferCreator(throwable = IllegalStateException("Fail to fetch"))),
+        )
 
         // Unrecognised stays unrecognised: a guessed cause is worse on screen than an honest "it failed".
-        val other = loop(creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed("steam said no")))
-            .createTrade(DirectiveId("dir-4"), DealId("deal-ft4"), draft())
-        assertEquals(SteamCreateFailureCause.OTHER, assertIs<CreateOfferResult.Failed>(other).cause)
+        assertEquals(
+            SteamCreateFailureCause.OTHER,
+            causeOf(FakeSteamOfferCreator(result = CreateOfferResult.Failed("steam said no"))),
+        )
     }
 
     /** A create blocked before any Steam write must not consume the deal's claim either. */
@@ -5188,13 +5159,20 @@ class TradeTrackerLoopTest {
     fun an_account_mismatch_leaves_no_claim_behind() = runTest {
         val claims = PersistedDealWriteClaimStore()
         val creator = FakeSteamOfferCreator()
-        val result = loop(creator = creator, claims = claims).createTrade(
-            DirectiveId("dir-1"),
-            DealId("deal-ft"),
-            draft(),
-            linkedSteamId = mismatchSteamId,
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+                linkedSteamId = matchingSteamId,
+            ),
         )
-        assertIs<CreateOfferResult.AccountMismatch>(result)
+        loop(
+            marketplace = mp,
+            creator = creator,
+            claims = claims,
+            directivesEnabled = true,
+            sessionRefresher = wrongAccountCookie(),
+        ).runOnce()
         assertTrue(creator.created.isEmpty())
         assertTrue(claims.all().isEmpty(), "nothing was written, so nothing is claimed")
     }
@@ -5218,14 +5196,22 @@ class TradeTrackerLoopTest {
     @Test
     fun a_create_is_refused_when_the_browser_session_is_another_account() = runTest {
         val creator = FakeSteamOfferCreator()
-        val mp = FakeMarketplaceClient()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+                linkedSteamId = matchingSteamId,
+            ),
+        )
         val observer = RecordingEventObserver()
         val result = loop(
             marketplace = mp,
             creator = creator,
             eventObserver = observer,
             sessionRefresher = wrongAccountCookie(),
-        ).createTrade(DirectiveId("dir-ft"), DealId("deal-ft"), draft(), linkedSteamId = matchingSteamId)
+            directivesEnabled = true,
+        ).awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        testScheduler.advanceUntilIdle() // the waiter is answered first; the cycle reports its writes after
 
         assertTrue(creator.created.isEmpty(), "the token axis agreed, but the write would have come from another account")
         assertIs<CreateOfferResult.AccountMismatch>(result)
@@ -5303,7 +5289,7 @@ class TradeTrackerLoopTest {
         val l = loop(marketplace = mp, creator = creator, directivesEnabled = true, sessionRefresher = wrongAccountCookie())
         l.runOnce()
 
-        assertTrue(creator.created.isEmpty(), "the leased directive path is gated too, not just the FE fast path")
+        assertTrue(creator.created.isEmpty(), "the leased directive path is gated at the write site")
         assertEquals(TrackerBlock.NONE, l.blockingState, "the heartbeat's own ids agree — this block lives at the write site")
         assertEquals(DirectiveStatus.FAILED, mp.directiveOutcomes.single().status)
     }
@@ -5343,10 +5329,19 @@ class TradeTrackerLoopTest {
     @Test
     fun writes_proceed_when_the_session_owner_cannot_be_read() = runTest {
         val creator = FakeSteamOfferCreator()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+                linkedSteamId = matchingSteamId,
+            ),
+        )
         val result = loop(
+            marketplace = mp,
             creator = creator,
+            directivesEnabled = true,
             sessionRefresher = FakeSteamSessionRefresher(stateFailsWith = RuntimeException("cookie store gone")),
-        ).createTrade(DirectiveId("dir-ft"), DealId("deal-ft"), draft(), linkedSteamId = matchingSteamId)
+        ).awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
 
         assertIs<CreateOfferResult.NeedsConfirmation>(result)
         assertEquals(1, creator.created.size)
@@ -5356,11 +5351,18 @@ class TradeTrackerLoopTest {
     @Test
     fun a_claim_is_released_once_its_deal_leaves_active_tracking() = runTest {
         val claims = PersistedDealWriteClaimStore()
-        val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 300))
-        val l = loop(marketplace = mp, creator = FakeSteamOfferCreator(), claims = claims)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                activeTracking = listOf(tracked("deal-1", "offer-created")),
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+            ),
+        )
+        val l = loop(marketplace = mp, creator = FakeSteamOfferCreator(), claims = claims, directivesEnabled = true)
+        l.runOnce()
         assertEquals(1, claims.all().size, "precondition: the completed create holds a claim")
 
+        mp.heartbeatResponse = HeartbeatResponse(ttlSeconds = 300)
         l.forceHeartbeatNow()
         l.runOnce() // heartbeat reports no active_tracking → the deal is done or gone
         assertTrue(claims.all().isEmpty(), "a deal the backend no longer watches needs no guard")
@@ -5371,19 +5373,17 @@ class TradeTrackerLoopTest {
     fun a_claim_survives_a_heartbeat_that_still_reports_the_created_offer() = runTest {
         val claims = PersistedDealWriteClaimStore()
         val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(
-                activeTracking = listOf(tracked("deal-ft", "offer-created")),
-                ttlSeconds = 300,
-            ),
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 300),
         )
         val creator = FakeSteamOfferCreator()
-        val l = loop(marketplace = mp, creator = creator, claims = claims)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        val l = loop(marketplace = mp, creator = creator, claims = claims, directivesEnabled = true)
+        l.runOnce()
+        mp.heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked("deal-1", "offer-created")), ttlSeconds = 300)
         l.forceHeartbeatNow()
         l.runOnce()
 
         assertEquals(1, claims.all().size)
-        assertIs<CreateOfferResult.AlreadyCreated>(l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft()))
+        assertIs<CreateOfferResult.AlreadyCreated>(l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this))
         assertEquals(1, creator.created.size)
     }
 
@@ -5534,39 +5534,35 @@ class TradeTrackerLoopTest {
         val creator = FakeSteamOfferCreator()
         val reader = FakeSteamReadClient()
         val observer = RecordingEventObserver()
-        val l = loop(creator = creator, reader = reader, eventObserver = observer)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
+        )
+        val l = loop(marketplace = mp, creator = creator, reader = reader, eventObserver = observer, directivesEnabled = true)
+        l.runOnce()
 
         reader.offerStatusesThrows = true
-        val result = l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-2")), ttlSeconds = 300)
+        val result = l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
 
         assertEquals(1, creator.created.size)
         assertEquals(OfferId("offer-created"), assertIs<CreateOfferResult.AlreadyCreated>(result).offerId)
         assertTrue(observer.events.any { it is LifecycleEvent.SteamReadFailed })
     }
 
-    /** The host fast path carries the same check: a dead offer is not what the FE should render. */
-    @Test
-    fun create_trade_for_a_deal_whose_offer_died_creates_a_new_offer() = runTest {
-        val creator = FakeSteamOfferCreator()
-        val reader = FakeSteamReadClient()
-        val l = loop(creator = creator, reader = reader)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
-
-        reader.offers = mapOf(OfferId("offer-created") to 10)
-        val result = l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
-
-        assertEquals(2, creator.created.size)
-        assertIs<CreateOfferResult.NeedsConfirmation>(result)
-    }
-
     /** Two different deals must never block each other — the key is (deal, action), not the action alone. */
     @Test
     fun creates_for_different_deals_are_independent() = runTest {
         val creator = FakeSteamOfferCreator()
-        val l = loop(creator = creator)
-        assertIs<CreateOfferResult.NeedsConfirmation>(l.createTrade(DirectiveId("dir-1"), DealId("deal-a"), draft()))
-        assertIs<CreateOfferResult.NeedsConfirmation>(l.createTrade(DirectiveId("dir-2"), DealId("deal-b"), draft("asset-2")))
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(
+                    createDirective(id = "dir-1", dealId = "deal-a"),
+                    createDirective(id = "dir-2", dealId = "deal-b", assetId = "asset-2"),
+                ),
+                ttlSeconds = 300,
+            ),
+        )
+        loop(marketplace = mp, creator = creator, directivesEnabled = true).runOnce()
         assertEquals(2, creator.created.size)
     }
 
@@ -5576,10 +5572,11 @@ class TradeTrackerLoopTest {
         val claims = PersistedDealWriteClaimStore()
         val canceller = FakeSteamOfferCanceller()
         val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective(dealId = "deal-ft")), ttlSeconds = 300),
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective()), ttlSeconds = 300),
         )
         val l = loop(marketplace = mp, canceller = canceller, claims = claims, directivesEnabled = true)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        l.runOnce()
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective()), ttlSeconds = 300)
         l.forceHeartbeatNow()
         l.runOnce()
         assertEquals(1, canceller.cancelledOffers.size, "the cancel write is keyed separately from the create")
@@ -5611,14 +5608,16 @@ class TradeTrackerLoopTest {
         val claims = PersistedDealWriteClaimStore()
         val creator = FakeSteamOfferCreator()
         val mp = FakeMarketplaceClient(
-            heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective(dealId = "deal-ft")), ttlSeconds = 300),
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-1")), ttlSeconds = 300),
         )
         val l = loop(marketplace = mp, creator = creator, canceller = FakeSteamOfferCanceller(), claims = claims, directivesEnabled = true)
-        l.createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        l.runOnce()
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(cancelDirective()), ttlSeconds = 300)
         l.forceHeartbeatNow()
         l.runOnce() // the cancel lands → the created offer is gone
 
-        assertIs<CreateOfferResult.NeedsConfirmation>(l.createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft()))
+        mp.heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = "dir-2")), ttlSeconds = 300)
+        assertIs<CreateOfferResult.NeedsConfirmation>(l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this))
         assertEquals(2, creator.created.size, "a re-create after a cancel is not a duplicate")
     }
 
@@ -5627,13 +5626,20 @@ class TradeTrackerLoopTest {
     fun a_claim_survives_a_respawn_over_the_same_storage() = runTest {
         val storage = InMemoryDeviceKeyValueStore()
         val creator = FakeSteamOfferCreator()
-        loop(creator = creator, claims = PersistedDealWriteClaimStore(storage))
-            .createTrade(DirectiveId("dir-1"), DealId("deal-ft"), draft())
+        fun lease(id: String) = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(directives = listOf(createDirective(id = id)), ttlSeconds = 300),
+        )
+        loop(marketplace = lease("dir-1"), creator = creator, claims = PersistedDealWriteClaimStore(storage), directivesEnabled = true)
+            .runOnce()
         assertEquals(1, creator.created.size)
 
         val respawnedCreator = FakeSteamOfferCreator()
-        val result = loop(creator = respawnedCreator, claims = PersistedDealWriteClaimStore(storage))
-            .createTrade(DirectiveId("dir-2"), DealId("deal-ft"), draft())
+        val result = loop(
+            marketplace = lease("dir-2"),
+            creator = respawnedCreator,
+            claims = PersistedDealWriteClaimStore(storage),
+            directivesEnabled = true,
+        ).awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
         assertTrue(respawnedCreator.created.isEmpty(), "the restored claim still blocks the duplicate")
         assertEquals(OfferId("offer-created"), assertIs<CreateOfferResult.AlreadyCreated>(result).offerId)
     }
@@ -6074,10 +6080,17 @@ class TradeTrackerLoopTest {
     }
 
     @Test
-    fun with_unsent_creates_unreported_a_host_create_on_another_accounts_session_is_not_reported() = runTest {
-        val mp = FakeMarketplaceClient()
-        val result = loop(marketplace = mp, sessionRefresher = wrongAccountCookie(), reportUnsentCreates = false)
-            .createTrade(DirectiveId("dir-ft"), DealId("deal-ft"), draft(), linkedSteamId = matchingSteamId)
+    fun with_unsent_creates_unreported_a_create_on_another_accounts_session_is_not_reported() = runTest {
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(
+                directives = listOf(createDirective()),
+                ttlSeconds = 300,
+                linkedSteamId = matchingSteamId,
+            ),
+        )
+        val result = loop(marketplace = mp, sessionRefresher = wrongAccountCookie(), reportUnsentCreates = false, directivesEnabled = true)
+            .awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        testScheduler.advanceUntilIdle() // let the cycle finish, or "nothing reported" proves nothing
 
         assertIs<CreateOfferResult.AccountMismatch>(result)
         assertTrue(mp.directiveOutcomes.isEmpty(), "nothing reached Steam, so nothing is reported")
@@ -6326,28 +6339,5 @@ class TradeTrackerLoopTest {
         assertEquals(UNANSWERED_CREATE_UNSETTLED to "deal-1", dropped.reason to dropped.dealId)
         val claim = claims.all().single()
         assertEquals(ClaimPhase.IN_FLIGHT to null, claim.phase to claim.unanswered, "it guards the deal until its TTL")
-    }
-
-    @Test
-    fun a_host_create_steam_did_not_answer_is_settled_by_the_loop() = runTest {
-        val clock = FakeClock()
-        val reader = FakeSteamReadClient()
-        val mp = FakeMarketplaceClient(HeartbeatResponse(activeTracking = listOf(tracked(role = DealRole.SELLER)), ttlSeconds = 60))
-        val l = loop(
-            marketplace = mp,
-            creator = FakeSteamOfferCreator(result = unanswered),
-            reader = reader,
-            clock = clock,
-            directivesEnabled = true,
-            unansweredCreateGrace = 2.minutes,
-        )
-        val result = l.createTrade(DirectiveId("dir-ft"), DealId("deal-1"), draft(), linkedSteamId = matchingSteamId)
-        assertIs<CreateOfferResult.Failed>(result)
-        assertTrue(mp.directiveOutcomes.isEmpty())
-
-        reader.sentOffers = listOf(sentOffer(createdAt = clock.now()))
-        clock.advance(60.seconds)
-        l.runOnce()
-        assertEquals(DirectiveId("dir-ft") to OfferId("offer-77"), mp.directiveOutcomes.single().let { it.directiveId to it.steamOfferId })
     }
 }

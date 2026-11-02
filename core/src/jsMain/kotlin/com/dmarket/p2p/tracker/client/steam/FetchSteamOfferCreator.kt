@@ -60,8 +60,8 @@ class FetchSteamOfferCreator(
 
     /**
      * Serializes concurrent creates: the anti-CSRF rewrite uses a single fixed [ANTI_CSRF_RULE_ID], so
-     * two overlapping `createOffer` calls (e.g. an FE-triggered `createTrade` interleaving with a
-     * directive-driven `runCreate` at a suspension point on the single-threaded worker) would clobber
+     * two overlapping `createOffer` calls (two partners' create chains, which a cycle runs concurrently,
+     * interleaving at a suspension point on the single-threaded worker) would clobber
      * each other's per-trade `Referer` and one's teardown would drop the rule mid-flight for the other →
      * Steam `403`. Creates are rare, so serializing them is free and correct.
      */

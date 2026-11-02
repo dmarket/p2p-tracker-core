@@ -99,8 +99,10 @@ import com.dmarket.p2p.tracker.port.steam.SteamNotificationReader
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -111,6 +113,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -127,6 +131,12 @@ data class TickOutcome(val directivesExecuted: Int = 0, val reportsSent: Int = 0
 /** Reported outcome error for a create blocked by the wrong-account guard (releases the backend lease). */
 private const val ACCOUNT_MISMATCH_ERROR =
     "steam account mismatch: the DMarket-linked Steam account differs from the authenticated Steam session"
+
+/**
+ * Why [TradeTrackerLoop.awaitDirectiveOutcome] has no create to answer with: the forced heartbeat leased no
+ * `create_offer` for the deal and this device holds no claim for one.
+ */
+private const val NO_CREATE_DIRECTIVE_ERROR = "no create_offer directive for this deal in the forced heartbeat"
 
 /** Reported outcome error for a write the deal-keyed claim guard suppressed (defensive; see [DealWriteGuard]). */
 private const val DUPLICATE_WRITE_ERROR = "duplicate write suppressed: this device already performed this write for the deal"
@@ -409,136 +419,73 @@ class TradeTrackerLoop(
     }
 
     /**
-     * Create the Steam trade offer for a committed deal — the FE "create trade" trigger, routed here by
-     * the debug harness when it receives a validated `window.postMessage`. POSTs `…/tradeoffer/new/send`
-     * and stops at NeedsConfirmation (the user confirms on the official Steam app; the plugin never
-     * confirms). The device-only credential stays inside the loop and never crosses any boundary. Returns
-     * the [CreateOfferResult] so the caller can surface the created offer id.
+     * The page's "create trade" trigger, answered from the backend's own `create_offer` directive for [dealId].
+     * Forces one heartbeat ([forceHeartbeatNow]) on [cycleScope] and returns what the directive path did with the
+     * deal's `create_offer` in that cycle.
      *
-     * The FE supplies the leased `directive_id` **and** the deal's [dealId] (the DMarket deal key, not
-     * the Steam offer id) — the `/trade-actions` outcome report requires `deal_id`; the backend rejects
-     * it otherwise and the directive lease stays held until its TTL expires.
+     * Nothing the caller could supply reaches Steam, because nothing is taken from the caller but the deal id: the
+     * counterparty, the items and the trade token come from the leased directive, the account binding from the
+     * heartbeat's `linkedSteamId`, and every guard of [runCreate] applies unchanged. This is a way to wait for the
+     * one write surface there is, not a second one. It replaced a host entry that built the offer from the page's
+     * own fields, which let a script on the page pick the counterparty.
+     *
+     * First match wins:
+     * - the deal's directive ran in a cycle while this call waited (or was refused, deferred, or suppressed as a
+     *   duplicate) → that result;
+     * - the forced cycle ended without one → [settleWithoutDirective];
+     * - [timeout] elapsed first → [CreateOfferResult.CreateInFlight]. The cycle is not cancelled, so the create
+     *   can still land, and a later call answers with it from the deal's claim.
+     *
+     * Concurrent calls for one deal share one wait and force one cycle.
      */
-    suspend fun createTrade(
-        directiveId: DirectiveId,
-        dealId: DealId?,
-        draft: TradeDraft,
-        linkedSteamId: SteamId? = null,
-    ): CreateOfferResult {
-        // The FE handed us the backend's create_offer directive_id out-of-band (no heartbeat wait), so the
-        // extension itself registers the outcome (steam_offer_id + status) with the backend on /trade-actions.
-        val directive = Directive(
-            directiveId = directiveId,
-            action = DirectiveAction.CREATE_OFFER,
-            dealId = dealId,
-            partnerSteamId = draft.partner,
-            assetIds = draft.assetsToGive,
-            tradeToken = draft.tradeToken,
-        )
-        if (!config.steamWrites) {
-            emitDropped(directive, OFFER_WRITES_DISABLED)
-            return CreateOfferResult.Failed(OFFER_WRITES_DISABLED)
-        }
-        val credential = credentials.current()
-            ?: return CreateOfferResult.Failed("no Steam credential")
-                .also {
-                    emit(LifecycleEvent.DirectiveExecuted("create_offer", "FAILED", dealId = dealId?.value, error = "no Steam credential"))
-                }
-        // Wrong-account guard: the FE tells us which Steam id the DMarket account is linked to. If it
-        // disagrees with the token we hold — or the browser session the write would ride belongs to
-        // another account ([accountAllowsWrite] axis 2) — never write to Steam: notify, report FAILED to
-        // release the lease, and return a distinguishable AccountMismatch so the FE shows "log into the
-        // right account".
-        //
-        // Fail CLOSED: the host argument is optional, so a caller that simply omits it must not thereby
-        // earn a Steam write on a session the last heartbeat already proved is wrong-account. Fall back
-        // to the loop's own verdict ([linkedSteamIdMismatch]) and to the linked id that heartbeat saw,
-        // so the guard holds regardless of what the host passes.
-        val expected = linkedSteamId ?: lastLinkedSteamId
-        // Evaluated before the `||` so its own event always fires; the sticky is the extra fail-closed leg.
-        val allowed = accountAllowsWrite(expected, credential.subjectSteamId, DirectiveAction.CREATE_OFFER.wireName)
-        if (!allowed || linkedSteamIdMismatch) {
-            if (config.reportUnsentCreates) {
-                reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = ACCOUNT_MISMATCH_ERROR))
-                emit(
-                    LifecycleEvent.DirectiveExecuted(
-                        "create_offer",
-                        DirectiveStatus.FAILED.name,
-                        dealId = dealId?.value,
-                        error = ACCOUNT_MISMATCH_ERROR,
-                    ),
-                )
+    suspend fun awaitDirectiveOutcome(dealId: DealId, timeout: Duration, cycleScope: CoroutineScope): CreateOfferResult {
+        val (waiter, owner) = createWaitersLock.withLock {
+            // A completed waiter belongs to a cycle that is still finishing; a new call asks again rather than
+            // being handed that cycle's answer.
+            val existing = createWaiters[dealId]?.takeUnless { it.isCompleted }
+            if (existing != null) {
+                existing to false
             } else {
-                emit(LifecycleEvent.DirectiveDropped(DirectiveAction.CREATE_OFFER.wireName, directiveId.value, ACCOUNT_MISMATCH_ERROR))
+                CompletableDeferred<CreateOfferResult>().also { createWaiters[dealId] = it } to true
             }
-            return CreateOfferResult.AccountMismatch(expected ?: credential.subjectSteamId, credential.subjectSteamId)
         }
-        // Role guard. This path needs it most: the host synthesises the directive itself, so the backend's
-        // decision not to lease a write for a deal we are BUYING never reaches it — the last heartbeat's
-        // tracking list is the only thing that can say so. Unknown (no heartbeat yet, deal not listed) allows
-        // the write: the FE's create trigger must keep working on a cold worker.
-        if (!roleAllowsWrite(lastActiveTracking, directive)) return CreateOfferResult.Failed(BUYER_ROLE_WRITE_ERROR)
-        // Create-surface back-pressure. Reported to nobody and claimed against nothing: no write is attempted,
-        // so the caller is free to try again once the cooldown elapses.
-        throttledCreate(draft.partner)?.let { throttled ->
-            emitDeferred(directiveId, dealId, throttled.deferReason(), throttled.retryAfterSeconds)
-            return throttled
-        }
-        // Deal-keyed duplicate guard. THE reason it is here and not only on the directive path: this entry
-        // point is called straight from the host (an FE relay), outside [cycleMutex], with whatever
-        // directive_id the caller happens to hold — so a host that fires the same request three times, or
-        // three times under three fresh ids, would otherwise produce three live Steam offers.
-        return withDealClaim(
-            dealId = dealId,
-            action = DirectiveAction.CREATE_OFFER,
-            directiveId = directiveId,
-            onDuplicate = { verdict -> duplicateCreateResult(verdict, directiveId) },
-            credential = credential,
-        ) {
-            val result = runCatching { offerCreator.createOffer(credential, draft) }
-                .getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }
-                .diagnosed()
-            // Feed the surface's own verdict back before anything else: a Steam refusal here is the same
-            // signal as one on the directive path, and the next caller (either path) must see the cooldown.
-            recordCreateResult(draft.partner, result)
-            holdIfUnanswered(result, directive)?.let { return@withDealClaim result to ClaimEnd.Held(it) }
-            val wroteToSteam = result is CreateOfferResult.NeedsConfirmation || result is CreateOfferResult.Created
-            val outcome = directive.createOutcome(result)
-            // Mark handled the moment the Steam write succeeds so a later heartbeat re-lease of this
-            // directive_id can never re-execute the create (duplicate live Steam offer); the persisted
-            // outcome lets the heartbeat path re-send the report if the one below fails.
-            if (wroteToSteam) markHandled(outcome)
-            // A freshly-created offer sits at CreatedNeedsConfirmation waiting for the seller's mobile
-            // confirmation — a decisive 9 → 2 transition is imminent. Open the expedited window and re-arm
-            // the wake now (this is an out-of-band FE trigger, not inside a cycle), so we don't idle on a
-            // stale ~3-min alarm before the first re-check. Mirrors deliverPush's re-arm.
-            if (result is CreateOfferResult.NeedsConfirmation) {
-                armExpedited()
-                runCatching { scheduler.schedule(nextWakeDelay()) }
+        if (owner) {
+            forceHeartbeatNow()
+            cycleScope.launch {
+                try {
+                    runOnceReporting()
+                    runCatching { scheduler.schedule(nextWakeDelay()) }
+                    if (!waiter.isCompleted) waiter.complete(settleWithoutDirective(dealId))
+                } finally {
+                    withContext(NonCancellable) {
+                        createWaitersLock.withLock { if (createWaiters[dealId] === waiter) createWaiters.remove(dealId) }
+                    }
+                    // A cycle torn down mid-way (stopTracker) said nothing about the create either way.
+                    waiter.complete(CreateOfferResult.CreateInFlight(dealId))
+                }
             }
-            val accepted = reportOutcome(outcome)
-            if (wroteToSteam && accepted) pruneOutcome(directiveId)
-            emitExecuted(outcome)
-            // Only a real Steam write completes the claim; a FAILED create wrote nothing, so releasing it
-            // leaves a genuine retry (a re-lease, or the user pressing the button again) free to proceed.
-            result to outcome.takeIf { wroteToSteam }.claimEnd()
         }
+        return withTimeoutOrNull(timeout) { waiter.await() } ?: CreateOfferResult.CreateInFlight(dealId)
     }
 
     /**
-     * The [CreateOfferResult] for a create suppressed by the claim guard. A completed claim replays the
-     * offer it created — so a duplicate request renders the real offer instead of an error — and re-reports
-     * that outcome under the *requesting* [directiveId], which releases the (otherwise dangling) lease the
-     * caller was holding. An in-flight claim has nothing to replay yet.
+     * The answer for a forced cycle that ran no `create_offer` for [dealId]. A wrong-account verdict blocks every
+     * Steam write before directives run, so it is the answer when set. Otherwise the deal's claim says whether this
+     * device already created the offer (the backend no longer leases a create for it, so the page's retry gets that
+     * offer back as a duplicate) or is still creating it. With neither, the backend leased nothing for the deal.
      */
-    private suspend fun duplicateCreateResult(verdict: ClaimVerdict.Duplicate, directiveId: DirectiveId): CreateOfferResult {
-        val dealId = verdict.claim.dealId
-        if (verdict !is ClaimVerdict.AlreadyCompleted) return CreateOfferResult.CreateInFlight(dealId)
-        val stored = resendClaimedOutcome(verdict.claim, directiveId)
-        // A COMPLETED create claim always carries the offer it created (only a real Steam write completes
-        // one), so the fallback is unreachable — kept so a corrupt restored row degrades to "wait for the
-        // first create" rather than to a second Steam write.
-        return stored?.steamOfferId?.let(CreateOfferResult::AlreadyCreated) ?: CreateOfferResult.CreateInFlight(dealId)
+    private suspend fun settleWithoutDirective(dealId: DealId): CreateOfferResult {
+        mismatchTokenSteamId?.let { token -> return CreateOfferResult.AccountMismatch(lastLinkedSteamId ?: token, token) }
+        val claim = claims.all().firstOrNull { it.dealId == dealId && it.action == DirectiveAction.CREATE_OFFER }
+        claim?.outcome?.steamOfferId?.let { return CreateOfferResult.AlreadyCreated(it) }
+        if (claim?.phase == ClaimPhase.IN_FLIGHT) return CreateOfferResult.CreateInFlight(dealId)
+        return CreateOfferResult.Failed(NO_CREATE_DIRECTIVE_ERROR)
+    }
+
+    /** Hands [result] to an [awaitDirectiveOutcome] call waiting on [directive]'s deal, if there is one. */
+    private suspend fun resolveCreateWaiter(directive: Directive, result: CreateOfferResult) {
+        val dealId = directive.dealId ?: return
+        createWaitersLock.withLock { createWaiters[dealId] }?.complete(result)
     }
 
     /**
@@ -632,12 +579,10 @@ class TradeTrackerLoop(
 
     /**
      * Runs a non-idempotent Steam write for [dealId] behind the deal-keyed claim guard — the single choke
-     * point in front of both write surfaces, shared by the host fast path ([createTrade]) and the leased
-     * directive path ([runCreate] / [runCancel]).
+     * point in front of both write surfaces of the directive path ([runCreate] / [runCancel]).
      *
-     * The claim take is atomic in the store, so this is also what serialises **concurrent** callers: they
-     * matter on every target (an FE relay firing twice on the web, genuinely parallel threads on mobile),
-     * and [cycleMutex] does not cover the host entry points.
+     * The claim take is atomic in the store, so this is also what serialises **concurrent** callers:
+     * concurrent create chains in one cycle, and genuinely parallel threads on mobile.
      *
      * [write] returns its own result plus how the claim ends ([ClaimEnd]): completed with the outcome of a **real
      * Steam write**, released when nothing was written (a rejected create) so a genuine retry is free to proceed, or
@@ -738,16 +683,15 @@ class TradeTrackerLoop(
     }
 
     /**
-     * Pre-write wrong-account guard in front of **both** Steam write surfaces, at all three write sites
-     * ([runCreate] and [runCancel] on the directive path, [createTrade] on the FE fast path). Returns
+     * Pre-write wrong-account guard in front of **both** Steam write surfaces ([runCreate] and [runCancel]). Returns
      * `true` when the write may proceed; otherwise it emits the matching event and returns `false` so the
      * caller aborts before any Steam request. [kind] names the write for that event.
      *
      * It checks **both** Steam identity axes, because they authenticate differently and either one being
      * the wrong account is enough to make the write land on the wrong account:
      *
-     * 1. **The read/DMarket axis** — [expected] (the DMarket-linked Steam id, from the heartbeat or an FE
-     *    `postMessage`) against [token], the held credential's `subjectSteamId`. Steam *reads* pass that
+     * 1. **The read/DMarket axis** — [expected] (the DMarket-linked Steam id, from the heartbeat; never from a
+     *    host or a page) against [token], the held credential's `subjectSteamId`. Steam *reads* pass that
      *    credential as an `access_token`, so this is what binds the account we report on.
      * 2. **The write axis** — the browser's `steamLoginSecure` cookie session against [token]. The two
      *    writes POST with the ambient cookie session and never use the credential they are handed, so axis
@@ -778,9 +722,9 @@ class TradeTrackerLoop(
     }
 
     /**
-     * The buyer-role write guard shared by all three write entry points ([createTrade], [runCreate],
-     * [runCancel]): `true` when [DealRoleBinding] allows the write, otherwise it reports the refusal and
-     * returns `false`.
+     * The buyer-role write guard shared by both write entry points ([runCreate], [runCancel]): `true` when
+     * [DealRoleBinding] allows the write, otherwise it reports the refusal and returns `false`. [activeTracking]
+     * is the tracking list of the heartbeat that leased the directive, so there is no "no heartbeat yet" case.
      *
      * The refusal is **reported** (FAILED) rather than silently dropped, on the wrong-account guard's
      * reasoning: an unanswered directive keeps the backend's lease until its TTL and is then re-leased
@@ -789,7 +733,7 @@ class TradeTrackerLoop(
      * write proceed. [LifecycleEvent.DirectiveDropped] carries the why (the counterpart of
      * [LifecycleEvent.LinkedSteamIdMismatch] on the account axis).
      */
-    private suspend fun roleAllowsWrite(activeTracking: List<TrackedDeal>?, directive: Directive): Boolean {
+    private suspend fun roleAllowsWrite(activeTracking: List<TrackedDeal>, directive: Directive): Boolean {
         if (DealRoleBinding.allowsWrite(activeTracking, directive.dealId)) return true
         // A create that never reached Steam is not answered FAILED where that would fault the seller.
         val report = directive.action != DirectiveAction.CREATE_OFFER || config.reportUnsentCreates
@@ -808,15 +752,10 @@ class TradeTrackerLoop(
     }
 
     /**
-     * The create-surface back-pressure gate, in front of **both** create entry points ([createTrade] and the
-     * leased [runCreate]). Returns `null` when the write may proceed, or the [CreateOfferResult.Throttled] to
+     * The create-surface back-pressure gate, in front of every create ([runCreate], through its chain). Returns `null` when the write may proceed, or the [CreateOfferResult.Throttled] to
      * answer with — Steam already refused a create for this partner (or the whole surface) recently, and
      * pushing again before the cooldown elapses is what turns a per-partner quota refusal into Steam
-     * refusing the surface outright.
-     *
-     * The host fast path needs this as much as the directive path does: it runs outside [cycleMutex] with a
-     * directive_id the caller happens to hold, so without it an FE relay could walk straight past a standing
-     * cooldown. Nothing is reported — no write was attempted, so there is no outcome (see
+     * refusing the surface outright. Nothing is reported — no write was attempted, so there is no outcome (see
      * [emitDeferredCreate]).
      */
     private suspend fun throttledCreate(partner: SteamId): CreateOfferResult.Throttled? {
@@ -915,6 +854,7 @@ class TradeTrackerLoop(
      */
     private suspend fun emitDeferredCreate(directive: Directive, reason: String, retryAfterSeconds: Int?) {
         emitDeferred(directive.directiveId, directive.dealId, reason, retryAfterSeconds)
+        resolveCreateWaiter(directive, directive.partnerSteamId?.let { throttledCreate(it) } ?: CreateOfferResult.Failed(reason))
         if (!config.tunables.steamWrites.reportThrottledWrites || !config.reportUnsentCreates) return
         reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = "$THROTTLED_WRITE_ERROR: $reason"))
     }
@@ -938,7 +878,7 @@ class TradeTrackerLoop(
 
     // Scheduling state below (lastRunAt / nextHeartbeatAt / lastActiveTracking / expeditedUntil) is
     // mutated inside cycleMutex by runOnce, but also touched by the loop's own entry points
-    // (createTrade → armExpedited, forceHeartbeatNow, deliverPush → nextWakeDelay). This is safe under
+    // (forceHeartbeatNow, awaitDirectiveOutcome, deliverPush → nextWakeDelay). This is safe under
     // the library's contract that a single driver thread advances the loop — true on the JS worker (the
     // only live target). A future multithreaded (mobile) driver must serialize these entry points
     // (guard them with cycleMutex or an atomic) before relying on this state across threads.
@@ -967,6 +907,10 @@ class TradeTrackerLoop(
      * state — it idles until the due tick re-fetches the list (see [CyclePolicy]).
      */
     private var lastActiveTracking: List<TrackedDeal>? = null
+
+    /** Calls to [awaitDirectiveOutcome] waiting on a deal's `create_offer`, keyed by deal. Guarded by [createWaitersLock]. */
+    private val createWaiters = mutableMapOf<DealId, CompletableDeferred<CreateOfferResult>>()
+    private val createWaitersLock = Mutex()
 
     /**
      * While set to a future instant, the deal-watch runs at the [PollClass.ExpeditedOffer] cadence. Armed
@@ -1232,10 +1176,9 @@ class TradeTrackerLoop(
     }
 
     /**
-     * The `linkedSteamId` the last heartbeat reported, kept so the host-facing [createTrade] fast path can
-     * fall back to it when the caller omits its own argument — the guard there must not weaken just
-     * because a host passed nothing. `null` until the first heartbeat, or when the backend supplies no
-     * binding (treated as unknown, never a mismatch — see [AccountBinding]).
+     * The `linkedSteamId` the last heartbeat reported — the only source of the account binding; no host or page
+     * value is ever consulted. `null` until the first heartbeat, or when the backend supplies no binding (treated
+     * as unknown, never a mismatch — see [AccountBinding]).
      */
     private var lastLinkedSteamId: SteamId? = null
 
@@ -1843,6 +1786,7 @@ class TradeTrackerLoop(
         var done = 0
         if (!config.steamWrites) {
             (plan.creates + plan.cancels).forEach { emitDropped(it, OFFER_WRITES_DISABLED) }
+            plan.creates.forEach { resolveCreateWaiter(it, CreateOfferResult.Failed(OFFER_WRITES_DISABLED)) }
             plan.inventoryScans.forEach { if (runInventory(it, credential)) done++ }
             return done
         }
@@ -2171,6 +2115,10 @@ class TradeTrackerLoop(
         // markHandled — nothing was written, so a re-lease is simply re-blocked (safely idempotent).
         // It also ends the chain: the session is wrong for every deal, not just this one.
         if (!accountAllowsWrite(linkedSteamId, credential.subjectSteamId, directive.action.wireName)) {
+            resolveCreateWaiter(
+                directive,
+                CreateOfferResult.AccountMismatch(linkedSteamId ?: credential.subjectSteamId, credential.subjectSteamId),
+            )
             if (!config.reportUnsentCreates) {
                 emit(LifecycleEvent.DirectiveDropped(directive.action.wireName, directive.directiveId.value, ACCOUNT_MISMATCH_ERROR))
                 return WriteAttempt(stopChain = true, reason = ACCOUNT_MISMATCH_ERROR)
@@ -2192,7 +2140,10 @@ class TradeTrackerLoop(
         // Role guard, on the same terms: writes belong to the seller alone, so a deal this heartbeat reports
         // us as the BUYER on can never earn one, whatever the backend leased. Unlike the account guard this is
         // per-deal, so the chain continues — the next deal for this partner may well be ours to write.
-        if (!roleAllowsWrite(activeTracking, directive)) return WriteAttempt.SKIPPED
+        if (!roleAllowsWrite(activeTracking, directive)) {
+            resolveCreateWaiter(directive, CreateOfferResult.Failed(BUYER_ROLE_WRITE_ERROR))
+            return WriteAttempt.SKIPPED
+        }
         // Deal-keyed duplicate guard: directive-id single-flight cannot see a *fresh* directive_id leased
         // for a deal whose offer this device already created (a lost /trade-actions report, or a backend
         // retry), and Steam would happily create a second live offer for it.
@@ -2204,7 +2155,14 @@ class TradeTrackerLoop(
                 // A suppressed duplicate wrote nothing and says nothing about Steam's appetite — carry on. Its
                 // replay reports itself (it restates an *earlier* write's outcome, not this cycle's), so it is
                 // already tallied and must not join the batch.
-                WriteAttempt(countedOutOfBand = resendClaimedOutcome(verdict.claim, directive.directiveId) != null)
+                val replayed = resendClaimedOutcome(verdict.claim, directive.directiveId)
+                resolveCreateWaiter(
+                    directive,
+                    replayed?.steamOfferId?.let(
+                        CreateOfferResult::AlreadyCreated,
+                    ) ?: CreateOfferResult.CreateInFlight(verdict.claim.dealId),
+                )
+                WriteAttempt(countedOutOfBand = replayed != null)
             },
             credential = credential,
         ) {
@@ -2220,6 +2178,7 @@ class TradeTrackerLoop(
             // concurrently and re-gate on every step, so the sooner a refusal lands in the throttle the fewer
             // doomed creates they attempt.
             recordCreateResult(partner, result)
+            resolveCreateWaiter(directive, result)
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {
                 val error = (result as CreateOfferResult.Failed).error

@@ -30,7 +30,6 @@ import com.dmarket.p2p.tracker.loop.TickOutcome
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
-import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
@@ -40,7 +39,6 @@ import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamSessionCookie
-import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
@@ -52,13 +50,13 @@ import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
-import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamInventoryReader
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionGateway
 import com.dmarket.p2p.tracker.runtime.TradeTrackerCore
+import com.dmarket.p2p.tracker.runtime.toOutcomeJson
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.promise
@@ -72,11 +70,12 @@ import kotlinx.serialization.json.putJsonArray
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.Promise
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * **Dev-only** JS surface for the Chrome debug console (`tools/debug-extension/`). Two surfaces:
  *  - the always-on **self-driving** session ([startDebugSession] → [DebugSessionHandle], with
- *    [createTradeInSession] / [getSessionLog]) — the primary E2E entry the service worker boots on;
+ *    [awaitCreateInSession] / [getSessionLog]) — the primary E2E entry the service worker boots on;
  *  - one-shot **diagnostic** probes on [DebugSession] (token scrape, session refresh, vault, raw Steam
  *    reads, heartbeat, each of the four C1 report requests — [DebugSession.reportTradeStatus],
  *    [DebugSession.reportDirective], [DebugSession.reportInventory], [DebugSession.submitProof] — and
@@ -647,94 +646,20 @@ class DebugSessionHandle internal constructor(private val driver: DebugDriver, p
     internal fun nudge() = driver.nudge()
 
     /**
-     * The FE "create trade" trigger: create the Steam offer against live Steam. Called by the SW when the
-     * dmarket.com content script relays a validated `window.postMessage`. @JsExport can't export suspend
-     * funs, so it bridges to a Promise.
+     * The FE "create trade" trigger: forces a heartbeat and answers with the outcome of the `create_offer`
+     * directive the backend leases for [dealId] (see [TradeTrackerLoop.awaitDirectiveOutcome]). Nothing from the
+     * page reaches Steam. Called by the SW when the dmarket.com content script relays a validated
+     * `window.postMessage`. @JsExport can't export suspend funs, so it bridges to a Promise.
      */
     @OptIn(DelicateCoroutinesApi::class)
-    internal fun createTrade(
-        directiveId: String,
-        dealId: String,
-        partnerSteamId: String,
-        assetIds: Array<String>,
-        tradeToken: String?,
-        linkedSteamId: String? = null,
-    ): Promise<String> = GlobalScope.promise {
-        if (directiveId.isBlank()) {
-            return@promise buildJsonObject {
-                put("ok", false)
-                put("error", "missing directive_id (FE must supply the backend's create_offer directive id)")
-            }.toString()
-        }
+    internal fun awaitCreate(dealId: String, timeoutMs: Int): Promise<String> = GlobalScope.promise {
         if (dealId.isBlank()) {
             return@promise buildJsonObject {
                 put("ok", false)
-                put("error", "missing deal_id (the /trade-actions outcome report requires it — the backend rejects without it)")
+                put("error", "missing deal_id")
             }.toString()
         }
-        val draft = TradeDraft(
-            partner = SteamId(partnerSteamId),
-            assetsToGive = assetIds.filter { it.isNotBlank() }.map(::AssetId),
-            tradeToken = tradeToken?.takeIf { it.isNotBlank() },
-        )
-        val result = driver.loop.createTrade(
-            DirectiveId(directiveId),
-            DealId(dealId),
-            draft,
-            linkedSteamId = linkedSteamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
-        )
-        // Heartbeat now so the loop picks up active_tracking for the new offer and starts watching Steam
-        // status (→ /trade-events), instead of waiting up to the next scheduled alarm.
-        driver.nudge()
-        buildJsonObject {
-            put(
-                "ok",
-                result is CreateOfferResult.NeedsConfirmation ||
-                    result is CreateOfferResult.Created ||
-                    result is CreateOfferResult.AlreadyCreated,
-            )
-            when (result) {
-                is CreateOfferResult.NeedsConfirmation -> {
-                    put("status", "needs_confirmation")
-                    put("steamOfferId", result.offerId.value)
-                }
-                is CreateOfferResult.Created -> {
-                    put("status", "created")
-                    put("steamOfferId", result.offerId.value)
-                }
-                is CreateOfferResult.Failed -> {
-                    put("status", "failed")
-                    put("error", result.error)
-                    // Mirrors the shipped facade (`runtime.createTrade`): the coded cause is what a host
-                    // branches on, `error` is Steam's free-form text kept for the console.
-                    put("cause", result.cause.name)
-                }
-                // Blocked before any Steam write: the DMarket-linked Steam account ≠ the logged-in session.
-                is CreateOfferResult.AccountMismatch -> {
-                    put("status", "account_mismatch")
-                    put("linkedSteamId", result.linkedSteamId.value)
-                    put("tokenSteamId", result.tokenSteamId.value)
-                }
-                // Suppressed duplicate: this device already created the offer for the deal — the first
-                // result is replayed instead of a second live Steam offer being written.
-                is CreateOfferResult.AlreadyCreated -> {
-                    put("status", "needs_confirmation")
-                    put("steamOfferId", result.offerId.value)
-                    put("duplicate", true)
-                }
-                // Suppressed duplicate that landed while the first create was still running.
-                is CreateOfferResult.CreateInFlight -> {
-                    put("status", "create_in_flight")
-                    put("duplicate", true)
-                }
-                // Deferred before any Steam write: the create surface is backing off after a Steam refusal.
-                is CreateOfferResult.Throttled -> {
-                    put("status", "throttled")
-                    put("scope", result.scope.name.lowercase())
-                    put("retryAfterSeconds", result.retryAfterSeconds)
-                }
-            }
-        }.toString()
+        driver.loop.awaitDirectiveOutcome(DealId(dealId), timeoutMs.milliseconds, GlobalScope).toOutcomeJson()
     }
 }
 
@@ -752,19 +677,12 @@ fun nudgeSession(handle: DebugSessionHandle) = handle.nudge()
 
 /**
  * The FE-triggered "create trade" entry — the SW calls this when the dmarket.com content script relays a
- * validated `window.postMessage`. Creates the Steam offer (against live Steam) and returns the outcome JSON.
+ * validated `window.postMessage`. Takes only the deal id: forces a heartbeat and returns the outcome JSON of the
+ * backend's `create_offer` directive for that deal.
  */
 @JsExport
-@Suppress("NON_EXPORTABLE_TYPE")
-fun createTradeInSession(
-    handle: DebugSessionHandle,
-    directiveId: String,
-    dealId: String,
-    partnerSteamId: String,
-    assetIds: Array<String>,
-    tradeToken: String? = null,
-    linkedSteamId: String? = null,
-): Promise<String> = handle.createTrade(directiveId, dealId, partnerSteamId, assetIds, tradeToken, linkedSteamId)
+fun awaitCreateInSession(handle: DebugSessionHandle, dealId: String, timeoutMs: Int): Promise<String> =
+    handle.awaitCreate(dealId, timeoutMs)
 
 /** Returns the in-memory session-log mirror as a JSON array string. */
 @JsExport

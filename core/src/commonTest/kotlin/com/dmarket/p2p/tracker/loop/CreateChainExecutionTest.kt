@@ -19,7 +19,6 @@ import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
-import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeCredentialVault
@@ -40,6 +39,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The per-partner `create_offer` chain flow: creates grouped by counterparty, one at a time within a
@@ -476,10 +476,10 @@ class CreateChainExecutionTest {
         assertEquals(3, mp.directiveOutcomes.size)
     }
 
-    // ---- host fast path -----------------------------------------------------------------------------
+    // ---- the page's create trigger ----------------------------------------------------------------
 
     @Test
-    fun the_host_create_path_is_throttled_too_and_reports_nothing() = runTest {
+    fun the_page_create_trigger_answers_throttled_for_a_parked_partner_and_reports_nothing() = runTest {
         val creator = FakeSteamOfferCreator(result = overQuota)
         val mp = FakeMarketplaceClient(
             heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = creates(alice, 1, "a")),
@@ -488,13 +488,11 @@ class CreateChainExecutionTest {
         loop.runOnce()
         val reportsAfterCycle = mp.directiveOutcomes.size
 
-        // The FE relay runs outside the cycle with whatever directive_id it holds — it must not walk past a
-        // standing cooldown, or the throttle would be trivially bypassable.
-        val result = loop.createTrade(
-            directiveId = DirectiveId("fe-1"),
-            dealId = DealId("deal-fe-1"),
-            draft = TradeDraft(alice, listOf(AssetId("asset-fe-1")), "trade-token"),
-        )
+        // The backend leases the next create for the same partner while the cooldown stands: the page waiting on
+        // it hears why nothing happened, and Steam is not pushed again.
+        mp.heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = creates(alice, 1, "fe"))
+        val result = loop.awaitDirectiveOutcome(DealId("deal-fe-1"), 30.seconds, this)
+        testScheduler.advanceUntilIdle() // let the cycle finish, or "nothing reported" proves nothing
 
         val throttled = assertIs<CreateOfferResult.Throttled>(result)
         assertTrue(throttled.retryAfterSeconds >= 1)

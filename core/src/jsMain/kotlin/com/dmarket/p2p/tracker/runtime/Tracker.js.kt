@@ -8,18 +8,13 @@ import com.dmarket.p2p.tracker.adapter.webext.WebExtAlarmsScheduler
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
-import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
-import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
-import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
-import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.model.toWireJson
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.host.Scheduler
-import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.wire.parsePushEnvelope
 import com.dmarket.p2p.tracker.wire.toSignalOrNull
 import kotlinx.coroutines.CoroutineScope
@@ -33,10 +28,11 @@ import kotlinx.serialization.json.put
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.Promise
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * The [TrackerHandle] returned by [startTracker]. Holds the loop + scope + alarm scheduler so the
- * free functions [stopTracker] / [deliverPush] / [createTrade] / [linkedSteamIdMismatch] can act on a
+ * free functions [stopTracker] / [deliverPush] / [awaitDirectiveOutcome] / [linkedSteamIdMismatch] can act on a
  * running tracker. JS stops it via [stopTracker] and feeds pushes via [deliverPush] (`@JsExport`
  * cannot surface methods that override a non-exported common interface, so these are free functions).
  */
@@ -121,131 +117,47 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
 }
 
 /**
- * FE fast-path "create trade" — creates the Steam offer for a committed deal against live Steam. The
- * **host owns the transport**: the extension's content script relays a validated `window.postMessage`
- * to its service worker, which calls this; mobile clients call it in-process. `@JsExport` cannot
- * surface `suspend` funs, so it bridges to a [Promise].
+ * The page's "create trade" trigger, answered from the backend's own `create_offer` directive. The host passes the
+ * deal id the page asked about and nothing else: this forces one heartbeat and resolves with the outcome of the
+ * `create_offer` directive that heartbeat leases for the deal (see [TradeTrackerLoop.awaitDirectiveOutcome]). The
+ * counterparty, the items and the trade token come from that directive and the account binding from the heartbeat,
+ * so no value a page could choose reaches Steam. `@JsExport` cannot surface `suspend` funs, so it bridges to a
+ * [Promise].
  *
- * Delegates to [TradeTrackerLoop.createTrade], which runs two guards **before any Steam write** — the
- * wrong-account check and the deal-keyed duplicate claim — and reports the outcome on `/trade-actions`.
- * The device-only Steam credential never crosses this boundary.
- *
- * **Calling this twice for one deal is safe.** The second call never reaches Steam: it replays the first
- * call's offer (`duplicate:true`), so a host that retries — or an FE that fires the request three times —
- * cannot produce more than one live trade offer per deal. Returns an outcome JSON string:
+ * **Calling this twice for one deal is safe.** Concurrent calls share one wait, and a later call for a deal whose
+ * offer this device already created answers with that offer (`duplicate:true`) instead of a second write.
+ * [timeoutMs] bounds the wait, not the cycle: on expiry the answer is `create_in_flight` and the cycle carries on.
+ * Returns an outcome JSON string:
  * - `{ ok:true,  status:"needs_confirmation", steamOfferId }` — POSTed, awaiting the user's mobile confirm.
  * - `{ ok:true,  status:"created",            steamOfferId }` — live without a confirm step (rare).
- * - `{ ok:true,  status:"needs_confirmation", steamOfferId, duplicate:true }` — suppressed duplicate; the
- *   offer this device already created for the deal.
- * - `{ ok:false, status:"create_in_flight",   duplicate:true }` — suppressed duplicate that arrived while
- *   the first create was still running; await that one's result rather than retrying.
- * - `{ ok:false, status:"failed",             error, cause }` — Steam rejected the create.
+ * - `{ ok:true,  status:"needs_confirmation", steamOfferId, duplicate:true }` — the offer this device already
+ *   created for the deal.
+ * - `{ ok:false, status:"create_in_flight",   duplicate:true }` — the create is still running (or [timeoutMs]
+ *   elapsed first); ask again rather than treating it as a failure.
+ * - `{ ok:false, status:"failed",             error, cause }` — Steam rejected the create, a guard refused it, or
+ *   the backend leased no `create_offer` for the deal (`cause:"OTHER"`).
  * - `{ ok:false, status:"throttled",          scope, retryAfterSeconds }` — deferred by this device's own
- *   back-pressure after an earlier refusal; nothing was sent to Steam, so it is safe to retry after the wait.
+ *   back-pressure after an earlier refusal; nothing was sent to Steam.
  * - `{ ok:false, status:"account_mismatch",   linkedSteamId, tokenSteamId }` — blocked before any write.
- * - `{ ok:false, error }` — a missing required argument (no create attempted).
+ * - `{ ok:false, error }` — a blank deal id (no cycle forced).
  *
- * **`cause` is the field to branch on for a failure, never `error`.** `error` is Steam's own free-form text,
- * kept for diagnostics; `cause` is a stable enum name from
- * [com.dmarket.p2p.tracker.policy.SteamCreateFailureCause] — `COUNTERPARTY_OFFER_LIMIT`,
- * `OUTGOING_OFFER_LIMIT`, `REQUEST_RATE_LIMITED`, `TRANSPORT`, `OTHER` — classified inside the lib so every
- * host reads one refusal the same way. Treat an unrecognised value as `OTHER`, so a core that grows a cause
- * cannot be rendered as something it is not.
+ * **`cause` is the field to branch on for a failure, never `error`.** `error` is free-form text kept for
+ * diagnostics; `cause` is a stable enum name from [com.dmarket.p2p.tracker.policy.SteamCreateFailureCause] —
+ * `COUNTERPARTY_OFFER_LIMIT`, `OUTGOING_OFFER_LIMIT`, `REQUEST_RATE_LIMITED`, `TRANSPORT`, `OTHER`. Treat an
+ * unrecognised value as `OTHER`.
  */
 @Suppress("NON_EXPORTABLE_TYPE")
 @JsExport
-fun createTrade(
-    handle: TrackerHandle,
-    directiveId: String,
-    dealId: String,
-    partnerSteamId: String,
-    assetIds: Array<String>,
-    tradeToken: String? = null,
-    linkedSteamId: String? = null,
-): Promise<String> {
+fun awaitDirectiveOutcome(handle: TrackerHandle, dealId: String, timeoutMs: Int): Promise<String> {
     val h = handle as JsTrackerHandle
     return h.scope.promise {
-        if (directiveId.isBlank()) {
-            return@promise buildJsonObject {
-                put("ok", false)
-                put("error", "missing directive_id (FE must supply the backend's create_offer directive id)")
-            }.toString()
-        }
         if (dealId.isBlank()) {
             return@promise buildJsonObject {
                 put("ok", false)
-                put("error", "missing deal_id (the /trade-actions outcome report requires it — the backend rejects without it)")
+                put("error", "missing deal_id")
             }.toString()
         }
-        val draft = TradeDraft(
-            partner = SteamId(partnerSteamId),
-            assetsToGive = assetIds.filter { it.isNotBlank() }.map(::AssetId),
-            tradeToken = tradeToken?.takeIf { it.isNotBlank() },
-        )
-        val result = h.loop.createTrade(
-            DirectiveId(directiveId),
-            DealId(dealId),
-            draft,
-            linkedSteamId = linkedSteamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
-        )
-        // Re-arm so the loop picks up the new offer's active_tracking on its next wake (loop.createTrade
-        // already opens the expedited window on NeedsConfirmation; this mirrors deliverPush's re-arm).
-        h.scheduler.schedule(h.loop.nextWakeDelay())
-        buildJsonObject {
-            // A replayed duplicate is `ok` too: the offer it names really exists (this device created it),
-            // so a caller that asked twice must not be shown a failure for its own retry.
-            put(
-                "ok",
-                result is CreateOfferResult.NeedsConfirmation ||
-                    result is CreateOfferResult.Created ||
-                    result is CreateOfferResult.AlreadyCreated,
-            )
-            when (result) {
-                is CreateOfferResult.NeedsConfirmation -> {
-                    put("status", "needs_confirmation")
-                    put("steamOfferId", result.offerId.value)
-                }
-                is CreateOfferResult.Created -> {
-                    put("status", "created")
-                    put("steamOfferId", result.offerId.value)
-                }
-                is CreateOfferResult.Failed -> {
-                    put("status", "failed")
-                    put("error", result.error)
-                    // The coded cause, classified inside the lib against Steam's own refusal wording. This
-                    // is the field a host should branch on and show: `error` is free-form third-party text
-                    // that may name urls, ids or the counterparty's persona, so a host relaying it to an
-                    // untrusted page (the extension's FE bridge does) must send only this.
-                    put("cause", result.cause.name)
-                }
-                // Blocked before any Steam write: the DMarket-linked Steam account ≠ the logged-in session.
-                is CreateOfferResult.AccountMismatch -> {
-                    put("status", "account_mismatch")
-                    put("linkedSteamId", result.linkedSteamId.value)
-                    put("tokenSteamId", result.tokenSteamId.value)
-                }
-                // Duplicate request for a deal this device already created the offer for: answer with the
-                // FIRST result (so a caller that asked twice renders the real offer, not an error) and flag
-                // it, rather than writing a second live offer to Steam.
-                is CreateOfferResult.AlreadyCreated -> {
-                    put("status", "needs_confirmation")
-                    put("steamOfferId", result.offerId.value)
-                    put("duplicate", true)
-                }
-                // Duplicate arriving while the first create is still in flight — no offer id to replay yet.
-                is CreateOfferResult.CreateInFlight -> {
-                    put("status", "create_in_flight")
-                    put("duplicate", true)
-                }
-                // Deferred before any Steam write: Steam refused a create for this partner (or the whole
-                // surface) recently, so the FE can offer "try again in N seconds" instead of a dead error.
-                is CreateOfferResult.Throttled -> {
-                    put("status", "throttled")
-                    put("scope", result.scope.name.lowercase())
-                    put("retryAfterSeconds", result.retryAfterSeconds)
-                }
-            }
-        }.toString()
+        h.loop.awaitDirectiveOutcome(DealId(dealId), timeoutMs.milliseconds, h.scope).toOutcomeJson()
     }
 }
 
@@ -319,7 +231,7 @@ actual fun startTracker(
  * web extension's service worker) subscribes here to react to loop events (e.g.
  * `LinkedSteamIdMismatch` → push an `account_mismatch` to the FE). [onEvent] receives each event as a
  * secret-free JSON string (see [toWireJson]). Otherwise identical to [startTracker]; the returned
- * handle is used with [deliverPush] / [createTrade] / [linkedSteamIdMismatch] / [stopTracker].
+ * handle is used with [deliverPush] / [awaitDirectiveOutcome] / [linkedSteamIdMismatch] / [stopTracker].
  *
  * [clientVersion] is the host's own build, sent as the heartbeat's `clientVersion` — see
  * [createBrowserLoop]. Appended last so every existing positional call keeps its meaning.
