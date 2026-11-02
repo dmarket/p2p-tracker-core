@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.client.createHttpClient
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeCredentialVault
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
@@ -83,6 +84,19 @@ class RefreshingSteamReadClientTest {
         val result = client.transfersByTradeId(fakeSteamCredential(token = "old"), TradeId("7449336145712407"))
 
         assertTrue(result.isEmpty())
+        assertEquals(1, scraper.scrapeCalls)
+    }
+
+    @Test
+    fun offers_retries_once_after_401_and_keeps_the_received_list() = runTest {
+        // Without its own override the port's default would answer with sent offers only, silently.
+        fun offer(id: String) = """{"tradeofferid":"$id","accountid_other":1,"trade_offer_state":2,"time_created":1,"time_updated":1}"""
+        val body = """{"response":{"trade_offers_sent":[${offer("1")}],"trade_offers_received":[${offer("2")}]}}"""
+        val (client, scraper) = buildRefreshing(listOf(HttpStatusCode.Unauthorized to "", HttpStatusCode.OK to body))
+
+        val result = client.offers(fakeSteamCredential(token = "old"))
+
+        assertEquals(listOf(OfferDirection.SENT, OfferDirection.RECEIVED), result.map { it.direction })
         assertEquals(1, scraper.scrapeCalls)
     }
 

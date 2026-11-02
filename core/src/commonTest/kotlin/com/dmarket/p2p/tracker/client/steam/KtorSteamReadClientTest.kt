@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import com.dmarket.p2p.tracker.support.fixture
 import com.dmarket.p2p.tracker.support.offerStates
@@ -184,6 +185,35 @@ class KtorSteamReadClientTest {
         val params = recording.listParams.single()
         assertEquals("1", params[recording.endpoints.paramGetSentOffers])
         assertEquals("0", params[recording.endpoints.paramGetReceivedOffers])
+        assertEquals("0", params[recording.endpoints.paramGetDescriptions])
+    }
+
+    @Test
+    fun offers_reads_both_lists_in_one_call_and_names_the_sides_from_this_account() = runTest {
+        // Two deposit-shaped offers: this account gives a1 to the partner and gets nothing back. Steam names the sides
+        // from the reader's side on both lists, so the received one is mapped as it stands, never swapped.
+        val sent = """{"tradeofferid":"77","accountid_other":39734274,"trade_offer_state":2,"time_created":1792420000,
+            "time_updated":1792420000,"items_to_give":[{"appid":730,"contextid":"2","assetid":"a1"}]}"""
+        val received = """{"tradeofferid":"88","accountid_other":39734275,"trade_offer_state":9,"time_created":1792420001,
+            "time_updated":1792420001,"items_to_give":[{"appid":730,"contextid":"2","assetid":"a2"}]}"""
+        val recording =
+            RecordingSteam(listBody = """{"response":{"trade_offers_sent":[$sent],"trade_offers_received":[$received]}}""")
+
+        val offers = recording.client.offers(credential).associateBy { it.offerId }
+
+        assertEquals(OfferDirection.SENT, offers.getValue(OfferId("77")).direction)
+        val incoming = offers.getValue(OfferId("88"))
+        assertEquals(OfferDirection.RECEIVED, incoming.direction)
+        assertEquals(SteamId("76561198000000003"), incoming.partner)
+        assertEquals(9, incoming.state)
+        assertEquals(setOf(AssetId("a2")), incoming.assetIdsGiven)
+        assertEquals(emptySet(), incoming.assetIdsReceived)
+        assertEquals(Instant.fromEpochSeconds(1792420001), incoming.createdAt)
+        assertEquals(1, recording.listCalls())
+        val params = recording.listParams.single()
+        assertEquals("1", params[recording.endpoints.paramGetSentOffers])
+        assertEquals("1", params[recording.endpoints.paramGetReceivedOffers])
+        assertEquals("0", params[recording.endpoints.paramActiveOnly])
         assertEquals("0", params[recording.endpoints.paramGetDescriptions])
     }
 

@@ -39,7 +39,7 @@ import kotlin.time.Duration.Companion.milliseconds
 /** Cycles requested within this window collapse to one (dedupes the MV3 boot + onAlarm double-fire). */
 private const val CYCLE_COALESCE_MS: Double = 5_000.0
 
-private class JsTrackerHandle(
+internal class JsTrackerHandle(
     val loop: TradeTrackerLoop,
     val scope: CoroutineScope,
     val scheduler: Scheduler,
@@ -174,6 +174,20 @@ fun awaitDirectiveOutcome(handle: TrackerHandle, dealId: String, timeoutMs: Int)
 fun linkedSteamIdMismatch(handle: TrackerHandle): Boolean = (handle as JsTrackerHandle).loop.linkedSteamIdMismatch
 
 /**
+ * Replaces the running tracker's known-scam list (steamid64s) with [ids], for a host that publishes the list in its
+ * own remote config: an active offer to or from one of them is reported as an impersonation. Takes an array because a
+ * Kotlin `Set` cannot be built from JS. Pass the ids as strings: a steamid64 is above 2^53, so a JSON number has
+ * already lost digits. Entries that are not a steamid64 are dropped; an empty array leaves no list, so a host must not
+ * pass one for a field its remote config simply lacks. Returns `false`, keeping the current list, when [ids] is not
+ * empty but holds no steamid64. For a list the host already has at start, pass it to [startTrackerWithEvents] instead,
+ * so the boot cycle uses it; this is for a change while the tracker runs.
+ */
+@Suppress("NON_EXPORTABLE_TYPE")
+@JsExport
+fun setKnownScamPartners(handle: TrackerHandle, ids: Array<String>): Boolean =
+    (handle as JsTrackerHandle).loop.setKnownScamPartners(ids.asList())
+
+/**
  * The single highest-priority reason the tracker is blocked, as a stable enum name the host polls to
  * render exactly one prompt, in descending precedence — most actionable and most upstream first, which
  * is also the order in which a cycle establishes them:
@@ -225,7 +239,15 @@ actual fun startTracker(
     config: TrackerConfig,
     networkObserver: NetworkObserver,
     eventObserver: EventObserver,
-): TrackerHandle = startInternal(baseUrl, config, networkObserver, eventObserver, notaryProofDelegate = null, clientVersion = null)
+): TrackerHandle = startInternal(
+    baseUrl,
+    config,
+    networkObserver,
+    eventObserver,
+    notaryProofDelegate = null,
+    clientVersion = null,
+    knownScamPartners = null,
+)
 
 /**
  * Start the self-driving tracker with a JS lifecycle-event callback — the transport-owning host (the
@@ -236,6 +258,10 @@ actual fun startTracker(
  *
  * [clientVersion] is the host's own build, sent as the heartbeat's `clientVersion` — see
  * [createBrowserLoop]. Appended last so every existing positional call keeps its meaning.
+ *
+ * [knownScamPartners], when given, replaces the compiled known-scam list before the boot cycle runs, as
+ * [setKnownScamPartners] does; set after start, a list from the host's remote config would miss that cycle's check,
+ * which then clears the warnings it no longer reproduces. Appended last for the same reason.
  *
  * The cross-platform `expect/actual startTracker` is left untouched (mobile hosts implement
  * [EventObserver] directly); this is a JS-only convenience so TS — which cannot implement a Kotlin
@@ -249,7 +275,16 @@ fun startTrackerWithEvents(
     onEvent: (String) -> Unit,
     notaryProofDelegate: ((String, String, String) -> Promise<String>)? = null,
     clientVersion: String? = null,
-): TrackerHandle = startInternal(baseUrl, config, NoOpNetworkObserver, CallbackEventObserver(onEvent), notaryProofDelegate, clientVersion)
+    knownScamPartners: Array<String>? = null,
+): TrackerHandle = startInternal(
+    baseUrl,
+    config,
+    NoOpNetworkObserver,
+    CallbackEventObserver(onEvent),
+    notaryProofDelegate,
+    clientVersion,
+    knownScamPartners,
+)
 
 /**
  * Subscribe to the **active-tracking count** of a running tracker: the live number of trades the
@@ -292,11 +327,13 @@ private fun startInternal(
     eventObserver: EventObserver,
     notaryProofDelegate: ((String, String, String) -> Promise<String>)?,
     clientVersion: String?,
+    knownScamPartners: Array<String>?,
 ): TrackerHandle {
     // Decorate the host's observer with the active-count channel so subscribeActiveTrackingCount /
     // activeTrackingCount work on any handle; the host's observer still receives every lifecycle event.
     val activeCount = ActiveTrackingCountChannel(delegate = eventObserver)
     val loop = createBrowserLoop(baseUrl, config, networkObserver, activeCount, notaryProofDelegate, clientVersion)
+    knownScamPartners?.let { loop.setKnownScamPartners(it.asList()) }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val scheduler = platformScheduler(scope, TrackerMode.Background)
 

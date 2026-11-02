@@ -143,8 +143,8 @@ object DeviceVaultKeys {
 
     /**
      * Stores the JSON-encoded map of flagged offer id to the level it was reported at, so one offer is reported
-     * once per level across service-worker respawns. Holds only offers flagged on the last scan. See
-     * `PersistedOfferGuardStore`.
+     * once per level across service-worker respawns, and a cleared warning can be named. Holds the offers flagged on
+     * the last scan, plus earlier ones that scan's Steam read did not list. See `PersistedOfferGuardStore`.
      */
     const val GUARD_NOTIFIED = "tracker_guard_notified"
 

@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.model
 
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import kotlinx.serialization.json.Json
@@ -29,10 +30,11 @@ class LifecycleEventJsonTest {
         val offer =
             SuspiciousOffer(OfferId("o1"), SteamId("76561198781084366"), setOf(AssetId("a1"), AssetId("a2")), SuspicionLevel.IMPERSONATION)
         val json = parse(LifecycleEvent.SuspiciousOutgoingOffers(listOf(offer)))
-        assertEquals(setOf("event", "offers"), json.keys)
+        assertEquals(setOf("event", "offers", "cleared"), json.keys)
         assertEquals("SuspiciousOutgoingOffers", json["event"]?.jsonPrimitive?.content)
         val row = json["offers"]!!.jsonArray.single().jsonObject
-        assertEquals(setOf("offerId", "partnerSteamId", "level", "assetIdsGiven"), row.keys)
+        assertEquals(setOf("offerId", "partnerSteamId", "level", "assetIdsGiven", "direction"), row.keys)
+        assertEquals("SENT", row["direction"]?.jsonPrimitive?.content)
         assertEquals("o1", row["offerId"]?.jsonPrimitive?.content)
         assertEquals("76561198781084366", row["partnerSteamId"]?.jsonPrimitive?.content)
         assertEquals("IMPERSONATION", row["level"]?.jsonPrimitive?.content)
@@ -52,7 +54,21 @@ class LifecycleEventJsonTest {
         val unnamed = named.copy(offerId = OfferId("o2"), personaName = null)
         val rows = parse(LifecycleEvent.SuspiciousOutgoingOffers(listOf(named, unnamed)))["offers"]!!.jsonArray.map { it.jsonObject }
         assertEquals("DMarket Support", rows[0]["personaName"]?.jsonPrimitive?.content)
-        assertEquals(setOf("offerId", "partnerSteamId", "level", "assetIdsGiven"), rows[1].keys)
+        assertEquals(setOf("offerId", "partnerSteamId", "level", "assetIdsGiven", "direction"), rows[1].keys)
+    }
+
+    @Test
+    fun suspicious_offers_carry_the_direction_and_the_cleared_ids() {
+        val received = SuspiciousOffer(
+            OfferId("o1"),
+            SteamId("76561198781084366"),
+            setOf(AssetId("a1")),
+            SuspicionLevel.IMPERSONATION,
+            direction = OfferDirection.RECEIVED,
+        )
+        val json = parse(LifecycleEvent.SuspiciousOutgoingOffers(listOf(received), cleared = listOf(OfferId("o7"), OfferId("o8"))))
+        assertEquals("RECEIVED", json["offers"]!!.jsonArray.single().jsonObject["direction"]?.jsonPrimitive?.content)
+        assertEquals(listOf("o7", "o8"), json["cleared"]!!.jsonArray.map { it.jsonPrimitive.content })
     }
 
     @Test
@@ -344,6 +360,7 @@ class LifecycleEventJsonTest {
                 listOf(
                     SuspiciousOffer(OfferId("o1"), SteamId("76561198000000002"), setOf(AssetId("a1")), SuspicionLevel.UNLINKED_GIVE_ONLY),
                 ),
+                cleared = listOf(OfferId("o2")),
             ),
             LifecycleEvent.CycleFailed("storage unavailable"),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),

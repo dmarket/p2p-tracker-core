@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.steam.CreateLease
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
@@ -26,6 +27,7 @@ class SuspiciousOfferCheckTest {
         receives: Set<String> = emptySet(),
         state: Int = 2,
         at: Instant = now - 1.minutes,
+        direction: OfferDirection = OfferDirection.SENT,
     ) = SteamSentOffer(
         OfferId("o1"),
         to,
@@ -33,7 +35,12 @@ class SuspiciousOfferCheckTest {
         gives.mapTo(mutableSetOf(), ::AssetId),
         at,
         receives.mapTo(mutableSetOf(), ::AssetId),
+        direction,
     )
+
+    /** A received offer that takes this account's items and gives nothing: the shape of a DMarket deposit bot's. */
+    private fun received(from: SteamId = partner, gives: Set<String> = setOf("a1"), receives: Set<String> = emptySet(), state: Int = 2) =
+        offer(to = from, gives = gives, receives = receives, state = state, direction = OfferDirection.RECEIVED)
 
     private fun lease(to: SteamId = partner, assets: Set<String> = setOf("a1", "a2"), at: Instant = now - 2.minutes) =
         CreateLease(DealId("deal-1"), to, assets.mapTo(mutableSetOf(), ::AssetId), at)
@@ -153,5 +160,61 @@ class SuspiciousOfferCheckTest {
             personaNames = mapOf(partner to "dmraket"),
         ).single()
         assertEquals(SuspicionLevel.IMPERSONATION to "dmraket", flagged.level to flagged.personaName)
+    }
+
+    @Test
+    fun a_received_give_only_offer_from_a_partner_named_like_dmarket_is_none() {
+        // A real DMarket deposit bot sends exactly this; its name is no evidence against it in stage one.
+        assertEquals(SuspicionLevel.NONE, level(received(), names = mapOf(partner to "DM Bot")))
+    }
+
+    @Test
+    fun a_received_offer_from_a_known_scam_account_taking_an_item_is_impersonation() {
+        assertEquals(SuspicionLevel.IMPERSONATION, level(received(from = scammer)))
+        assertEquals(SuspicionLevel.IMPERSONATION, level(received(from = scammer, receives = setOf("b1"))))
+        assertEquals(SuspicionLevel.IMPERSONATION, level(received(from = scammer, state = 9)))
+    }
+
+    @Test
+    fun a_received_offer_from_a_known_scam_account_that_takes_nothing_is_none() {
+        assertEquals(SuspicionLevel.NONE, level(received(from = scammer, gives = emptySet(), receives = setOf("b1"))))
+    }
+
+    @Test
+    fun a_received_offer_that_is_no_longer_active_is_none() {
+        for (state in listOf(3, 6, 7)) assertEquals(SuspicionLevel.NONE, level(received(from = scammer, state = state)), "state $state")
+    }
+
+    @Test
+    fun a_received_give_only_offer_is_never_unlinked_whatever_the_trust() {
+        assertEquals(SuspicionLevel.NONE, level(received()))
+        assertEquals(SuspicionLevel.NONE, level(received(), trusted = setOf(partner)))
+    }
+
+    @Test
+    fun a_known_scam_account_outranks_trust_on_a_received_offer_too() {
+        // Pin: the known-scam rule ran before trust already.
+        assertEquals(SuspicionLevel.IMPERSONATION, level(received(from = scammer), trusted = setOf(scammer)))
+    }
+
+    @Test
+    fun only_an_active_received_offer_that_takes_an_item_is_a_candidate() {
+        assertEquals(true, SuspiciousOfferCheck.candidate(received()))
+        assertEquals(false, SuspiciousOfferCheck.candidate(received(gives = emptySet(), receives = setOf("b1"))))
+        assertEquals(false, SuspiciousOfferCheck.candidate(received(state = 3)))
+        assertEquals(true, SuspiciousOfferCheck.candidate(offer(gives = emptySet(), receives = setOf("b1"))))
+    }
+
+    @Test
+    fun evaluate_carries_the_direction() {
+        val flagged = SuspiciousOfferCheck.evaluate(
+            sent = listOf(received(from = scammer), offer()),
+            tracking = emptyList(),
+            leases = emptyList(),
+            trustedPartners = emptySet(),
+            knownScamPartners = setOf(scammer),
+            now = now,
+        )
+        assertEquals(listOf(OfferDirection.RECEIVED, OfferDirection.SENT), flagged.map { it.direction })
     }
 }

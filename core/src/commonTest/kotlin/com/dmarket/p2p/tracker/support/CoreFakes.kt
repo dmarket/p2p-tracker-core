@@ -272,6 +272,18 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         return sentOffers
     }
 
+    /** What `GetTradeOffers` lists as received; only [offers] answers with them. */
+    var receivedOffers: List<SteamSentOffer> = emptyList()
+
+    /** Counted apart from [sentOffersCalls], so a test can tell which of the two reads the loop chose. */
+    var offersCalls = 0
+
+    override suspend fun offers(credential: SteamCredential): List<SteamSentOffer> {
+        offersCalls++
+        if (sentOffersThrows) error("simulated offers failure")
+        return sentOffers + receivedOffers
+    }
+
     /** Persona names `GetPlayerSummaries` answers with; the ids each call asked for are recorded. */
     var personaNames: Map<SteamId, String> = emptyMap()
     var personaNamesThrows = false

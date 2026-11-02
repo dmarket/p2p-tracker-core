@@ -40,6 +40,8 @@ class RefreshingSteamReadClient(private val delegate: SteamReadClient, private v
     override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         withRefreshRetry(credential) { delegate.sentOffers(it) }
 
+    override suspend fun offers(credential: SteamCredential): List<SteamSentOffer> = withRefreshRetry(credential) { delegate.offers(it) }
+
     override suspend fun personaNames(credential: SteamCredential, steamIds: Set<SteamId>): Map<SteamId, String> =
         withRefreshRetry(credential) { delegate.personaNames(it, steamIds) }
 

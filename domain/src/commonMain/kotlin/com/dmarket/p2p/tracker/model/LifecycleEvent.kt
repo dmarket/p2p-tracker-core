@@ -429,12 +429,15 @@ sealed interface LifecycleEvent {
     data class SteamSessionAccountMismatch(val kind: String, val tokenSteamId: String) : LifecycleEvent
 
     /**
-     * Active outgoing Steam offers that give items away with no DMarket deal behind them, or that go to a known
-     * scam account (see `com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck`). Emitted once per offer and level:
-     * an offer already reported at the same level is not reported again. Only a warning for the host to show; the
-     * tracker never cancels or changes an offer. Ids only: offer ids, the partner's public steamid64, asset ids.
+     * Active Steam offers, sent or received, that give items away with no DMarket deal behind them, or whose partner
+     * is a known scam account (see `com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck`). The name predates received
+     * offers; each offer carries its direction. Emitted once per offer and level: an offer already reported at the
+     * same level is not reported again. [cleared] names offers reported earlier that a later Steam read listed and
+     * the check no longer flags, so the host can take their warning down; an offer the read did not list is never
+     * cleared. Only a warning for the host to show; the tracker never cancels or changes an offer. Ids only: offer
+     * ids, the partner's public steamid64, asset ids.
      */
-    data class SuspiciousOutgoingOffers(val offers: List<SuspiciousOffer>) : LifecycleEvent
+    data class SuspiciousOutgoingOffers(val offers: List<SuspiciousOffer>, val cleared: List<OfferId> = emptyList()) : LifecycleEvent
 
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :

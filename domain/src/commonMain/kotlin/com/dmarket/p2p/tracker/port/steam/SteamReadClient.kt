@@ -60,6 +60,13 @@ interface SteamReadClient {
         throw UnsupportedOperationException("this Steam read client does not list sent offers")
 
     /**
+     * The offers this account sent and the ones sent to it, each with its `direction`, in one `GetTradeOffers` read
+     * where the client can (see `SteamSentOffer` for which side is which). Throws on a failed read. A client that does
+     * not implement it answers with [sentOffers] only, so received offers then go unchecked.
+     */
+    suspend fun offers(credential: SteamCredential): List<SteamSentOffer> = sentOffers(credential)
+
+    /**
      * The Steam persona names of [steamIds] (`ISteamUser/GetPlayerSummaries`), for the impersonation check on sent
      * offers. Steam omits unknown ids, so a missing key is not an error. Throws on a failed read. A client that does
      * not implement it answers with no names, and only the known-scam list then marks impersonation.

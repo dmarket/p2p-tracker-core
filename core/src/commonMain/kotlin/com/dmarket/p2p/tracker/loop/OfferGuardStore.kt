@@ -39,15 +39,23 @@ interface OfferGuardStore {
     suspend fun trustPartner(partner: SteamId)
 
     /**
-     * Records [found] as the offers currently flagged and returns those not yet reported at their level. An offer
-     * no longer in [found] is forgotten, so the record holds only what the last scan flagged.
+     * Records [found] as the offers currently flagged among [seen], the ids the Steam read listed, and returns what
+     * changed since the last report: the offers not yet reported at their level, and the reported ones [seen] lists
+     * that are no longer in [found]. A reported offer the read did not list is not cleared: the account-wide list is not
+     * proven complete, so its absence says nothing about the offer. It stays on record, up to [MAX_UNLISTED_NOTIFIED].
      */
-    suspend fun unreported(found: List<SuspiciousOffer>): List<SuspiciousOffer>
+    suspend fun unreported(found: List<SuspiciousOffer>, seen: Set<OfferId>): GuardDelta
 
     suspend fun lastScanAt(): Instant?
 
     suspend fun setLastScanAt(at: Instant)
 }
+
+/** How many reported offers the reads no longer list [PersistedOfferGuardStore] keeps on record. */
+internal const val MAX_UNLISTED_NOTIFIED = 200
+
+/** What [OfferGuardStore.unreported] has to tell the host: offers to warn about now, and earlier warnings to take down. */
+data class GuardDelta(val fresh: List<SuspiciousOffer>, val cleared: List<OfferId>)
 
 @Serializable
 private data class StoredLease(val dealId: String, val partner: String, val assetIds: List<String>, val createdAtMs: Long) {
@@ -98,17 +106,22 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         }
     }
 
-    override suspend fun unreported(found: List<SuspiciousOffer>): List<SuspiciousOffer> = mutex.withLock {
+    override suspend fun unreported(found: List<SuspiciousOffer>, seen: Set<OfferId>): GuardDelta = mutex.withLock {
         restore()
         val fresh = found.filter { notified[it.offerId] != it.level }
         val current = found.associate { it.offerId to it.level }
-        if (current != notified) {
+        val cleared = notified.keys.filter { it in seen && it !in current }
+        // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
+        // (paged out, or from a scan since turned off) would otherwise stay on record forever.
+        val unlisted = notified.entries.filter { it.key !in seen }.takeLast(MAX_UNLISTED_NOTIFIED)
+        val next = unlisted.associate { it.key to it.value } + current
+        if (next != notified) {
             notified.clear()
-            notified += current
+            notified += next
             val stored = notified.entries.associate { (id, level) -> id.value to level.name }
             write(DeviceVaultKeys.GUARD_NOTIFIED, TrackerJson.encodeToString(notifiedSerializer, stored))
         }
-        fresh
+        GuardDelta(fresh, cleared)
     }
 
     override suspend fun lastScanAt(): Instant? = mutex.withLock {

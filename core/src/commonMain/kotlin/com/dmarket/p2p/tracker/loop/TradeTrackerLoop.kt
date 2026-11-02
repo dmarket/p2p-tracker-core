@@ -69,6 +69,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.watches
 import com.dmarket.p2p.tracker.model.steam.CreateLease
 import com.dmarket.p2p.tracker.model.steam.InventoryScan
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
@@ -325,6 +326,9 @@ private data class WriteAttempt(
  */
 internal val HOST_REQUESTED_SENT_OFFERS_FLOOR = 30.seconds
 
+/** A steamid64 in the individual-account range, the only form a known-scam entry can match an offer partner in. */
+private val KNOWN_SCAM_STEAM_ID = Regex("^7656119\\d{10}$")
+
 /**
  * How many heartbeats in a row must fail with a **transient** DMarket server error (5xx) before it is
  * surfaced as [TrackerBlock.DM_CONNECTION_ERROR], so a single server blip doesn't flash the error prompt.
@@ -422,6 +426,11 @@ class TradeTrackerLoop(
      * passes a persisted store, so every host built through it has the check on.
      */
     private val offerGuard: OfferGuardStore? = null,
+    /**
+     * Whether [checkSentOffers] also reads and checks the offers sent TO this account ([SteamReadClient.offers]).
+     * Off by default so a host that wires its own ports keeps today's sent-only read; the web facade turns it on.
+     */
+    private val scanReceivedOffers: Boolean = false,
 ) {
     init {
         // A proven write is a write the PROVER performs — TLSN requires the prover to be the TLS client, so
@@ -1014,6 +1023,26 @@ class TradeTrackerLoop(
 
     /** The host asked for a sent-offers check ([PushSignal.CheckSentOffers]); cleared once one runs. */
     private var sentOffersCheckRequested = false
+
+    /** The known-scam list [checkSentOffers] applies: the config's until the host replaces it ([setKnownScamPartners]). */
+    internal var knownScamPartners: Set<SteamId> = scamPartnersOf(config.tunables.knownScamPartners)
+        private set
+
+    /**
+     * Replaces the known-scam list with [ids], for a host that receives it from its own remote config. Entries that are
+     * not a steamid64 are dropped; an empty [ids] leaves no list at all. Applies from the next check. Returns `false`
+     * and keeps the current list when [ids] is not empty but holds no steamid64, so a malformed publish cannot drop
+     * the list and, through `cleared`, take down a live warning.
+     */
+    fun setKnownScamPartners(ids: Collection<String>): Boolean {
+        val parsed = scamPartnersOf(ids)
+        if (parsed.isEmpty() && ids.isNotEmpty()) return false
+        knownScamPartners = parsed
+        return true
+    }
+
+    private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> =
+        ids.filter { KNOWN_SCAM_STEAM_ID.matches(it) }.mapTo(mutableSetOf(), ::SteamId)
 
     /** Calls to [awaitDirectiveOutcome] waiting on a deal's `create_offer`, keyed by deal. Guarded by [createWaitersLock]. */
     private val createWaiters = mutableMapOf<DealId, CompletableDeferred<CreateOfferResult>>()
@@ -1954,7 +1983,8 @@ class TradeTrackerLoop(
 
     /**
      * Settles the creates Steam did not answer ([LoopConfig.unansweredCreateGrace]): one read of the account's sent
-     * offers decides each held claim ([UnansweredCreateCheck]). An offer found completes the claim and is reported
+     * offers decides each held claim ([UnansweredCreateCheck]). Returns the whole read, received offers included when
+     * [scanReceivedOffers], so the guard checks it at no extra cost. An offer found completes the claim and is reported
      * `needs_confirmation`/`success` with its id, under the directive that made it; none found past the grace releases
      * the claim and is reported `failed`, so the next lease creates again; too soon, or a failed read, waits for a later
      * cycle. A claim whose window closed is let go of unreported, still guarding the deal until its TTL.
@@ -1976,10 +2006,12 @@ class TradeTrackerLoop(
             emitDropped(Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId), UNANSWERED_CREATE_UNSETTLED)
         }
         if (open.isEmpty()) return null
-        val sent = runCatching { steamReader.sentOffers(credential) }.getOrElse {
+        val read = runCatching { readOffers(credential) }.getOrElse {
             emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
             return null
         }
+        // A received offer is never the one this device's create made.
+        val sent = read.filter { it.direction == OfferDirection.SENT }
         val attempts = mutableListOf<WriteAttempt>()
         for ((claim, unanswered) in open) {
             // The answer the create never got, as Steam's offer list gives it.
@@ -2011,18 +2043,23 @@ class TradeTrackerLoop(
             attempts += WriteAttempt(outcome = outcome, wroteToSteam = found)
         }
         flushWriteOutcomes(attempts)
-        return sent
+        return read
     }
 
+    /** The account's offers for the guard: both directions when [scanReceivedOffers], else the sent ones in one read. */
+    private suspend fun readOffers(credential: SteamCredential): List<SteamSentOffer> =
+        if (scanReceivedOffers) steamReader.offers(credential) else steamReader.sentOffers(credential)
+
     /**
-     * Runs [SuspiciousOfferCheck] over the account's sent offers and emits the offers it flags for the first time
-     * (or at a new level) as [LifecycleEvent.SuspiciousOutgoingOffers]. Never writes to Steam.
+     * Runs [SuspiciousOfferCheck] over the account's sent offers, and the received ones when [scanReceivedOffers], and
+     * emits the offers it flags for the first time (or at a new level) as [LifecycleEvent.SuspiciousOutgoingOffers],
+     * with the earlier warnings this read shows no longer apply. Never writes to Steam.
      *
-     * [alreadyRead] is a sent-offers list this cycle read for another reason; it is checked at no cost. Otherwise
+     * [alreadyRead] is an offers list this cycle read for another reason; it is checked at no cost. Otherwise
      * the check reads Steam only when there is a tracked deal or the host asked ([PushSignal.CheckSentOffers]), and
      * at most once per `CadenceConfig.activeOfferIntervalMs` (per [HOST_REQUESTED_SENT_OFFERS_FLOOR] when the host asked),
      * by a stamp that survives respawns. With no tracked
-     * deal and no request it adds no Steam read at all. The persona names of the active offers' partners are read
+     * deal and no request it adds no Steam read at all. The persona names of the active sent offers' partners are read
      * for the impersonation check; when that read fails the other checks still run, without names.
      */
     private suspend fun checkSentOffers(tracking: List<TrackedDeal>, credential: SteamCredential, alreadyRead: List<SteamSentOffer>?) {
@@ -2034,19 +2071,22 @@ class TradeTrackerLoop(
             // The user is looking at the offers page: answer within seconds, not at the next interval.
             val interval = if (sentOffersCheckRequested) HOST_REQUESTED_SENT_OFFERS_FLOOR else config.tunables.cadence.activeOfferInterval
             if (last != null && now - last < interval) return
-            runCatching { steamReader.sentOffers(credential) }.getOrElse {
+            runCatching { readOffers(credential) }.getOrElse {
                 emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
                 return
             }
         }
         sentOffersCheckRequested = false
         runCatching { offerGuard.setLastScanAt(now) }
-        val partners = sent.filter { it.state in SuspiciousOfferCheck.ACTIVE_STATES }.mapTo(mutableSetOf()) { it.partner }
+        val nameCandidates = sent.filter { it.direction == OfferDirection.SENT && SuspiciousOfferCheck.candidate(it) }
+        val partners = nameCandidates.mapTo(mutableSetOf()) { it.partner }
+        var namesRead = true
         val personaNames = if (partners.isEmpty()) {
             emptyMap()
         } else {
             runCatching { steamReader.personaNames(credential, partners) }.getOrElse {
                 emit(LifecycleEvent.SteamReadFailed("persona_names", it.redactedSummary()))
+                namesRead = false
                 emptyMap()
             }
         }
@@ -2055,12 +2095,16 @@ class TradeTrackerLoop(
             tracking = tracking,
             leases = offerGuard.leases(),
             trustedPartners = offerGuard.trustedPartners(),
-            knownScamPartners = config.tunables.knownScamPartners.filter { it.isNotBlank() }.mapTo(mutableSetOf(), ::SteamId),
+            knownScamPartners = knownScamPartners,
             now = now,
             personaNames = personaNames,
         )
-        val fresh = offerGuard.unreported(found)
-        if (fresh.isNotEmpty()) emit(LifecycleEvent.SuspiciousOutgoingOffers(fresh))
+        // Without the names a name-based warning cannot be re-derived, so those offers count as unlisted: never cleared.
+        val unjudged = if (namesRead) emptySet() else nameCandidates.mapTo(mutableSetOf()) { it.offerId }
+        val delta = offerGuard.unreported(found, sent.filter { it.offerId !in unjudged }.mapTo(mutableSetOf()) { it.offerId })
+        if (delta.fresh.isNotEmpty() || delta.cleared.isNotEmpty()) {
+            emit(LifecycleEvent.SuspiciousOutgoingOffers(delta.fresh, delta.cleared))
+        }
     }
 
     /**

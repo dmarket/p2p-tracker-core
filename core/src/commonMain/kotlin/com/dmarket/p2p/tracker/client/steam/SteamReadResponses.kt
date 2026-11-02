@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.model.steam.SteamNotification
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
@@ -47,20 +48,28 @@ internal object SteamReadResponses {
         return (response.sent + response.received).associate { OfferId(it.tradeOfferId) to it.toSnapshot() }
     }
 
-    /** `GetTradeOffers` asked for sent offers only: each with its partner, state, given and received assets and creation time. */
-    fun sentOffers(body: String): List<SteamSentOffer> {
+    /** `GetTradeOffers`: its sent offers. A received list in the same body is ignored. */
+    fun sentOffers(body: String): List<SteamSentOffer> = offers(body).filter { it.direction == OfferDirection.SENT }
+
+    /**
+     * `GetTradeOffers`: the sent and the received offers, each with its direction, partner, state, given and received
+     * assets and creation time. The sides are taken as Steam names them on both lists, never swapped: Steam reports
+     * them from the reader's side either way (see [SteamSentOffer]).
+     */
+    fun offers(body: String): List<SteamSentOffer> {
         val response = tradeOffers(body) ?: return emptyList()
-        return response.sent.map {
-            SteamSentOffer(
-                offerId = OfferId(it.tradeOfferId),
-                partner = steamIdOfAccount(it.accountIdOther),
-                state = it.state,
-                assetIdsGiven = it.itemsToGive.mapTo(mutableSetOf()) { asset -> AssetId(asset.assetId) },
-                createdAt = Instant.fromEpochSeconds(it.timeCreated),
-                assetIdsReceived = it.itemsToReceive.mapTo(mutableSetOf()) { asset -> AssetId(asset.assetId) },
-            )
-        }
+        return response.sent.map { it.toOffer(OfferDirection.SENT) } + response.received.map { it.toOffer(OfferDirection.RECEIVED) }
     }
+
+    private fun SteamOfferDto.toOffer(direction: OfferDirection) = SteamSentOffer(
+        offerId = OfferId(tradeOfferId),
+        partner = steamIdOfAccount(accountIdOther),
+        state = state,
+        assetIdsGiven = itemsToGive.mapTo(mutableSetOf()) { AssetId(it.assetId) },
+        createdAt = Instant.fromEpochSeconds(timeCreated),
+        assetIdsReceived = itemsToReceive.mapTo(mutableSetOf()) { AssetId(it.assetId) },
+        direction = direction,
+    )
 
     private fun tradeOffers(body: String): GetTradeOffersResponse? = json.decodeFromString<GetTradeOffersWrapper>(body).response
 

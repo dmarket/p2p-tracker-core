@@ -89,6 +89,9 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
      *
      * [notaryThrottle] — the proof-generation ledger — likewise, and it bounds the larger cost of the two:
      * every attempt is a full MPC session, measured at ~30 MB uploaded to the notary.
+     *
+     * [scanReceivedOffers] makes the suspicious-offer check read the offers sent to this account too
+     * ([SteamReadClient.offers]); off by default, so a host wiring its own ports keeps the sent-only read.
      */
     fun createLoop(
         config: LoopConfig,
@@ -123,6 +126,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         eventObserver: EventObserver = NoOpEventObserver,
         notifications: SteamNotificationReader = NoOpSteamNotificationReader,
         random: Random = Random.Default,
+        scanReceivedOffers: Boolean = false,
     ): TradeTrackerLoop {
         val provider = SteamCredentialProvider(
             vault = vault,
@@ -157,6 +161,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             eventObserver = eventObserver,
             notifications = notifications,
             random = random,
+            scanReceivedOffers = scanReceivedOffers,
         )
     }
 

@@ -16,18 +16,20 @@ GitHub Release.
 
 ### Added
 
-- `SuspiciousOfferCheck` flags active outgoing Steam offers that give items away with no DMarket deal behind them and
-  reports them in the new lifecycle event `SuspiciousOutgoingOffers`, once per offer and level; it never cancels or
-  changes an offer (DMA-818). `UNLINKED_GIVE_ONLY`: no tracked deal, no own create lease (`tracker_create_leases`, 24 h)
-  and no trusted partner explains the offer. `IMPERSONATION`: a partner in `TrackerConfig.knownScamPartners` (seeded
-  with `76561198781084366`). Reads happen only with a tracked deal or on the host's push
-  `{"type":"wake_all","reason":"offers_page"}`, at most once per `activeOfferIntervalMs` or per 30 s on request. JS:
-  `trustPartner(steamId)` silences `UNLINKED_GIVE_ONLY` for a partner. `SteamSentOffer` gains `assetIdsReceived`;
-  `TradeTrackerLoop(offerGuard = null)` leaves the check off.
-- An active outgoing offer to a partner whose Steam persona name poses as DMarket (look-alikes, leetspeak, separators,
-  one typo) is also `IMPERSONATION` (DMA-819). Names come from `GetPlayerSummaries` via the new
-  `SteamReadClient.personaNames`; a failed read is `SteamReadFailed("persona_names")`, and `SuspiciousOffer` carries
-  `personaName`.
+- `SuspiciousOfferCheck` flags active Steam offers and reports them in the new lifecycle event
+  `SuspiciousOutgoingOffers`, once per offer and level; it never cancels or changes an offer (DMA-818, DMA-819).
+  Outgoing `UNLINKED_GIVE_ONLY`: no tracked deal, no own create lease (`tracker_create_leases`, 24 h) and no trusted
+  partner explains a give-only offer. `IMPERSONATION`: a partner in `TrackerConfig.knownScamPartners` (seeded with
+  `76561198781084366`) or whose persona name poses as DMarket (look-alikes, leetspeak, separators, one typo; names via
+  the new `SteamReadClient.personaNames`, a failed read is `SteamReadFailed("persona_names")`); a received offer
+  (`scanReceivedOffers`, on in `createBrowserLoop`) only when active, taking the user's items and from a known scam
+  account, since DMarket's deposit bots send the same shape. Reads happen only with a tracked deal or on the host's push
+  `{"type":"wake_all","reason":"offers_page"}`, at most once per `activeOfferIntervalMs` or per 30 s on request. The
+  event carries `direction`, `personaName` and `cleared` (earlier-reported offers a later read listed and no longer
+  flags). JS: `trustPartner(steamId)`, `setKnownScamPartners(handle, ids)`, `startTrackerWithEvents(…,
+  knownScamPartners)`. API: `SteamSentOffer` gains `assetIdsReceived` and `direction` (default `SENT`);
+  `SteamReadClient.offers()` reads both lists in one call; `TradeTrackerLoop(offerGuard = null)` leaves the check off.
+  Breaking for a web host: `createBrowserLoop` reports received offers, so read `direction`.
 
 ### Changed
 

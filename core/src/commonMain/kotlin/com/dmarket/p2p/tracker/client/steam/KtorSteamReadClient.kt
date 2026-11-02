@@ -79,6 +79,10 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
     override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         SteamReadResponses.sentOffers(tradeOffers(credential, received = false))
 
+    /** `GetTradeOffers`, sent and received offers in one call, in any state, without item descriptions. */
+    override suspend fun offers(credential: SteamCredential): List<SteamSentOffer> =
+        SteamReadResponses.offers(tradeOffers(credential, received = true))
+
     /** The `GetTradeOffers` body: sent offers, [received] ones too when asked, in any state, without descriptions. */
     private suspend fun tradeOffers(credential: SteamCredential, received: Boolean): String =
         httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {

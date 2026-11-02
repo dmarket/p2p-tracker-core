@@ -253,6 +253,8 @@ fun createBrowserLoop(
         // Kept a `createLoop` parameter (not a constant) so it can take that backend-driven value without
         // reopening this exported signature, and so tests can still drive the watch axis alone.
         directivesEnabled = true,
+        // Fake DMarket bots send their scam as an offer TO the user, so the guard reads that list too.
+        scanReceivedOffers = true,
         // Push delivery is the host's job (it calls `deliverPush`); the lib owns no push transport.
     )
 }

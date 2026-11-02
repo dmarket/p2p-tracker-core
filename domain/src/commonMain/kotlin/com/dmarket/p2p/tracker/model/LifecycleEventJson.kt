@@ -238,9 +238,11 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
                         put("level", offer.level.name)
                         putJsonArray("assetIdsGiven") { offer.assetIdsGiven.forEach { add(it.value) } }
                         offer.personaName?.let { put("personaName", it) }
+                        put("direction", offer.direction.name)
                     }
                 }
             }
+            putJsonArray("cleared") { event.cleared.forEach { add(it.value) } }
         }
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")
