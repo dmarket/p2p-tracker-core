@@ -133,7 +133,14 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
 
     // ---- private -----------------------------------------------------------------------------------
 
-    private class CookieTemplate(val url: String, val domain: String?, val path: String, val secure: Boolean, val sameSite: String?)
+    private class CookieTemplate(
+        val url: String,
+        val domain: String?,
+        val path: String,
+        val secure: Boolean,
+        val sameSite: String?,
+        val httpOnly: Boolean = false,
+    )
 
     private class CookieRecord(val value: String, val expiresAtEpochSeconds: Long?, val template: CookieTemplate)
 
@@ -161,6 +168,8 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
                     path = (cookie.path as? String) ?: "/",
                     secure = (cookie.secure as? Boolean) ?: true,
                     sameSite = cookie.sameSite as? String,
+                    // Mirrored so a rotation does not strip HttpOnly (an absent flag on `set` means non-HttpOnly).
+                    httpOnly = (cookie.httpOnly as? Boolean) ?: false,
                 ),
             )
         }
@@ -176,6 +185,7 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
         details.value = encodeURIComponent(value)
         details.path = attrs.path
         details.secure = attrs.secure
+        details.httpOnly = attrs.httpOnly
         attrs.domain?.let { details.domain = it }
         attrs.sameSite?.let { details.sameSite = it }
         expiry?.let { details.expirationDate = it }

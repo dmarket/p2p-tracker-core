@@ -14,6 +14,11 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `FetchMarketplaceCookieTokenStore` keeps the `HttpOnly` flag when it rewrites the session cookies after a token
+  rotation; `cookies.set` treated an absent flag as non-HttpOnly (DMA-815).
+
 ## [1.1.0-beta] - 2026-10-28
 
 ### Fixed
