@@ -23,8 +23,9 @@ import kotlin.time.Instant
  *   [UnansweredCreateCheck.CLOCK_TOLERANCE] before the lease;
  * - the user has not marked the partner as trusted.
  *
- * An active offer to a partner on the known-scam list is [SuspicionLevel.IMPERSONATION] regardless of the rest,
- * including a lease and the user's trust: a scammer can get a real deal registered too.
+ * An active offer to a partner on the known-scam list, or whose persona name [DmarketImpersonation.impersonates], is
+ * [SuspicionLevel.IMPERSONATION] regardless of the rest, including a lease and the user's trust: a scammer can get a
+ * real deal registered too.
  */
 object SuspiciousOfferCheck {
     /** `ETradeOfferState` Active (2) and CreatedNeedsConfirmation (9): the offers that can still be confirmed. */
@@ -41,9 +42,11 @@ object SuspiciousOfferCheck {
         trustedPartners: Set<SteamId>,
         knownScamPartners: Set<SteamId>,
         now: Instant,
+        personaNames: Map<SteamId, String> = emptyMap(),
     ): SuspicionLevel {
         if (offer.state !in ACTIVE_STATES) return SuspicionLevel.NONE
         if (offer.partner in knownScamPartners) return SuspicionLevel.IMPERSONATION
+        if (personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true) return SuspicionLevel.IMPERSONATION
         val giveOnly = offer.assetIdsGiven.isNotEmpty() && offer.assetIdsReceived.isEmpty()
         val linked = tracking.any { it.steamOfferId == offer.offerId }
         val leased = leases.any { lease ->
@@ -67,8 +70,13 @@ object SuspiciousOfferCheck {
         trustedPartners: Set<SteamId>,
         knownScamPartners: Set<SteamId>,
         now: Instant,
+        personaNames: Map<SteamId, String> = emptyMap(),
     ): List<SuspiciousOffer> = sent.mapNotNull { offer ->
-        val level = classify(offer, tracking, leases, trustedPartners, knownScamPartners, now)
-        if (level == SuspicionLevel.NONE) null else SuspiciousOffer(offer.offerId, offer.partner, offer.assetIdsGiven, level)
+        val level = classify(offer, tracking, leases, trustedPartners, knownScamPartners, now, personaNames)
+        if (level == SuspicionLevel.NONE) {
+            null
+        } else {
+            SuspiciousOffer(offer.offerId, offer.partner, offer.assetIdsGiven, level, personaNames[offer.partner])
+        }
     }
 }

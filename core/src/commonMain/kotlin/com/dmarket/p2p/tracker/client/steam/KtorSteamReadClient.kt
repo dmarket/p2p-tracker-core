@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
@@ -106,5 +107,19 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
         // The SAME parser as the windowed read: `GetTradeStatus` answers with the `GetTradeHistory` row shape
         // under the same wrapper, so a second decoder here would be a second thing to keep in step with Steam.
         return SteamReadResponses.transfers(responseText)
+    }
+
+    /** `GetPlayerSummaries` in chunks of [PLAYER_SUMMARIES_CHUNK] ids (Steam's cap per call); blank names are dropped. */
+    override suspend fun personaNames(credential: SteamCredential, steamIds: Set<SteamId>): Map<SteamId, String> =
+        steamIds.chunked(PLAYER_SUMMARIES_CHUNK).fold(emptyMap()) { names, chunk ->
+            val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getPlayerSummariesPath}") {
+                parameter(endpoints.paramAccessToken, credential.token)
+                parameter(endpoints.paramSteamIds, chunk.joinToString(",") { it.value })
+            }.bodyAsText()
+            names + SteamProfileResponses.players(responseText).mapValues { it.value.personaName }.filterValues { it.isNotBlank() }
+        }
+
+    private companion object {
+        const val PLAYER_SUMMARIES_CHUNK = 100
     }
 }

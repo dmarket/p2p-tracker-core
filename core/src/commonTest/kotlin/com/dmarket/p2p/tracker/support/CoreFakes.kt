@@ -248,6 +248,17 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         if (sentOffersThrows) error("simulated sentOffers failure")
         return sentOffers
     }
+
+    /** Persona names `GetPlayerSummaries` answers with; the ids each call asked for are recorded. */
+    var personaNames: Map<SteamId, String> = emptyMap()
+    var personaNamesThrows = false
+    val personaNamesQueried = mutableListOf<Set<SteamId>>()
+
+    override suspend fun personaNames(credential: SteamCredential, steamIds: Set<SteamId>): Map<SteamId, String> {
+        personaNamesQueried += steamIds
+        if (personaNamesThrows) error("simulated personaNames failure")
+        return personaNames.filterKeys { it in steamIds }
+    }
 }
 
 // ---- FakeSteamNotificationReader ---------------------------------------------------------------

@@ -17,7 +17,7 @@ sealed interface PushSignal {
 
     /**
      * Run a cycle now and check this account's sent offers for suspicious ones even with no tracked deal, e.g. the
-     * user opened Steam's trade-offers page. Still at most one sent-offers read per `activeOfferIntervalMs`.
+     * user opened Steam's trade-offers page. At most one sent-offers read per 30 s, against the same stamp as `activeOfferIntervalMs`.
      */
     data object CheckSentOffers : PushSignal
 }

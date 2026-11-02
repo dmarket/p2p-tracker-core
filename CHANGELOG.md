@@ -16,43 +16,36 @@ GitHub Release.
 
 ### Added
 
-- The tracker flags active outgoing Steam offers that give items away with no DMarket deal behind them
-  (`SuspiciousOfferCheck`, DMA-818). Before each `tradeoffer/new/send` it records a lease (deal, partner, assets,
-  time) under `tracker_create_leases`, kept 24 h, so its own offers are never flagged. An active give-only offer that
-  no tracked deal names, no lease covers and no trusted partner explains is reported as `UNLINKED_GIVE_ONLY`; an
-  active offer to an account in the new `TrackerConfig.knownScamPartners` (last positional slot, seeded with
-  `76561198781084366`) is `IMPERSONATION` regardless. The new lifecycle event `SuspiciousOutgoingOffers` carries
-  each flagged offer once per level (`tracker_guard_notified`). The check never cancels or changes an offer. It
-  reads sent offers only when there is a tracked deal or the host asks (push frame
-  `{"type":"wake_all","reason":"offers_page"}`), at most once per `activeOfferIntervalMs` across respawns
-  (`tracker_guard_scanned_at`); with no tracked deal and no request it adds no Steam read. The new JS export
-  `trustPartner(steamId)` writes `guard_trusted_partners`, which silences `UNLINKED_GIVE_ONLY` for that partner.
-  On by default for every loop built through `TradeTrackerCore.createLoop`; `TradeTrackerLoop` itself takes
-  `offerGuard = null` to leave it off. `SteamSentOffer` gains `assetIdsReceived`.
+- `SuspiciousOfferCheck` flags active outgoing Steam offers that give items away with no DMarket deal behind them and
+  reports them in the new lifecycle event `SuspiciousOutgoingOffers`, once per offer and level; it never cancels or
+  changes an offer (DMA-818). `UNLINKED_GIVE_ONLY`: no tracked deal, no own create lease (`tracker_create_leases`, 24 h)
+  and no trusted partner explains the offer. `IMPERSONATION`: a partner in `TrackerConfig.knownScamPartners` (seeded
+  with `76561198781084366`). Reads happen only with a tracked deal or on the host's push
+  `{"type":"wake_all","reason":"offers_page"}`, at most once per `activeOfferIntervalMs` or per 30 s on request. JS:
+  `trustPartner(steamId)` silences `UNLINKED_GIVE_ONLY` for a partner. `SteamSentOffer` gains `assetIdsReceived`;
+  `TradeTrackerLoop(offerGuard = null)` leaves the check off.
+- An active outgoing offer to a partner whose Steam persona name poses as DMarket (look-alikes, leetspeak, separators,
+  one typo) is also `IMPERSONATION` (DMA-819). Names come from `GetPlayerSummaries` via the new
+  `SteamReadClient.personaNames`; a failed read is `SteamReadFailed("persona_names")`, and `SuspiciousOffer` carries
+  `personaName`.
 
 ### Changed
 
-- **BREAKING (JS):** the `createTrade(handle, directiveId, dealId, partnerSteamId, assetIds, tradeToken, linkedSteamId)`
-  export and `TradeTrackerLoop.createTrade` are removed. The host built the Steam offer from whatever the page sent,
-  so a script on the page could choose the counterparty. Their replacement, `awaitDirectiveOutcome(handle, dealId,
-  timeoutMs)` / `TradeTrackerLoop.awaitDirectiveOutcome(dealId, timeout, cycleScope)`, takes only a deal id: it forces
-  a heartbeat and resolves with the outcome of the `create_offer` directive a forced heartbeat leases for the deal. The
-  directive path is the only writer of `tradeoffer/new/send`, and the account check compares the credential with the
-  heartbeat's `linkedSteamId` only. The outcome JSON is the same as before. With no directive for the deal it is
-  `{ok:false, status:"failed", cause:"OTHER"}`, for a deal this device already created the offer for it is that offer
-  with `duplicate:true`, and on timeout it is `create_in_flight` while the cycle carries on. The debug harness's
-  `createTradeInSession` is now `awaitCreateInSession(handle, dealId, timeoutMs)`.
-- `awaitDirectiveOutcome` asks again when the forced heartbeat leases no `create_offer` for the deal. `POST
-  /create-trade` records the seller's consent asynchronously, so the directive often arrives one heartbeat later, and
-  the page showed `no create_offer directive for this deal in the forced heartbeat` within 1–2 s. A cycle with no
-  directive, no wrong-account verdict and no claim for the deal is followed by another forced heartbeat after 2 s,
-  4 s and 8 s, while at least 5 s of the timeout is left; only then is the result `Failed` with that same error. A
-  wrong-account verdict or a claim still answers on the first cycle. The waits are
-  `LoopConfig.createDirectiveRetryDelays` (last parameter); an empty list keeps the single heartbeat. With the
-  defaults the failure arrives 14 s plus four cycles after the call.
-- `DealRoleBinding.allowsWrite` refuses a write when no heartbeat has landed (`activeTracking == null`). The exception
-  existed only for the removed host entry on a cold worker. Within a heartbeat an absent or `UNKNOWN` role still
-  allows the write, as before.
+- After a refused credential (401 on the heartbeat) the next heartbeat waits one floor, then doubles, capped at 15 min;
+  a heartbeat that gets through or a new credential resets the streak. It retried every due cycle before.
+- **BREAKING (JS): `createTrade(...)` and `TradeTrackerLoop.createTrade` are removed (DMA-814).** The host built the
+  Steam offer from whatever the page sent. `awaitDirectiveOutcome(handle, dealId, timeoutMs)` /
+  `TradeTrackerLoop.awaitDirectiveOutcome(dealId, timeout, cycleScope)` takes only a deal id, forces a heartbeat and
+  resolves with the outcome of the deal's `create_offer` directive from it, run through the heartbeat's directive path.
+  The outcome JSON is unchanged (`failed`/`OTHER` with no directive, `duplicate:true`, `create_in_flight` on timeout).
+  Debug harness: `createTradeInSession` is now `awaitCreateInSession(handle, dealId, timeoutMs)`.
+- `DealRoleBinding.allowsWrite` refuses a write before the first heartbeat (`activeTracking == null`); within a
+  heartbeat an absent or `UNKNOWN` role still allows it, as before.
+
+### Fixed
+
+- `FetchMarketplaceCookieTokenStore` keeps the `HttpOnly` flag when it rewrites the session cookies after a token
+  rotation; `cookies.set` treated an absent flag as non-HttpOnly (DMA-815).
 
 ## [1.1.0-beta] - 2026-10-28
 

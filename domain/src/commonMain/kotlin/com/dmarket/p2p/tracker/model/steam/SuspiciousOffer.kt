@@ -21,9 +21,15 @@ enum class SuspicionLevel {
     /** Gives items, gets nothing back, and no DMarket deal or lease of this device explains it. */
     UNLINKED_GIVE_ONLY,
 
-    /** To a partner on the known-scam list, whatever else is true of the offer. */
+    /** To a partner on the known-scam list, or whose persona name poses as DMarket, whatever else is true of the offer. */
     IMPERSONATION,
 }
 
-/** An active outgoing offer the check flagged. [level] is never [SuspicionLevel.NONE]. */
-data class SuspiciousOffer(val offerId: OfferId, val partner: SteamId, val assetIdsGiven: Set<AssetId>, val level: SuspicionLevel)
+/** An active outgoing offer the check flagged. [level] is never [SuspicionLevel.NONE]; [personaName] is the partner's, when read. */
+data class SuspiciousOffer(
+    val offerId: OfferId,
+    val partner: SteamId,
+    val assetIdsGiven: Set<AssetId>,
+    val level: SuspicionLevel,
+    val personaName: String? = null,
+)

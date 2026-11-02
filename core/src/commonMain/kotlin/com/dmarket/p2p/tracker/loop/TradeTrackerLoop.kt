@@ -314,6 +314,13 @@ private data class WriteAttempt(
 }
 
 /**
+ * The shortest gap between two sent-offers checks the host asked for ([PushSignal.CheckSentOffers], sent when the
+ * user opens Steam's trade-offers page). Short so the page shows a fresh verdict; not zero so reloading the page
+ * in a loop cannot turn into a stream of Steam reads. Measured against the same persisted stamp as the interval.
+ */
+internal val HOST_REQUESTED_SENT_OFFERS_FLOOR = 30.seconds
+
+/**
  * How many heartbeats in a row must fail with a **transient** DMarket server error (5xx) before it is
  * surfaced as [TrackerBlock.DM_CONNECTION_ERROR], so a single server blip doesn't flash the error prompt.
  * A **deterministic** client error (a non-401 4xx such as 404) surfaces on the first failure — retrying
@@ -1949,8 +1956,10 @@ class TradeTrackerLoop(
      *
      * [alreadyRead] is a sent-offers list this cycle read for another reason; it is checked at no cost. Otherwise
      * the check reads Steam only when there is a tracked deal or the host asked ([PushSignal.CheckSentOffers]), and
-     * at most once per `CadenceConfig.activeOfferIntervalMs`, by a stamp that survives respawns. With no tracked
-     * deal and no request it adds no Steam read at all.
+     * at most once per `CadenceConfig.activeOfferIntervalMs` (per [HOST_REQUESTED_SENT_OFFERS_FLOOR] when the host asked),
+     * by a stamp that survives respawns. With no tracked
+     * deal and no request it adds no Steam read at all. The persona names of the active offers' partners are read
+     * for the impersonation check; when that read fails the other checks still run, without names.
      */
     private suspend fun checkSentOffers(tracking: List<TrackedDeal>, credential: SteamCredential, alreadyRead: List<SteamSentOffer>?) {
         val offerGuard = offerGuard ?: return
@@ -1958,7 +1967,9 @@ class TradeTrackerLoop(
         val sent = alreadyRead ?: run {
             if (tracking.isEmpty() && !sentOffersCheckRequested) return
             val last = runCatching { offerGuard.lastScanAt() }.getOrNull()
-            if (last != null && now - last < config.tunables.cadence.activeOfferInterval) return
+            // The user is looking at the offers page: answer within seconds, not at the next interval.
+            val interval = if (sentOffersCheckRequested) HOST_REQUESTED_SENT_OFFERS_FLOOR else config.tunables.cadence.activeOfferInterval
+            if (last != null && now - last < interval) return
             runCatching { steamReader.sentOffers(credential) }.getOrElse {
                 emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
                 return
@@ -1966,6 +1977,15 @@ class TradeTrackerLoop(
         }
         sentOffersCheckRequested = false
         runCatching { offerGuard.setLastScanAt(now) }
+        val partners = sent.filter { it.state in SuspiciousOfferCheck.ACTIVE_STATES }.mapTo(mutableSetOf()) { it.partner }
+        val personaNames = if (partners.isEmpty()) {
+            emptyMap()
+        } else {
+            runCatching { steamReader.personaNames(credential, partners) }.getOrElse {
+                emit(LifecycleEvent.SteamReadFailed("persona_names", it.redactedSummary()))
+                emptyMap()
+            }
+        }
         val found = SuspiciousOfferCheck.evaluate(
             sent = sent,
             tracking = tracking,
@@ -1973,6 +1993,7 @@ class TradeTrackerLoop(
             trustedPartners = offerGuard.trustedPartners(),
             knownScamPartners = config.tunables.knownScamPartners.filter { it.isNotBlank() }.mapTo(mutableSetOf(), ::SteamId),
             now = now,
+            personaNames = personaNames,
         )
         val fresh = offerGuard.unreported(found)
         if (fresh.isNotEmpty()) emit(LifecycleEvent.SuspiciousOutgoingOffers(fresh))

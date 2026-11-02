@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.port.steam
 
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
@@ -57,4 +58,11 @@ interface SteamReadClient {
      */
     suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         throw UnsupportedOperationException("this Steam read client does not list sent offers")
+
+    /**
+     * The Steam persona names of [steamIds] (`ISteamUser/GetPlayerSummaries`), for the impersonation check on sent
+     * offers. Steam omits unknown ids, so a missing key is not an error. Throws on a failed read. A client that does
+     * not implement it answers with no names, and only the known-scam list then marks impersonation.
+     */
+    suspend fun personaNames(credential: SteamCredential, steamIds: Set<SteamId>): Map<SteamId, String> = emptyMap()
 }

@@ -379,4 +379,30 @@ class KtorSteamReadClientTest {
         assertEquals(12, selected?.status)
         assertEquals(TradeId("739304749312013446"), selected?.tradeId)
     }
+
+    @Test
+    fun persona_names_are_read_in_chunks_of_a_hundred_and_blank_names_dropped() = runTest {
+        val endpoints = SteamEndpointsConfig()
+        val asked = mutableListOf<List<String>>()
+        val engine = MockEngine { request ->
+            assertEquals(endpoints.getPlayerSummariesPath, request.url.encodedPath)
+            val ids = request.url.parameters[endpoints.paramSteamIds].orEmpty().split(",")
+            asked += ids
+            val players = ids.joinToString(",") { """{"steamid":"$it","personaname":"${if (it.endsWith("002")) "" else "n-$it"}"}""" }
+            respond(
+                """{"response":{"players":[$players]}}""",
+                headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()),
+            )
+        }
+        val client = KtorSteamReadClient(httpClient = createHttpClient(engine), endpoints = endpoints)
+        val ids = (1..150).mapTo(linkedSetOf()) { SteamId((76561198000000000 + it).toString()) }
+
+        val names = client.personaNames(credential, ids)
+
+        assertEquals(listOf(100, 50), asked.map { it.size })
+        assertEquals("n-76561198000000001", names[SteamId("76561198000000001")])
+        assertEquals(149, names.size, "the blank name is dropped")
+        assertTrue(client.personaNames(credential, emptySet()).isEmpty())
+        assertEquals(2, asked.size, "no ids, no request")
+    }
 }

@@ -44,7 +44,8 @@ class SuspiciousOfferCheckTest {
         tracking: List<TrackedDeal> = emptyList(),
         trusted: Set<SteamId> = emptySet(),
         scam: Set<SteamId> = setOf(scammer),
-    ) = SuspiciousOfferCheck.classify(offer, tracking, leases, trusted, scam, now)
+        names: Map<SteamId, String> = emptyMap(),
+    ) = SuspiciousOfferCheck.classify(offer, tracking, leases, trusted, scam, now, names)
 
     @Test
     fun a_give_only_offer_with_no_deal_is_unlinked() {
@@ -120,5 +121,37 @@ class SuspiciousOfferCheckTest {
             ),
             flagged,
         )
+    }
+
+    @Test
+    fun a_partner_named_like_dmarket_is_impersonation_even_when_leased_trusted_or_linked() {
+        val names = mapOf(partner to "DMarket Support")
+        val deal = TrackedDeal(dealId = DealId("deal-1"), steamOfferId = OfferId("o1"))
+        assertEquals(
+            SuspicionLevel.IMPERSONATION,
+            level(
+                offer(receives = setOf("b1")),
+                leases = listOf(lease()),
+                tracking = listOf(deal),
+                trusted = setOf(partner),
+                names = names,
+            ),
+        )
+        assertEquals(SuspicionLevel.NONE, level(offer(state = 3), names = names))
+        assertEquals(SuspicionLevel.UNLINKED_GIVE_ONLY, level(offer(), names = mapOf(partner to "Dmitry")))
+    }
+
+    @Test
+    fun evaluate_carries_the_persona_name() {
+        val flagged = SuspiciousOfferCheck.evaluate(
+            sent = listOf(offer()),
+            tracking = emptyList(),
+            leases = emptyList(),
+            trustedPartners = emptySet(),
+            knownScamPartners = emptySet(),
+            now = now,
+            personaNames = mapOf(partner to "dmraket"),
+        ).single()
+        assertEquals(SuspicionLevel.IMPERSONATION to "dmraket", flagged.level to flagged.personaName)
     }
 }
