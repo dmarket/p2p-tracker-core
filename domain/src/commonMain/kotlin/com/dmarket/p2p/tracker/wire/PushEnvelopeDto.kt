@@ -19,7 +19,12 @@ import kotlinx.serialization.Serializable
 data class PushEnvelopeDto(
     @SerialName("type") val type: String, // "wake_all" | "wake_deal"
     @SerialName("dealId") val dealId: String? = null,
+    /** Why the host asks; [OFFERS_PAGE_REASON] turns the frame into [PushSignal.CheckSentOffers]. */
+    @SerialName("reason") val reason: String? = null,
 )
+
+/** [PushEnvelopeDto.reason] of a host that shows Steam's trade-offers page and wants its sent offers checked. */
+const val OFFERS_PAGE_REASON = "offers_page"
 
 /**
  * Decodes an inbound [PushEnvelopeDto] into a domain [PushSignal], or `null` for an unknown/malformed
@@ -27,7 +32,7 @@ data class PushEnvelopeDto(
  * `isNotBlank` guard protects [DealId]'s non-blank `require`.
  */
 fun PushEnvelopeDto.toSignalOrNull(): PushSignal? = when (type) {
-    "wake_all" -> PushSignal.WakeAll
+    "wake_all" -> if (reason == OFFERS_PAGE_REASON) PushSignal.CheckSentOffers else PushSignal.WakeAll
     "wake_deal" -> dealId?.takeIf { it.isNotBlank() }?.let { PushSignal.WakeForDeal(DealId(it)) }
     else -> null
 }

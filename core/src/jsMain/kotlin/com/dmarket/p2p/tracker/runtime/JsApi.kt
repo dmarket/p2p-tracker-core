@@ -30,15 +30,20 @@ import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.PersistedLoopStateStore
+import com.dmarket.p2p.tracker.loop.PersistedOfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.RuntimeSurface
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.notary.DelegatingNotaryProver
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.promise
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.Promise
@@ -297,3 +302,16 @@ fun createBrowserSteamClient(): SteamReadClient = SteamEndpointsConfig().let { e
  */
 private fun steamSecretParamNames(endpoints: SteamEndpointsConfig): Set<String> =
     NetworkRedaction.plusSecretParam(endpoints.paramAccessToken)
+
+private val STEAM_ID64 = Regex("^7656119\\d{10}$")
+
+/**
+ * Marks [steamId] (a steamid64) as a partner the user trusts: a give-only outgoing offer to it is no longer reported
+ * as suspicious. Writes `guard_trusted_partners`, which a running tracker reads on its next check, so no handle is
+ * needed. An offer to a known scam account is still reported. Rejects anything that is not a steamid64.
+ */
+@JsExport
+fun trustPartner(steamId: String): Promise<Unit> = CoroutineScope(Dispatchers.Default).promise {
+    require(STEAM_ID64.matches(steamId)) { "trustPartner expects a steamid64" }
+    PersistedOfferGuardStore(WebExtKeyValueStore()).trustPartner(SteamId(steamId))
+}

@@ -47,7 +47,7 @@ internal object SteamReadResponses {
         return (response.sent + response.received).associate { OfferId(it.tradeOfferId) to it.toSnapshot() }
     }
 
-    /** `GetTradeOffers` asked for sent offers only: each with its partner, state, given assets and creation time. */
+    /** `GetTradeOffers` asked for sent offers only: each with its partner, state, given and received assets and creation time. */
     fun sentOffers(body: String): List<SteamSentOffer> {
         val response = tradeOffers(body) ?: return emptyList()
         return response.sent.map {
@@ -57,6 +57,7 @@ internal object SteamReadResponses {
                 state = it.state,
                 assetIdsGiven = it.itemsToGive.mapTo(mutableSetOf()) { asset -> AssetId(asset.assetId) },
                 createdAt = Instant.fromEpochSeconds(it.timeCreated),
+                assetIdsReceived = it.itemsToReceive.mapTo(mutableSetOf()) { asset -> AssetId(asset.assetId) },
             )
         }
     }

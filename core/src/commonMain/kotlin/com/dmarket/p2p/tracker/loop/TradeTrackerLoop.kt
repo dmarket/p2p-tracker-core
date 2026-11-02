@@ -35,6 +35,7 @@ import com.dmarket.p2p.tracker.engine.ReportAck
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.engine.ReportPlan
 import com.dmarket.p2p.tracker.engine.ReportedStatus
+import com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.engine.TrackerTick
 import com.dmarket.p2p.tracker.engine.TransferCorrelation
@@ -65,9 +66,11 @@ import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.watches
+import com.dmarket.p2p.tracker.model.steam.CreateLease
 import com.dmarket.p2p.tracker.model.steam.InventoryScan
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.redactedRemoteText
@@ -396,6 +399,12 @@ class TradeTrackerLoop(
      * the throttle stores take one — the draw is the thing under test — and defaulted so no host changes.
      */
     private val random: Random = Random.Default,
+    /**
+     * The suspicious-offer check's leases, trusted partners, reported offers and scan time ([checkSentOffers]).
+     * `null` turns the check off, leases included; [com.dmarket.p2p.tracker.runtime.TradeTrackerCore.createLoop]
+     * passes a persisted store, so every host built through it has the check on.
+     */
+    private val offerGuard: OfferGuardStore? = null,
 ) {
     init {
         // A proven write is a write the PROVER performs — TLSN requires the prover to be the TLS client, so
@@ -908,6 +917,9 @@ class TradeTrackerLoop(
      */
     private var lastActiveTracking: List<TrackedDeal>? = null
 
+    /** The host asked for a sent-offers check ([PushSignal.CheckSentOffers]); cleared once one runs. */
+    private var sentOffersCheckRequested = false
+
     /** Calls to [awaitDirectiveOutcome] waiting on a deal's `create_offer`, keyed by deal. Guarded by [createWaitersLock]. */
     private val createWaiters = mutableMapOf<DealId, CompletableDeferred<CreateOfferResult>>()
     private val createWaitersLock = Mutex()
@@ -1338,8 +1350,9 @@ class TradeTrackerLoop(
                 return@withLock TickOutcome.EMPTY
             }
             val tracking = checkNotNull(cached) // WATCH_ONLY is only decided on a non-null list
-            reconcileUnansweredCreates(credential)
+            val sentRead = reconcileUnansweredCreates(credential)
             val (reportsSent, proofsSubmitted) = watchAndReport(tracking, credential)
+            checkSentOffers(tracking, credential, sentRead)
             val outcome = TickOutcome(reportsSent = reportsSent, proofsSubmitted = proofsSubmitted, watching = tracking.size)
             emit(LifecycleEvent.CycleCompleted(0, reportsSent, proofsSubmitted, outcome.watching))
             return@withLock outcome
@@ -1379,9 +1392,10 @@ class TradeTrackerLoop(
             return@withLock TickOutcome.EMPTY
         }
 
-        reconcileUnansweredCreates(credential)
+        val sentRead = reconcileUnansweredCreates(credential)
         val directivesExecuted = if (directivesEnabled) executeDirectives(heartbeat, credential) else announceDirectiveGate(heartbeat)
         val (reportsSent, proofsSubmitted) = watchAndReport(heartbeat.activeTracking, credential)
+        checkSentOffers(heartbeat.activeTracking, credential, sentRead)
         val outcome = TickOutcome(
             directivesExecuted = directivesExecuted,
             reportsSent = reportsSent,
@@ -1652,7 +1666,8 @@ class TradeTrackerLoop(
      * heartbeat (marked due) instead of a silent idle: the pusher is telling us something changed, and
      * the pre-idle behavior of a fresh worker was to heartbeat on any cycle anyway.
      */
-    suspend fun wakeFromPush(@Suppress("UNUSED_PARAMETER") signal: PushSignal): TickOutcome? {
+    suspend fun wakeFromPush(signal: PushSignal): TickOutcome? {
+        if (signal == PushSignal.CheckSentOffers) sentOffersCheckRequested = true
         if (lastActiveTracking == null) forceHeartbeatNow()
         // Reporting, not raw: a push arrives on a host-owned promise, and a throw there used to be both
         // invisible and enough to skip the caller's re-arm. `null` = the cycle failed (see [runOnceReporting]).
@@ -1852,23 +1867,23 @@ class TradeTrackerLoop(
      * Runs before the cycle's directives, so a create re-leased for the deal meets the settled claim. No read at all
      * while nothing is held.
      */
-    private suspend fun reconcileUnansweredCreates(credential: SteamCredential) {
-        val grace = config.unansweredCreateGrace?.takeIf { directivesEnabled } ?: return
+    private suspend fun reconcileUnansweredCreates(credential: SteamCredential): List<SteamSentOffer>? {
+        val grace = config.unansweredCreateGrace?.takeIf { directivesEnabled } ?: return null
         val ttl = config.tunables.writeClaims.claimTtl
         val now = clock.now()
         val held = claims.all().mapNotNull { claim ->
             claim.unanswered?.takeIf { claim.phase == ClaimPhase.IN_FLIGHT }?.let { claim to it }
         }
-        if (held.isEmpty()) return
+        if (held.isEmpty()) return null
         val (closed, open) = held.partition { (claim, unanswered) -> UnansweredCreateCheck.isClosed(claim, unanswered, now, ttl) }
         closed.forEach { (claim, _) ->
             claims.replace(claim, claim.copy(unanswered = null))
             emitDropped(Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId), UNANSWERED_CREATE_UNSETTLED)
         }
-        if (open.isEmpty()) return
+        if (open.isEmpty()) return null
         val sent = runCatching { steamReader.sentOffers(credential) }.getOrElse {
             emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
-            return
+            return null
         }
         val attempts = mutableListOf<WriteAttempt>()
         for ((claim, unanswered) in open) {
@@ -1901,6 +1916,42 @@ class TradeTrackerLoop(
             attempts += WriteAttempt(outcome = outcome, wroteToSteam = found)
         }
         flushWriteOutcomes(attempts)
+        return sent
+    }
+
+    /**
+     * Runs [SuspiciousOfferCheck] over the account's sent offers and emits the offers it flags for the first time
+     * (or at a new level) as [LifecycleEvent.SuspiciousOutgoingOffers]. Never writes to Steam.
+     *
+     * [alreadyRead] is a sent-offers list this cycle read for another reason; it is checked at no cost. Otherwise
+     * the check reads Steam only when there is a tracked deal or the host asked ([PushSignal.CheckSentOffers]), and
+     * at most once per `CadenceConfig.activeOfferIntervalMs`, by a stamp that survives respawns. With no tracked
+     * deal and no request it adds no Steam read at all.
+     */
+    private suspend fun checkSentOffers(tracking: List<TrackedDeal>, credential: SteamCredential, alreadyRead: List<SteamSentOffer>?) {
+        val offerGuard = offerGuard ?: return
+        val now = clock.now()
+        val sent = alreadyRead ?: run {
+            if (tracking.isEmpty() && !sentOffersCheckRequested) return
+            val last = runCatching { offerGuard.lastScanAt() }.getOrNull()
+            if (last != null && now - last < config.tunables.cadence.activeOfferInterval) return
+            runCatching { steamReader.sentOffers(credential) }.getOrElse {
+                emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
+                return
+            }
+        }
+        sentOffersCheckRequested = false
+        runCatching { offerGuard.setLastScanAt(now) }
+        val found = SuspiciousOfferCheck.evaluate(
+            sent = sent,
+            tracking = tracking,
+            leases = offerGuard.leases(),
+            trustedPartners = offerGuard.trustedPartners(),
+            knownScamPartners = config.tunables.knownScamPartners.filter { it.isNotBlank() }.mapTo(mutableSetOf(), ::SteamId),
+            now = now,
+        )
+        val fresh = offerGuard.unreported(found)
+        if (fresh.isNotEmpty()) emit(LifecycleEvent.SuspiciousOutgoingOffers(fresh))
     }
 
     /**
@@ -2171,6 +2222,9 @@ class TradeTrackerLoop(
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
             // instead left the lease held with no /trade-actions answer and no lifecycle event, so the
             // backend re-leased the directive forever and the deal stalled invisibly.
+            // Before the POST, so the suspicious-offer check already knows this offer when Steam lists it, whatever
+            // happens to the create's answer.
+            directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
             val result = runCatching {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()

@@ -1,7 +1,10 @@
 package com.dmarket.p2p.tracker.model
 
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * Serialise a [LifecycleEvent] to a compact JSON object string for delivery over a host callback
@@ -224,6 +227,19 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("event", "SteamSessionAccountMismatch")
             put("kind", event.kind)
             put("tokenSteamId", event.tokenSteamId)
+        }
+        is LifecycleEvent.SuspiciousOutgoingOffers -> {
+            put("event", "SuspiciousOutgoingOffers")
+            putJsonArray("offers") {
+                event.offers.forEach { offer ->
+                    addJsonObject {
+                        put("offerId", offer.offerId.value)
+                        put("partnerSteamId", offer.partner.value)
+                        put("level", offer.level.name)
+                        putJsonArray("assetIdsGiven") { offer.assetIdsGiven.forEach { add(it.value) } }
+                    }
+                }
+            }
         }
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")

@@ -14,4 +14,10 @@ sealed interface PushSignal {
 
     /** Run a full cycle now (e.g. a new deal or directive appeared). */
     data object WakeAll : PushSignal
+
+    /**
+     * Run a cycle now and check this account's sent offers for suspicious ones even with no tracked deal, e.g. the
+     * user opened Steam's trade-offers page. Still at most one sent-offers read per `activeOfferIntervalMs`.
+     */
+    data object CheckSentOffers : PushSignal
 }

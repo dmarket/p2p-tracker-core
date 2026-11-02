@@ -1,7 +1,10 @@
 package com.dmarket.p2p.tracker.model
 
+import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
+import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -19,6 +22,21 @@ class LifecycleEventJsonTest {
         assertEquals("76561198000000099", json["tokenSteamId"]?.jsonPrimitive?.content)
         // Exactly event + the two public Steam ids — nothing else can have leaked into the frame.
         assertEquals(setOf("event", "linkedSteamId", "tokenSteamId"), json.keys)
+    }
+
+    @Test
+    fun suspicious_outgoing_offers_carry_ids_and_level_only() {
+        val offer =
+            SuspiciousOffer(OfferId("o1"), SteamId("76561198781084366"), setOf(AssetId("a1"), AssetId("a2")), SuspicionLevel.IMPERSONATION)
+        val json = parse(LifecycleEvent.SuspiciousOutgoingOffers(listOf(offer)))
+        assertEquals(setOf("event", "offers"), json.keys)
+        assertEquals("SuspiciousOutgoingOffers", json["event"]?.jsonPrimitive?.content)
+        val row = json["offers"]!!.jsonArray.single().jsonObject
+        assertEquals(setOf("offerId", "partnerSteamId", "level", "assetIdsGiven"), row.keys)
+        assertEquals("o1", row["offerId"]?.jsonPrimitive?.content)
+        assertEquals("76561198781084366", row["partnerSteamId"]?.jsonPrimitive?.content)
+        assertEquals("IMPERSONATION", row["level"]?.jsonPrimitive?.content)
+        assertEquals(listOf("a1", "a2"), row["assetIdsGiven"]!!.jsonArray.map { it.jsonPrimitive.content })
     }
 
     @Test
@@ -306,6 +324,11 @@ class LifecycleEventJsonTest {
             LifecycleEvent.LinkedSteamIdMismatch("1", "2"),
             LifecycleEvent.LinkedSteamIdUnknown("76561198000000001"),
             LifecycleEvent.SteamSessionAccountMismatch("create_offer", "76561198000000001"),
+            LifecycleEvent.SuspiciousOutgoingOffers(
+                listOf(
+                    SuspiciousOffer(OfferId("o1"), SteamId("76561198000000002"), setOf(AssetId("a1")), SuspicionLevel.UNLINKED_GIVE_ONLY),
+                ),
+            ),
             LifecycleEvent.CycleFailed("storage unavailable"),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),
         )

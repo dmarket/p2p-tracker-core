@@ -51,6 +51,12 @@ data class TrackerConfig(
      * new field inserted mid-list would silently re-map a JS host's positional construction.
      */
     val steamWrites: SteamWriteConfig = SteamWriteConfig(),
+    /**
+     * Steam accounts (steamid64) known to pose as DMarket. An active outgoing offer to one of them is reported as
+     * an impersonation even when a deal or a lease covers it (see `com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck`).
+     * Appended last for the positional-construction reason given on [steamWrites].
+     */
+    val knownScamPartners: Set<String> = setOf("76561198781084366"),
 ) {
     companion object {
 

@@ -20,8 +20,10 @@ import com.dmarket.p2p.tracker.loop.InMemoryTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.LoopStateStore
 import com.dmarket.p2p.tracker.loop.NotaryProofThrottleStore
+import com.dmarket.p2p.tracker.loop.OfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedDealWriteClaimStore
 import com.dmarket.p2p.tracker.loop.PersistedNotaryProofThrottleStore
+import com.dmarket.p2p.tracker.loop.PersistedOfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
 import com.dmarket.p2p.tracker.loop.SteamWriteThrottleStore
@@ -106,6 +108,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         progress: TrackerProgressStore = InMemoryTrackerProgressStore(),
         claims: DealWriteClaimStore = PersistedDealWriteClaimStore(platformKeyValueStore()),
         unprovenClaims: UnprovenClaimStore = PersistedUnprovenClaimStore(platformKeyValueStore()),
+        offerGuard: OfferGuardStore = PersistedOfferGuardStore(platformKeyValueStore()),
         throttle: SteamWriteThrottleStore = PersistedSteamWriteThrottleStore(
             limits = config.tunables.steamWrites,
             storage = platformKeyValueStore(),
@@ -145,6 +148,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             progress = progress,
             claims = claims,
             unprovenClaims = unprovenClaims,
+            offerGuard = offerGuard,
             throttle = throttle,
             notaryThrottle = notaryThrottle,
             loopState = loopState,

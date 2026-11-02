@@ -1,5 +1,7 @@
 package com.dmarket.p2p.tracker.model
 
+import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
+
 /**
  * A coarse, secret-free signal emitted at the nodal points of one tracker cycle, surfaced to a
  * [com.dmarket.p2p.tracker.port.host.EventObserver].
@@ -425,6 +427,14 @@ sealed interface LifecycleEvent {
      * browser is not this client's to report.
      */
     data class SteamSessionAccountMismatch(val kind: String, val tokenSteamId: String) : LifecycleEvent
+
+    /**
+     * Active outgoing Steam offers that give items away with no DMarket deal behind them, or that go to a known
+     * scam account (see `com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck`). Emitted once per offer and level:
+     * an offer already reported at the same level is not reported again. Only a warning for the host to show; the
+     * tracker never cancels or changes an offer. Ids only: offer ids, the partner's public steamid64, asset ids.
+     */
+    data class SuspiciousOutgoingOffers(val offers: List<SuspiciousOffer>) : LifecycleEvent
 
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :

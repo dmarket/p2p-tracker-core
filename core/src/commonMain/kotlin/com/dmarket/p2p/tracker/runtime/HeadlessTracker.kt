@@ -30,6 +30,7 @@ import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.PersistedDealWriteClaimStore
 import com.dmarket.p2p.tracker.loop.PersistedLoopStateStore
 import com.dmarket.p2p.tracker.loop.PersistedNotaryProofThrottleStore
+import com.dmarket.p2p.tracker.loop.PersistedOfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
@@ -494,6 +495,7 @@ class HeadlessTracker(
             progress = PersistedTrackerProgressStore(storage),
             claims = PersistedDealWriteClaimStore(storage),
             unprovenClaims = PersistedUnprovenClaimStore(storage),
+            offerGuard = PersistedOfferGuardStore(storage),
             throttle = PersistedSteamWriteThrottleStore(limits = tunables.steamWrites, storage = storage),
             notaryThrottle = PersistedNotaryProofThrottleStore(limits = tunables.notary.breaker, storage = storage),
             loopState = PersistedLoopStateStore(storage),

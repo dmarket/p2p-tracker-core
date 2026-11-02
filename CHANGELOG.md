@@ -14,6 +14,17 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Added
+
+- `SuspiciousOfferCheck` flags active outgoing Steam offers that give items away with no DMarket deal behind them and
+  reports them in the new lifecycle event `SuspiciousOutgoingOffers`, once per offer and level; it never cancels or
+  changes an offer (DMA-818). `UNLINKED_GIVE_ONLY`: no tracked deal, no own create lease (`tracker_create_leases`, 24 h)
+  and no trusted partner explains the offer. `IMPERSONATION`: a partner in `TrackerConfig.knownScamPartners` (seeded
+  with `76561198781084366`). Reads happen only with a tracked deal or on the host's push
+  `{"type":"wake_all","reason":"offers_page"}`, at most once per `activeOfferIntervalMs` or per 30 s on request. JS:
+  `trustPartner(steamId)` silences `UNLINKED_GIVE_ONLY` for a partner. `SteamSentOffer` gains `assetIdsReceived`;
+  `TradeTrackerLoop(offerGuard = null)` leaves the check off.
+
 ### Changed
 
 - After a refused credential (401 on the heartbeat) the next heartbeat waits one floor, then doubles, capped at 15 min;

@@ -129,6 +129,32 @@ object DeviceVaultKeys {
     const val STEAM_WRITE_THROTTLE = "tracker_steam_write_throttle"
 
     /**
+     * Stores the JSON-encoded list of `create_offer` leases (deal, partner, assets, when), written before each
+     * `tradeoffer/new/send` so the suspicious-offer check recognises an offer this device made even before the
+     * backend reports its id. Kept 24 h. See `PersistedOfferGuardStore`.
+     */
+    const val CREATE_LEASES = "tracker_create_leases"
+
+    /**
+     * Stores the JSON-encoded list of partners (steamid64) the user marked as trusted, so a give-only offer to them
+     * is not flagged. Written by the host (`trustPartner`), never expires. See `PersistedOfferGuardStore`.
+     */
+    const val GUARD_TRUSTED_PARTNERS = "guard_trusted_partners"
+
+    /**
+     * Stores the JSON-encoded map of flagged offer id to the level it was reported at, so one offer is reported
+     * once per level across service-worker respawns. Holds only offers flagged on the last scan. See
+     * `PersistedOfferGuardStore`.
+     */
+    const val GUARD_NOTIFIED = "tracker_guard_notified"
+
+    /**
+     * Stores the epoch-millis of the last sent-offers read made for the suspicious-offer check, so it runs at most
+     * once per `CadenceConfig.activeOfferIntervalMs` across respawns. See `PersistedOfferGuardStore`.
+     */
+    const val GUARD_SCANNED_AT = "tracker_guard_scanned_at"
+
+    /**
      * Stores the JSON-encoded proof-generation back-pressure state (until when proving is parked after
      * repeated failures, plus the escalation ladder) so a cooldown outlives a process death.
      *

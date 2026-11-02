@@ -44,6 +44,7 @@ import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
+import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
@@ -185,6 +186,7 @@ class TradeTrackerLoopTest {
         checkFailedCancels: Boolean = false,
         reportNotActionable: Boolean = false,
         surface: RuntimeSurface = RuntimeSurface.WebChrome,
+        offerGuard: OfferGuardStore? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -227,6 +229,7 @@ class TradeTrackerLoopTest {
             directivesEnabled = directivesEnabled,
             eventObserver = eventObserver,
             notaryThrottle = notaryThrottle,
+            offerGuard = offerGuard,
         )
     }
 
@@ -6339,5 +6342,153 @@ class TradeTrackerLoopTest {
         assertEquals(UNANSWERED_CREATE_UNSETTLED to "deal-1", dropped.reason to dropped.dealId)
         val claim = claims.all().single()
         assertEquals(ClaimPhase.IN_FLIGHT to null, claim.phase to claim.unanswered, "it guards the deal until its TTL")
+    }
+
+    // ---- suspicious outgoing offers (SuspiciousOfferCheck) ----------------------------------------------
+
+    private fun giveOnly(id: String, partner: String = "76561198000000777", assets: Set<String> = setOf("asset-9")) =
+        sentOffer(id = id, partner = partner, assets = assets, state = 2)
+
+    @Test
+    fun a_create_leases_its_offer_even_when_the_post_never_answers() = runTest {
+        val guard = PersistedOfferGuardStore()
+        loop(
+            marketplace = createLease(createDirective()),
+            creator = FakeSteamOfferCreator(throwable = IllegalStateException("Failed to fetch")),
+            directivesEnabled = true,
+            offerGuard = guard,
+        ).runOnce()
+
+        val lease = guard.leases().single()
+        assertEquals(DealId("deal-1") to SteamId(PARTNER), lease.dealId to lease.partner)
+        assertEquals(setOf(AssetId("asset-1")), lease.assetIds)
+    }
+
+    @Test
+    fun a_give_only_offer_nobody_explains_is_reported_once_and_the_own_leased_one_never() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val reader = FakeSteamReadClient()
+        val l = loop(
+            marketplace = createLease(createDirective()),
+            reader = reader,
+            clock = clock,
+            directivesEnabled = true,
+            eventObserver = observer,
+            offerGuard = PersistedOfferGuardStore(),
+        )
+        l.runOnce() // creates and leases asset-1 to PARTNER
+        reader.sentOffers = listOf(
+            sentOffer(id = "offer-created", state = 9, createdAt = clock.now()),
+            giveOnly("offer-scam"),
+        )
+        repeat(2) {
+            clock.advance(180.seconds)
+            l.forceHeartbeatNow()
+            l.runOnce()
+        }
+
+        val reported = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().single().offers.single()
+        assertEquals(OfferId("offer-scam") to SuspicionLevel.UNLINKED_GIVE_ONLY, reported.offerId to reported.level)
+    }
+
+    @Test
+    fun an_offer_to_a_known_scam_account_is_impersonation() = runTest {
+        val observer = RecordingEventObserver()
+        val reader = FakeSteamReadClient().apply { sentOffers = listOf(giveOnly("offer-x", partner = "76561198781084366")) }
+        loop(
+            marketplace = createLease(),
+            reader = reader,
+            eventObserver = observer,
+            offerGuard = PersistedOfferGuardStore(),
+        ).runOnce()
+
+        val reported = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().single().offers.single()
+        assertEquals(SuspicionLevel.IMPERSONATION, reported.level)
+    }
+
+    @Test
+    fun a_trusted_partner_is_not_reported() = runTest {
+        val observer = RecordingEventObserver()
+        val guard = PersistedOfferGuardStore().apply { trustPartner(SteamId("76561198000000777")) }
+        val reader = FakeSteamReadClient().apply { sentOffers = listOf(giveOnly("offer-gift")) }
+        loop(marketplace = createLease(), reader = reader, eventObserver = observer, offerGuard = guard).runOnce()
+
+        assertEquals(1, reader.sentOffersCalls)
+        assertTrue(observer.events.none { it is LifecycleEvent.SuspiciousOutgoingOffers })
+    }
+
+    /** One hour of cycles a minute apart, each with a heartbeat; returns the sent-offers reads made. */
+    private suspend fun sentOfferReadsInAnHour(
+        activeTracking: List<TrackedDeal>,
+        guard: OfferGuardStore? = PersistedOfferGuardStore(),
+    ): Int {
+        val clock = FakeClock()
+        val reader = FakeSteamReadClient().apply { sentOffers = listOf(giveOnly("offer-scam")) }
+        val l = loop(
+            marketplace = FakeMarketplaceClient(HeartbeatResponse(activeTracking = activeTracking, ttlSeconds = 60)),
+            reader = reader,
+            clock = clock,
+            offerGuard = guard,
+        )
+        repeat(60) {
+            l.forceHeartbeatNow()
+            l.runOnce()
+            clock.advance(60.seconds)
+        }
+        return reader.sentOffersCalls
+    }
+
+    @Test
+    fun with_no_tracked_deal_and_no_request_the_check_reads_nothing() = runTest {
+        assertEquals(0, sentOfferReadsInAnHour(activeTracking = emptyList()))
+    }
+
+    @Test
+    fun with_a_tracked_deal_the_check_reads_at_most_once_per_active_offer_interval() = runTest {
+        // 3600 s / activeOfferIntervalMs (180 s) = 20, against 0 with the check off.
+        assertEquals(20, sentOfferReadsInAnHour(activeTracking = listOf(tracked())))
+        assertEquals(0, sentOfferReadsInAnHour(activeTracking = listOf(tracked()), guard = null))
+    }
+
+    @Test
+    fun the_interval_survives_a_respawn() = runTest {
+        val clock = FakeClock()
+        val storage = InMemoryDeviceKeyValueStore()
+        val reader = FakeSteamReadClient()
+        val mp = createLease()
+        loop(marketplace = mp, reader = reader, clock = clock, offerGuard = PersistedOfferGuardStore(storage)).runOnce()
+        clock.advance(60.seconds)
+        loop(marketplace = mp, reader = reader, clock = clock, offerGuard = PersistedOfferGuardStore(storage)).runOnce()
+
+        assertEquals(1, reader.sentOffersCalls)
+    }
+
+    @Test
+    fun an_offers_page_request_checks_with_no_tracked_deal_but_keeps_the_interval() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val reader = FakeSteamReadClient().apply { sentOffers = listOf(giveOnly("offer-scam")) }
+        val l = loop(
+            marketplace = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60)),
+            reader = reader,
+            clock = clock,
+            eventObserver = observer,
+            offerGuard = PersistedOfferGuardStore(),
+        )
+        l.runOnce()
+        assertEquals(0, reader.sentOffersCalls)
+
+        l.wakeFromPush(PushSignal.CheckSentOffers)
+        assertEquals(1, reader.sentOffersCalls)
+        assertEquals(1, observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().size)
+
+        clock.advance(60.seconds)
+        l.wakeFromPush(PushSignal.CheckSentOffers)
+        assertEquals(1, reader.sentOffersCalls, "inside the interval the request waits")
+        clock.advance(120.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+        assertEquals(2, reader.sentOffersCalls, "the pending request runs once the interval is over")
     }
 }

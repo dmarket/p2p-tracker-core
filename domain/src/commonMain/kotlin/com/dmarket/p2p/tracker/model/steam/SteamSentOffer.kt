@@ -13,6 +13,8 @@ import kotlin.time.Instant
  * @property state raw `ETradeOfferState`.
  * @property assetIdsGiven the asset ids this account gives in it.
  * @property createdAt Steam's `time_created`, by Steam's clock.
+ * @property assetIdsReceived the asset ids this account gets back. Empty on a give-only offer, which is what the
+ *   suspicious-offer check keys on (see `com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck`).
  */
 data class SteamSentOffer(
     val offerId: OfferId,
@@ -20,4 +22,5 @@ data class SteamSentOffer(
     val state: Int,
     val assetIdsGiven: Set<AssetId>,
     val createdAt: Instant,
+    val assetIdsReceived: Set<AssetId> = emptySet(),
 )
