@@ -65,6 +65,14 @@ interface MarketplaceClient {
      */
     suspend fun acceptDeal(id: DealId): DealActionResult
 
+    /**
+     * `POST /p2p/deals/{id}/create-trade` — the seller's consent to deliver, which mints the deal's `create_offer`
+     * directive and returns it as [DealActionResult.createOffer]. Repeating it while the deal is COMMITTED is safe:
+     * the backend serves the same directive and extends its 2-minute park under the caller. A non-blank
+     * [DealActionResult.reasonCode] is a refusal (`DeliveryWindowClosed`).
+     */
+    suspend fun startDelivery(id: DealId): DealActionResult
+
     /** `GET /p2p/deals/{id}` — a single deal snapshot (C2 read; host convenience). */
     suspend fun getDeal(id: DealId): Deal
 }

@@ -118,16 +118,16 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
 
 /**
  * The page's "create trade" trigger, answered from the backend's own `create_offer` directive. The host passes the
- * deal id the page asked about and nothing else: this forces a heartbeat, asks again after 2, 4 and 8 s while it
- * leases nothing for the deal, and resolves with the outcome of the `create_offer` directive a forced heartbeat leases
- * for the deal (see [TradeTrackerLoop.awaitDirectiveOutcome]). The
+ * deal id the page asked about and nothing else: this takes the deal's `create_offer` directive from the answer to its
+ * own `POST /p2p/deals/{id}/create-trade`, asks once more after 2 s if the answer carries none, and resolves with the
+ * outcome of running it through the directive path (see [TradeTrackerLoop.awaitDirectiveOutcome]). The
  * counterparty, the items and the trade token come from that directive and the account binding from the heartbeat,
  * so no value a page could choose reaches Steam. `@JsExport` cannot surface `suspend` funs, so it bridges to a
  * [Promise].
  *
  * **Calling this twice for one deal is safe.** Concurrent calls share one wait, and a later call for a deal whose
  * offer this device already created answers with that offer (`duplicate:true`) instead of a second write.
- * [timeoutMs] bounds the wait, not the cycle: on expiry the answer is `create_in_flight` and the cycle carries on.
+ * [timeoutMs] bounds the wait, not the work: on expiry the answer is `create_in_flight` and the create carries on.
  * Returns an outcome JSON string:
  * - `{ ok:true,  status:"needs_confirmation", steamOfferId }` — POSTed, awaiting the user's mobile confirm.
  * - `{ ok:true,  status:"created",            steamOfferId }` — live without a confirm step (rare).
@@ -136,7 +136,7 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
  * - `{ ok:false, status:"create_in_flight",   duplicate:true }` — the create is still running (or [timeoutMs]
  *   elapsed first); ask again rather than treating it as a failure.
  * - `{ ok:false, status:"failed",             error, cause }` — Steam rejected the create, a guard refused it, or
- *   the backend leased no `create_offer` for the deal (`cause:"OTHER"`).
+ *   the backend refused the delivery or served no `create_offer` (`cause:"OTHER"`).
  * - `{ ok:false, status:"throttled",          scope, retryAfterSeconds }` — deferred by this device's own
  *   back-pressure after an earlier refusal; nothing was sent to Steam.
  * - `{ ok:false, status:"account_mismatch",   linkedSteamId, tokenSteamId }` — blocked before any write.

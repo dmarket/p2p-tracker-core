@@ -62,7 +62,7 @@ private const val CYCLE_COALESCE_MS: Double = 5_000.0
  * `heartbeat.steam_id == account.linked_steam_id`, so identity must be real.
  *
  * `directivesEnabled = true` keeps the real C1 behaviour (the backend may lease `create_offer` and the
- * loop executes it). The FE "create trade" postMessage only forces a heartbeat through
+ * loop executes it). The FE "create trade" postMessage reads the deal's `create_offer` through
  * [TradeTrackerLoop.awaitDirectiveOutcome] and waits for that directive's outcome.
  */
 internal fun startDebugTracker(

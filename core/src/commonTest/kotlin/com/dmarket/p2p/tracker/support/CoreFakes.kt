@@ -13,6 +13,7 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
+import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAck
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
@@ -64,6 +65,7 @@ import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionGateway
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.time.Duration
@@ -77,7 +79,7 @@ import kotlin.time.Instant
  */
 class FakeMarketplaceClient(
     var heartbeatResponse: HeartbeatResponse = HeartbeatResponse(ttlSeconds = 60),
-    private val dealForGet: Deal? = null,
+    var dealForGet: Deal? = null,
     private val acceptApplied: Boolean = true,
     /**
      * Answers for successive `getDeal` calls, the last one repeating — for a test that needs the deal's join
@@ -129,6 +131,19 @@ class FakeMarketplaceClient(
     var getDealThrows: Boolean = false
 
     /**
+     * Answers for successive `POST /create-trade` calls, the last one repeating. Empty answers COMMITTED with no
+     * `createOffer`, as the backend does before it has recorded the delivery.
+     */
+    var deliveries: List<DealActionResult> = emptyList()
+    var startDeliveryCalls = 0
+
+    /** When set, `startDelivery()` throws this exact throwable. */
+    var startDeliveryThrowable: Throwable? = null
+
+    /** How long `startDelivery()` takes to answer, in the test's virtual time. */
+    var startDeliveryDelay: Duration = Duration.ZERO
+
+    /**
      * Shapes the `results[]` a `/trade-events` batch answers with, so a test can reproduce what a real
      * backend can do and the client must survive: fewer results than reports, a different order, or one
      * result per deal for a batch carrying both axes of that deal. `null` = one accepted result per report.
@@ -174,6 +189,14 @@ class FakeMarketplaceClient(
     override suspend fun acceptDeal(id: DealId): DealActionResult {
         acceptedDeals += id
         return DealActionResult(state = P2PDealState.COMMITTED, applied = acceptApplied)
+    }
+
+    override suspend fun startDelivery(id: DealId): DealActionResult {
+        startDeliveryCalls++
+        if (startDeliveryDelay > Duration.ZERO) delay(startDeliveryDelay)
+        startDeliveryThrowable?.let { throw it }
+        return deliveries.getOrElse(startDeliveryCalls - 1) { deliveries.lastOrNull() }
+            ?: DealActionResult(state = P2PDealState.COMMITTED, applied = false)
     }
 
     override suspend fun getDeal(id: DealId): Deal {
@@ -390,9 +413,9 @@ fun fakeSteamCredential(token: String = "ya29.test-steam-token", steamId: String
 )
 
 /** Returns a [Deal] for [FakeMarketplaceClient.getDeal]; only [dealId]/[assetId] usually matter to tests. */
-fun fakeDeal(dealId: String = "deal-1", assetId: String = "asset-1"): Deal = Deal(
+fun fakeDeal(dealId: String = "deal-1", assetId: String = "asset-1", state: P2PDealState = P2PDealState.AWAITING_TRADE): Deal = Deal(
     dealId = DealId(dealId),
-    state = P2PDealState.AWAITING_TRADE,
+    state = state,
     buyerAccountId = AccountId("buyer-acct-1"),
     sellerAccountId = AccountId("seller-acct-1"),
     offerId = OfferId("offer-1"),
@@ -401,6 +424,10 @@ fun fakeDeal(dealId: String = "deal-1", assetId: String = "asset-1"): Deal = Dea
     createdAt = Instant.fromEpochMilliseconds(1_781_611_200_000L),
     updatedAt = Instant.fromEpochMilliseconds(1_781_611_200_000L),
 )
+
+/** A `POST /create-trade` answer serving [directive] as the deal's `createOffer`. */
+fun delivered(directive: Directive): DealActionResult =
+    DealActionResult(state = P2PDealState.COMMITTED, applied = false, createOffer = directive)
 
 // ---- FakeSteamSessionScraper -------------------------------------------------------------------
 

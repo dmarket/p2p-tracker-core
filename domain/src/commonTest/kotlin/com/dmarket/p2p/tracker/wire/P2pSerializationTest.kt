@@ -21,6 +21,7 @@ import kotlinx.serialization.encodeToString
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
@@ -472,6 +473,39 @@ class P2pSerializationTest {
     }
 
     @Test
+    fun the_create_trade_answer_carries_its_create_offer_directive() {
+        // The gateway's own shape: the state with its `P2P_DEAL_STATE_` prefix dropped, and the pending create as
+        // `createOffer`, mapped to a create_offer directive for the deal the call was made for.
+        val json = """
+            {"state":"COMMITTED","applied":false,
+             "createOffer":{"directiveId":"dir-9","dealId":"d1","action":"create_offer",
+               "partnerSteamId":"76561198000000002","assetIds":["a1"],"tradeToken":"tok","contextId":2}}
+        """.trimIndent()
+        val result = TrackerJson.decodeFromString<DealActionResponseDto>(json).toDomain(DealId("d1"))
+
+        assertEquals(P2PDealState.COMMITTED, result.state)
+        assertNull(result.reasonCode)
+        val create = assertNotNull(result.createOffer)
+        assertEquals(DirectiveId("dir-9"), create.directiveId)
+        assertEquals(DirectiveAction.CREATE_OFFER, create.action)
+        assertEquals(DealId("d1"), create.dealId)
+        assertEquals(SteamId("76561198000000002"), create.partnerSteamId)
+        assertEquals(listOf(AssetId("a1")), create.assetIds)
+        assertEquals("tok", create.tradeToken)
+        assertEquals(2, create.contextId)
+        assertTrue("tok" !in result.toString(), "the trade token is a bearer capability")
+    }
+
+    @Test
+    fun a_refused_create_trade_answer_has_no_create_offer() {
+        val json = """{"state":"P2P_DEAL_STATE_CANCELLED","applied":false,"reasonCode":"DeliveryWindowClosed"}"""
+        val result = TrackerJson.decodeFromString<DealActionResponseDto>(json).toDomain(DealId("d1"))
+        assertEquals(P2PDealState.CANCELLED, result.state)
+        assertEquals("DeliveryWindowClosed", result.reasonCode)
+        assertNull(result.createOffer)
+    }
+
+    @Test
     fun the_accept_link_is_read_under_either_spelling() {
         // The deal detail served `trustedAcceptUrl` until it was aligned onto the proto's
         // `trusted_accept_uri`. Reading only one key blanks the buyer's accept link on one side of that
@@ -526,7 +560,7 @@ class P2pSerializationTest {
     fun deal_action_response_decodes() {
         val result = TrackerJson.decodeFromString<DealActionResponseDto>(
             """{"state":"P2P_DEAL_STATE_COMMITTED","applied":true}""",
-        ).toDomain()
+        ).toDomain(DealId("d1"))
         assertEquals(P2PDealState.COMMITTED, result.state)
         assertEquals(true, result.applied)
     }

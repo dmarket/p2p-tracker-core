@@ -48,7 +48,14 @@ enum class P2PDealState(val wireName: String) {
         get() = this == AWAITING_TRADE || this == AWAITING_TERMINAL
 
     companion object {
-        fun fromWire(name: String): P2PDealState = entries.firstOrNull { it.wireName == name } ?: UNKNOWN
+        /**
+         * Accepts the proto name and the gateway's spelling of it: `GET /p2p/deals/{id}` serves the state with the
+         * `P2P_DEAL_STATE_` prefix dropped (`COMMITTED`).
+         */
+        fun fromWire(name: String): P2PDealState =
+            entries.firstOrNull { it.wireName == name || it.wireName == "$WIRE_PREFIX$name" } ?: UNKNOWN
+
+        private const val WIRE_PREFIX = "P2P_DEAL_STATE_"
     }
 }
 

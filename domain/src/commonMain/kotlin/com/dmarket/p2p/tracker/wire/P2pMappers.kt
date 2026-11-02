@@ -216,8 +216,23 @@ fun DealDto.toDomain(): Deal = Deal(
     updatedAt = Instant.parse(updateTime),
 )
 
-fun DealActionResponseDto.toDomain(): DealActionResult = DealActionResult(
+/** [DealActionResponseDto.createOffer] as the `create_offer` [Directive] for [dealId]; `null` for a blank directive id. */
+fun CreateOfferDto.toDirective(dealId: DealId): Directive? = directiveId.takeIf { it.isNotBlank() }?.let {
+    Directive(
+        directiveId = DirectiveId(it),
+        action = DirectiveAction.CREATE_OFFER,
+        dealId = dealId,
+        partnerSteamId = partnerSteamId?.takeIf { id -> id.isNotBlank() }?.let(::SteamId),
+        assetIds = assetIds.map(::AssetId),
+        tradeToken = tradeToken,
+        contextId = contextId,
+        rawAction = DirectiveAction.CREATE_OFFER.wireName,
+    )
+}
+
+fun DealActionResponseDto.toDomain(dealId: DealId): DealActionResult = DealActionResult(
     state = P2PDealState.fromWire(state),
     applied = applied,
     reasonCode = reasonCode,
+    createOffer = createOffer?.toDirective(dealId),
 )

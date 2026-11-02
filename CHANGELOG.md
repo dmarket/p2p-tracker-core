@@ -33,14 +33,23 @@ GitHub Release.
 
 - After a refused credential (401 on the heartbeat) the next heartbeat waits one floor, then doubles, capped at 15 min;
   a heartbeat that gets through or a new credential resets the streak. It retried every due cycle before.
-- **BREAKING (JS): `createTrade(...)` and `TradeTrackerLoop.createTrade` are removed (DMA-814).** The host built the
-  Steam offer from whatever the page sent. `awaitDirectiveOutcome(handle, dealId, timeoutMs)` /
-  `TradeTrackerLoop.awaitDirectiveOutcome(dealId, timeout, cycleScope)` takes only a deal id, forces a heartbeat and
-  resolves with the outcome of the deal's `create_offer` directive from it, run through the heartbeat's directive path.
-  The outcome JSON is unchanged (`failed`/`OTHER` with no directive, `duplicate:true`, `create_in_flight` on timeout).
-  Debug harness: `createTradeInSession` is now `awaitCreateInSession(handle, dealId, timeoutMs)`.
 - `DealRoleBinding.allowsWrite` refuses a write before the first heartbeat (`activeTracking == null`); within a
   heartbeat an absent or `UNKNOWN` role still allows it, as before.
+- **BREAKING (JS): `createTrade(...)` and `TradeTrackerLoop.createTrade` are removed (DMA-814).** The host built the
+  Steam offer from whatever the page sent. `awaitDirectiveOutcome(handle, dealId, timeoutMs)` /
+  `TradeTrackerLoop.awaitDirectiveOutcome(dealId, timeout, cycleScope)` takes only a deal id, fetches the deal's
+  `create_offer` directive with its own `POST /p2p/deals/{id}/create-trade` (new `MarketplaceClient.startDelivery`; the
+  backend parks the lease under the caller for 2 min, DMA-610, so a heartbeat never sees it while the page waits) and
+  runs it through the heartbeat's directive path, so a later lease of the same directive never writes a second offer. A
+  `reasonCode` is `Failed` with `the backend refused the delivery: <code>`; an answer without `createOffer` is settled
+  from the deal's claim, else the call is repeated once after 2 s (`LoopConfig.createDirectiveRetryDelays`) and ends in
+  `Failed`. Each call is the seller's consent for the current attempt, so call it only on the seller's request. The
+  outcome JSON is unchanged (`failed`/`OTHER`, `duplicate:true`, `create_in_flight`). Time to `Failed` without a
+  directive about 2.5 s; worst case with 30 s HTTP timeouts 62 s warm, 92 s on a fresh instance. Debug harness:
+  `createTradeInSession` is now `awaitCreateInSession(handle, dealId, timeoutMs)`.
+- `DealActionResponseDto`/`DealActionResult` gain `createOffer` (`CreateOfferDto`), mapped to a `create_offer`
+  `Directive`; `DealActionResponseDto.toDomain` takes the deal id. `P2PDealState.fromWire` accepts the gateway's
+  spelling without the `P2P_DEAL_STATE_` prefix, which decoded every state as `UNKNOWN` before.
 
 ### Fixed
 

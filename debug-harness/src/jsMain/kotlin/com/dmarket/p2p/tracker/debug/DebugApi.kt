@@ -646,8 +646,8 @@ class DebugSessionHandle internal constructor(private val driver: DebugDriver, p
     internal fun nudge() = driver.nudge()
 
     /**
-     * The FE "create trade" trigger: forces a heartbeat and answers with the outcome of the `create_offer`
-     * directive the backend leases for [dealId] (see [TradeTrackerLoop.awaitDirectiveOutcome]). Nothing from the
+     * The FE "create trade" trigger: reads the deal's `create_offer` directive and answers with its outcome
+     * for [dealId] (see [TradeTrackerLoop.awaitDirectiveOutcome]). Nothing from the
      * page reaches Steam. Called by the SW when the dmarket.com content script relays a validated
      * `window.postMessage`. @JsExport can't export suspend funs, so it bridges to a Promise.
      */

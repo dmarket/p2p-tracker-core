@@ -29,6 +29,7 @@ import com.dmarket.p2p.tracker.support.FakeSteamOfferCreator
 import com.dmarket.p2p.tracker.support.FakeSteamReadClient
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
 import com.dmarket.p2p.tracker.support.RecordingEventObserver
+import com.dmarket.p2p.tracker.support.delivered
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -488,9 +489,9 @@ class CreateChainExecutionTest {
         loop.runOnce()
         val reportsAfterCycle = mp.directiveOutcomes.size
 
-        // The backend leases the next create for the same partner while the cooldown stands: the page waiting on
+        // The create-trade call serves the next create for the same partner while the cooldown stands: the page waiting on
         // it hears why nothing happened, and Steam is not pushed again.
-        mp.heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = creates(alice, 1, "fe"))
+        mp.deliveries = listOf(delivered(creates(alice, 1, "fe").single()))
         val result = loop.awaitDirectiveOutcome(DealId("deal-fe-1"), 30.seconds, this)
         testScheduler.advanceUntilIdle() // let the cycle finish, or "nothing reported" proves nothing
 

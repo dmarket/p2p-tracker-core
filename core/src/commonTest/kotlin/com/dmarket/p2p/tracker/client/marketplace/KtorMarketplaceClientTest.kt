@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.client.marketplace
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.createHttpClient
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
@@ -24,6 +25,7 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
@@ -33,6 +35,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Instant
@@ -218,6 +221,67 @@ class KtorMarketplaceClientTest {
         val result = client.acceptDeal(DealId("d-1"))
         assertTrue(result.applied)
         assertEquals(P2PDealState.COMMITTED, result.state)
+    }
+
+    // ---- startDelivery (C2 endpoint) -------------------------------------------------------
+
+    @Test
+    fun start_delivery_posts_to_create_trade_and_maps_the_served_create_offer() = runTest {
+        var body: String? = null
+        val engine = MockEngine { request ->
+            assertEquals("$p2pBase/deals/d-1/create-trade", request.url.toString())
+            assertEquals(HttpMethod.Post, request.method)
+            body = (request.body as TextContent).text
+            respond(
+                content = """{"state":"COMMITTED","applied":false,"createOffer":{"directiveId":"dir-9",
+                    "action":"create_offer","partnerSteamId":"76561198000000777","assetIds":["a1","a2"],
+                    "tradeToken":"tok","contextId":2}}""",
+                headers = jsonHeaders(),
+            )
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        val result = client.startDelivery(DealId("d-1"))
+
+        assertEquals("{}", body)
+        assertEquals(P2PDealState.COMMITTED, result.state)
+        assertNull(result.reasonCode)
+        val create = assertNotNull(result.createOffer)
+        assertEquals(DirectiveId("dir-9"), create.directiveId)
+        assertEquals(DirectiveAction.CREATE_OFFER, create.action)
+        assertEquals(DealId("d-1"), create.dealId)
+        assertEquals(SteamId("76561198000000777"), create.partnerSteamId)
+        assertEquals(listOf(AssetId("a1"), AssetId("a2")), create.assetIds)
+        assertEquals("tok", create.tradeToken)
+    }
+
+    @Test
+    fun start_delivery_reads_a_refusal_with_no_create_offer() = runTest {
+        val engine = MockEngine {
+            respond(content = """{"state":"CANCELLED","applied":false,"reasonCode":"DeliveryWindowClosed"}""", headers = jsonHeaders())
+        }
+        val result = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator).startDelivery(DealId("d-1"))
+
+        assertEquals("DeliveryWindowClosed", result.reasonCode)
+        assertNull(result.createOffer)
+    }
+
+    @Test
+    fun start_delivery_refreshes_and_retries_a_401_like_every_other_post() = runTest {
+        var calls = 0
+        val engine = MockEngine {
+            calls++
+            if (calls == 1) {
+                respondError(HttpStatusCode.Unauthorized)
+            } else {
+                respond(content = """{"state":"COMMITTED","createOffer":{"directiveId":"dir-9"}}""", headers = jsonHeaders())
+            }
+        }
+        val auth = FakeMarketplaceAuthenticator(token = "tok", refreshResult = true)
+        val result = clientWith(engine, auth).startDelivery(DealId("d-1"))
+
+        assertEquals(DirectiveId("dir-9"), result.createOffer?.directiveId)
+        assertEquals(2, calls, "one refresh, one retry")
+        assertEquals(1, auth.refreshCalls)
     }
 
     // ---- getDeal (C2 endpoint) -------------------------------------------------------------

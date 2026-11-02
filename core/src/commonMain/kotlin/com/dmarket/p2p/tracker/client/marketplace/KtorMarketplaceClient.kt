@@ -63,7 +63,7 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
 
 /**
  * Ktor-backed [MarketplaceClient] for the golden **C1 trade-tracker** endpoints under
- * `/exchange/v1/p2p/ext/`, reached via the exchange-gateway. The deal reads (`accept`/`getDeal`)
+ * `/exchange/v1/p2p/ext/`, reached via the exchange-gateway. The deal calls (`accept`/`create-trade`/`getDeal`)
  * are the C2 paths under `/exchange/v1/p2p/`.
  *
  * Uses manual JSON encoding via [TrackerJson] (no Ktor `ContentNegotiation` plugin) so the exact wire
@@ -99,7 +99,7 @@ class KtorMarketplaceClient(
     private val onServerDate: ((Instant) -> Unit)? = null,
 ) : MarketplaceClient {
 
-    /** C2 deal reads the host may proxy (`accept`/`getDeal`). */
+    /** C2 deal calls (`accept`/`create-trade`/`getDeal`). */
     private val p2pPath = "/exchange/v1/p2p"
 
     /** C1 trade-tracker base; ingress prepends `/exchange/v1`, the gateway registers the ext routes at root. */
@@ -181,7 +181,12 @@ class KtorMarketplaceClient(
 
     override suspend fun acceptDeal(id: DealId): DealActionResult {
         val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/accept", "{}")
-        return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain()
+        return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain(id)
+    }
+
+    override suspend fun startDelivery(id: DealId): DealActionResult {
+        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/create-trade", "{}")
+        return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain(id)
     }
 
     override suspend fun getDeal(id: DealId): Deal {

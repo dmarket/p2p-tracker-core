@@ -419,6 +419,8 @@ class HeadlessTracker(
 
         override suspend fun acceptDeal(id: DealId) = watched { client.acceptDeal(id) }
 
+        override suspend fun startDelivery(id: DealId) = watched { client.startDelivery(id) }
+
         override suspend fun getDeal(id: DealId) = watched { client.getDeal(id) }
 
         /** Every call, for the 429s that quiet the tracker ([rateLimited]) and the answers that end a streak. */

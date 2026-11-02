@@ -303,9 +303,25 @@ data class DealDto(
         "createTime=$createTime, updateTime=$updateTime)"
 }
 
+/** [DealActionResponseDto.createOffer]: the fields of the deal's `create_offer` directive a Steam create needs. */
+@Serializable
+data class CreateOfferDto(
+    @SerialName("directiveId") val directiveId: String,
+    @SerialName("partnerSteamId") val partnerSteamId: String? = null,
+    @SerialName("assetIds") val assetIds: List<String> = emptyList(),
+    @SerialName("tradeToken") val tradeToken: String? = null,
+    @SerialName("contextId") val contextId: Int = 0,
+) {
+    /** Redacted: [tradeToken] is a bearer capability, as on [DirectiveDto]. */
+    override fun toString(): String = "CreateOfferDto(directiveId=$directiveId, partnerSteamId=$partnerSteamId, " +
+        "assetIds=$assetIds, tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, contextId=$contextId)"
+}
+
 @Serializable
 data class DealActionResponseDto(
     @SerialName("state") val state: String,
     @SerialName("applied") val applied: Boolean = false,
     @SerialName("reasonCode") val reasonCode: String? = null,
+    /** `POST /create-trade` only: the deal's `create_offer` directive, when the call recorded the delivery. */
+    @SerialName("createOffer") val createOffer: CreateOfferDto? = null,
 )

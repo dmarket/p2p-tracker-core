@@ -80,8 +80,14 @@ data class ProofSubmission(val dealId: DealId, val proofPayload: String)
 data class ProofResult(val dealId: DealId, val verified: Boolean, val reason: String? = null)
 
 /**
- * The result of the C2 seller-COMMIT call (`POST /p2p/deals/{id}/accept`). Kept as a thin host
- * convenience — COMMIT is a C2 (DMarket app) action, not part of the tracker's directive loop.
- * [applied] is `false` when the action arrived too late (e.g. the cancel window already closed).
+ * The result of a seller deal action: the C2 COMMIT (`POST /p2p/deals/{id}/accept`) or the delivery consent
+ * (`POST /p2p/deals/{id}/create-trade`). [applied] is `false` when the action arrived too late (e.g. the cancel
+ * window already closed); on `/create-trade` it is `false` even when taken, and [reasonCode] is the verdict.
+ * [createOffer] is the deal's `create_offer` directive, served by `/create-trade` only.
  */
-data class DealActionResult(val state: P2PDealState, val applied: Boolean, val reasonCode: String? = null)
+data class DealActionResult(
+    val state: P2PDealState,
+    val applied: Boolean,
+    val reasonCode: String? = null,
+    val createOffer: Directive? = null,
+)
