@@ -118,8 +118,9 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
 
 /**
  * The page's "create trade" trigger, answered from the backend's own `create_offer` directive. The host passes the
- * deal id the page asked about and nothing else: this forces one heartbeat and resolves with the outcome of the
- * `create_offer` directive that heartbeat leases for the deal (see [TradeTrackerLoop.awaitDirectiveOutcome]). The
+ * deal id the page asked about and nothing else: this forces a heartbeat, asks again after 2, 4 and 8 s while it
+ * leases nothing for the deal, and resolves with the outcome of the `create_offer` directive a forced heartbeat leases
+ * for the deal (see [TradeTrackerLoop.awaitDirectiveOutcome]). The
  * counterparty, the items and the trade token come from that directive and the account binding from the heartbeat,
  * so no value a page could choose reaches Steam. `@JsExport` cannot surface `suspend` funs, so it bridges to a
  * [Promise].

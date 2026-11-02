@@ -122,6 +122,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /** A compact, JS-friendly summary of one cycle (the loop decides nothing about settlement). */
@@ -136,10 +137,14 @@ private const val ACCOUNT_MISMATCH_ERROR =
     "steam account mismatch: the DMarket-linked Steam account differs from the authenticated Steam session"
 
 /**
- * Why [TradeTrackerLoop.awaitDirectiveOutcome] has no create to answer with: the forced heartbeat leased no
- * `create_offer` for the deal and this device holds no claim for one.
+ * Why [TradeTrackerLoop.awaitDirectiveOutcome] has no create to answer with: neither the forced heartbeat nor any of
+ * its retries ([LoopConfig.createDirectiveRetryDelays]) leased a `create_offer` for the deal, and this device holds no
+ * claim for one. The text is unchanged since the single-heartbeat version because the frontend matches on it.
  */
 private const val NO_CREATE_DIRECTIVE_ERROR = "no create_offer directive for this deal in the forced heartbeat"
+
+/** A create-directive retry starts only while at least this much of the caller's timeout is left. */
+private val CREATE_RETRY_MARGIN = 5.seconds
 
 /** Reported outcome error for a write the deal-keyed claim guard suppressed (defensive; see [DealWriteGuard]). */
 private const val DUPLICATE_WRITE_ERROR = "duplicate write suppressed: this device already performed this write for the deal"
@@ -429,8 +434,10 @@ class TradeTrackerLoop(
 
     /**
      * The page's "create trade" trigger, answered from the backend's own `create_offer` directive for [dealId].
-     * Forces one heartbeat ([forceHeartbeatNow]) on [cycleScope] and returns what the directive path did with the
-     * deal's `create_offer` in that cycle.
+     * Forces a heartbeat ([forceHeartbeatNow]) on [cycleScope] and returns what the directive path did with the
+     * deal's `create_offer`. `POST /create-trade` records the seller's consent asynchronously, so the first forced
+     * heartbeat can come too early; a cycle that settles nothing is followed by another forced heartbeat after each of
+     * [LoopConfig.createDirectiveRetryDelays] (2 s, 4 s, 8 s by default), while at least 5 s of [timeout] is left.
      *
      * Nothing the caller could supply reaches Steam, because nothing is taken from the caller but the deal id: the
      * counterparty, the items and the trade token come from the leased directive, the account binding from the
@@ -441,11 +448,15 @@ class TradeTrackerLoop(
      * First match wins:
      * - the deal's directive ran in a cycle while this call waited (or was refused, deferred, or suppressed as a
      *   duplicate) → that result;
-     * - the forced cycle ended without one → [settleWithoutDirective];
-     * - [timeout] elapsed first → [CreateOfferResult.CreateInFlight]. The cycle is not cancelled, so the create
-     *   can still land, and a later call answers with it from the deal's claim.
+     * - a forced cycle ended without one and the account or the deal's claim answers → [settleWithoutDirective]
+     *   (wrong account, already created, still in flight), with no further retry;
+     * - no cycle leased one and the retries ran out (or less than 5 s of [timeout] was left) →
+     *   [CreateOfferResult.Failed] with [NO_CREATE_DIRECTIVE_ERROR];
+     * - [timeout] elapsed first → [CreateOfferResult.CreateInFlight]. The cycles are not cancelled, so a retry can
+     *   still lease and run the create, and a later call answers with it from the deal's claim.
      *
-     * Concurrent calls for one deal share one wait and force one cycle.
+     * Concurrent calls for one deal share one wait and one series of forced cycles; the retry budget follows the
+     * timeout of the call that started it.
      */
     suspend fun awaitDirectiveOutcome(dealId: DealId, timeout: Duration, cycleScope: CoroutineScope): CreateOfferResult {
         val (waiter, owner) = createWaitersLock.withLock {
@@ -459,12 +470,24 @@ class TradeTrackerLoop(
             }
         }
         if (owner) {
+            val deadline = clock.now() + timeout
             forceHeartbeatNow()
             cycleScope.launch {
                 try {
-                    runOnceReporting()
-                    runCatching { scheduler.schedule(nextWakeDelay()) }
-                    if (!waiter.isCompleted) waiter.complete(settleWithoutDirective(dealId))
+                    val retryDelays = config.createDirectiveRetryDelays.iterator()
+                    while (true) {
+                        runOnceReporting()
+                        runCatching { scheduler.schedule(nextWakeDelay()) }
+                        if (waiter.isCompleted) break
+                        settleWithoutDirective(dealId)?.let { waiter.complete(it) }
+                        if (waiter.isCompleted) break
+                        if (!retryDelays.hasNext() || deadline - clock.now() < CREATE_RETRY_MARGIN) {
+                            waiter.complete(CreateOfferResult.Failed(NO_CREATE_DIRECTIVE_ERROR))
+                            break
+                        }
+                        delay(retryDelays.next())
+                        forceHeartbeatNow()
+                    }
                 } finally {
                     withContext(NonCancellable) {
                         createWaitersLock.withLock { if (createWaiters[dealId] === waiter) createWaiters.remove(dealId) }
@@ -481,14 +504,15 @@ class TradeTrackerLoop(
      * The answer for a forced cycle that ran no `create_offer` for [dealId]. A wrong-account verdict blocks every
      * Steam write before directives run, so it is the answer when set. Otherwise the deal's claim says whether this
      * device already created the offer (the backend no longer leases a create for it, so the page's retry gets that
-     * offer back as a duplicate) or is still creating it. With neither, the backend leased nothing for the deal.
+     * offer back as a duplicate) or is still creating it. With neither, `null`: the backend leased nothing for the
+     * deal yet, and [awaitDirectiveOutcome] decides whether to ask again.
      */
-    private suspend fun settleWithoutDirective(dealId: DealId): CreateOfferResult {
+    private suspend fun settleWithoutDirective(dealId: DealId): CreateOfferResult? {
         mismatchTokenSteamId?.let { token -> return CreateOfferResult.AccountMismatch(lastLinkedSteamId ?: token, token) }
         val claim = claims.all().firstOrNull { it.dealId == dealId && it.action == DirectiveAction.CREATE_OFFER }
         claim?.outcome?.steamOfferId?.let { return CreateOfferResult.AlreadyCreated(it) }
         if (claim?.phase == ClaimPhase.IN_FLIGHT) return CreateOfferResult.CreateInFlight(dealId)
-        return CreateOfferResult.Failed(NO_CREATE_DIRECTIVE_ERROR)
+        return null
     }
 
     /** Hands [result] to an [awaitDirectiveOutcome] call waiting on [directive]'s deal, if there is one. */

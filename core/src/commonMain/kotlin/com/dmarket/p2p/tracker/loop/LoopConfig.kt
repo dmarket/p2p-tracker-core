@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Static configuration for a [TradeTrackerLoop] instance.
@@ -61,6 +62,11 @@ import kotlin.time.Duration
  *   cancel Steam did not answer whose offer reads `6` reports `success`. Each read that settles a cancel also reports the
  *   offer's own code on `/trade-events`, for a deal this heartbeat does not track. `false` (the default, everywhere)
  *   until DMarket accepts the status: the reports are as before.
+ * @param createDirectiveRetryDelays The waits between further forced heartbeats when
+ *   [TradeTrackerLoop.awaitDirectiveOutcome]'s cycle leases no `create_offer` for the deal and settles nothing else.
+ *   `POST /create-trade` records the seller's consent asynchronously, so the directive is often leased one heartbeat
+ *   later. One retry per entry, in order, while at least 5 s of the caller's timeout is left. Empty answers after the
+ *   first cycle. Defaults to 2 s, 4 s, 8 s.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -76,4 +82,5 @@ data class LoopConfig(
     val unansweredCreateGrace: Duration? = null,
     val checkFailedCancels: Boolean = false,
     val reportNotActionable: Boolean = false,
+    val createDirectiveRetryDelays: List<Duration> = listOf(2.seconds, 4.seconds, 8.seconds),
 )
