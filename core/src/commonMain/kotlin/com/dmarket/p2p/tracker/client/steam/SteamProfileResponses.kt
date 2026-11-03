@@ -21,6 +21,13 @@ internal object SteamProfileResponses {
             .associateBy { SteamId(it.steamId) }
     }
 
+    /** `GetPlayerLinkDetails`: persona names keyed by [SteamId]; unknown ids and blank names are left out. */
+    fun personaNames(body: String): Map<SteamId, String> =
+        json.decodeFromString<GetPlayerLinkDetailsWrapper>(body).response?.accounts.orEmpty()
+            .mapNotNull { it.publicData }
+            .filter { it.steamId.isNotBlank() && it.personaName.isNotBlank() }
+            .associate { SteamId(it.steamId) to it.personaName }
+
     /** `GetSteamLevel`: the `player_level`, or `null` for a private / level-less profile. */
     fun level(body: String): Int? = json.decodeFromString<GetSteamLevelWrapper>(body).response?.playerLevel
 }

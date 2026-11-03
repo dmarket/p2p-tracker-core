@@ -38,3 +38,18 @@ data class GetSteamLevelWrapper(@SerialName("response") val response: PlayerLeve
 /** `{ "response": { "player_level": N } }`; empty `response` (null [playerLevel]) for a private profile. */
 @Serializable
 data class PlayerLevelResponse(@SerialName("player_level") val playerLevel: Int? = null)
+
+// ---- GetPlayerLinkDetails -----------------------------------------------------------------------
+
+@Serializable
+data class GetPlayerLinkDetailsWrapper(@SerialName("response") val response: GetPlayerLinkDetailsResponse? = null)
+
+/** Empty (`{}`) for unknown ids, for a comma-joined id list, and for more than 100 ids. */
+@Serializable
+data class GetPlayerLinkDetailsResponse(@SerialName("accounts") val accounts: List<PlayerLinkDetailsDto> = emptyList())
+
+@Serializable
+data class PlayerLinkDetailsDto(@SerialName("public_data") val publicData: PlayerPublicDataDto? = null)
+
+@Serializable
+data class PlayerPublicDataDto(@SerialName("steamid") val steamId: String = "", @SerialName("persona_name") val personaName: String = "")

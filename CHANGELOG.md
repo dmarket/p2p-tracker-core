@@ -16,6 +16,12 @@ GitHub Release.
 
 ### Fixed
 
+- Persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails` (DMA-857). The
+  `GetPlayerSummaries` read never worked: Steam answers it `400 Required parameter 'key' is missing` for a user
+  `access_token`, so no partner name ever reached `SuspiciousOfferCheck` and an offer to an account renamed to
+  "D market" stayed `UNLINKED_GIVE_ONLY` unless the partner was in `knownScamPartners`. New
+  `SteamEndpointsConfig.getPlayerLinkDetailsPath`, appended last so no positional `copy()` slot moves.
+
 - A warning on an active offer is cleared while the persona-name read fails, unless the warning itself was made on the
   name (DMA-818). Before, a failed `GetPlayerSummaries` held every warning on an active sent offer, so a retracted
   `knownScamPartners` entry or a stale `UNLINKED_GIVE_ONLY` stayed until the offer closed.
