@@ -48,8 +48,9 @@ version: 2.1
 #      (needs the CircleCI Org ID, Project ID, Pipeline Definition ID, and VCS origin URL).
 # The headless package is published first, so until both are in place for it publish_npm fails before it
 # reaches core, and nothing is released.
-# Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
-# releases. Snapshots need no secrets at all.
+# Only secret still needed: GITHUB_TOKEN (contents:write) from the org-wide context org-global, taken by
+# publish_npm (the tag + GitHub Release on STABLE releases) and delete_release_branch, as in the extension
+# repository. No project environment variable: org-global is rotated in one place for every repo.
 
 executors:
   jdk-node:
@@ -333,8 +334,12 @@ workflows:
       - publish_npm:
           requires:
             - hold_release
+          context:
+            - org-global
           filters: *release_branches
       - delete_release_branch:
           requires:
             - publish_npm
+          context:
+            - org-global
           filters: *release_branches

@@ -33,7 +33,7 @@ set -euo pipefail
 : "${REPO_SLUG:?REPO_SLUG must be set (the CircleCI executor sets it)}"
 : "${CIRCLE_BRANCH:?CIRCLE_BRANCH must be set — this job runs on release branches only}"
 : "${CIRCLE_SHA1:?CIRCLE_SHA1 must be set}"
-: "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (CircleCI project environment variable)}"
+: "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (org-wide context org-global)}"
 
 # A trailing newline inside the push URL is a bare 403.
 GITHUB_TOKEN="$(printf '%s' "$GITHUB_TOKEN" | tr -d '[:space:]')"
