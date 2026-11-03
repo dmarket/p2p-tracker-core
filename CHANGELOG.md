@@ -14,6 +14,8 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.2.0-beta] - 2026-11-03
+
 ### Added
 
 - `SuspiciousOfferCheck` flags active Steam offers and reports them in the new lifecycle event
@@ -576,7 +578,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...HEAD
+[1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
 [1.1.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...v1.1.0-beta
 [1.0.3-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...v1.0.3-beta
 [1.0.2-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.1-beta...v1.0.2-beta
