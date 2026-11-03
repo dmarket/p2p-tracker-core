@@ -83,6 +83,17 @@ class TrackerConfigTest {
         assertEquals(120_000, defaults.steamWrites.cooldownBaseMs)
         assertEquals(1_800_000, defaults.steamWrites.cooldownMaxMs)
         assertEquals(false, defaults.steamWrites.reportThrottledWrites)
+        // Received-offer name check: off until DMarket's offer record is confirmed live.
+        assertEquals(false, defaults.receivedOfferNameCheck)
+        assertEquals(120_000, defaults.isTradeOurGraceMs)
+    }
+
+    @Test
+    fun the_received_offer_name_check_fields_take_the_last_positional_slots() {
+        // A JS host constructs this class positionally, so these two must stay after knownScamPartners.
+        assertEquals(defaults.knownScamPartners, defaults.component13())
+        assertEquals(false, defaults.component14())
+        assertEquals(120_000, defaults.component15())
     }
 
     @Test

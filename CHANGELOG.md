@@ -30,6 +30,19 @@ GitHub Release.
   knownScamPartners)`. API: `SteamSentOffer` gains `assetIdsReceived` and `direction` (default `SENT`);
   `SteamReadClient.offers()` reads both lists in one call; `TradeTrackerLoop(offerGuard = null)` leaves the check off.
   Breaking for a web host: `createBrowserLoop` reports received offers, so read `direction`.
+- Received offers from an account whose persona name poses as DMarket are checked against DMarket's own record when
+  `TrackerConfig.receivedOfferNameCheck` is on (off by default). Such an offer is `IMPERSONATION` when DMarket answers
+  that it is not one of its bots' offers and the offer is at least `isTradeOurGraceMs` old (default 120 000); DMarket's
+  "ours", no answer or a younger offer leave it unflagged, and a known scam account still wins. The question is the new
+  port `DmarketOfferVerifier`, implemented by `KtorMarketplaceClient.isOurs` as one unauthenticated
+  `GET /marketplace-api/v1/plugin/is-trade-our/{offerId}` with no retry or refresh and its own 5 s timeout; any failure
+  is no answer, reported as `SteamReadFailed("is_trade_our")`, and ends the asking for that scan. At most 5 offers are
+  asked per scan, those not yet warned about first and the newest first, a "yes" is remembered while the offer is
+  listed, and a warning is never cleared on a scan that got no answer or no persona name for it (sent offers included),
+  nor because the sender renamed away from DMarket: only DMarket's "yes" clears it. Such an offer carries
+  `SuspiciousOffer.byName` (`"byName": true` on the wire), so a host tells it from a known scam account. `OfferGuardStore` gains `reported()`. `TradeTrackerLoop` and
+  `TradeTrackerCore.createLoop` take a trailing `offerVerifier` (default none: no name-based warning);
+  `createBrowserLoop` passes its marketplace client. `TrackerConfig` gains both fields as its last parameters.
 
 ### Changed
 

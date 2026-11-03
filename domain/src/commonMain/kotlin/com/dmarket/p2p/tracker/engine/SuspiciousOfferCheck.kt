@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.engine
 
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.steam.CreateLease
@@ -30,8 +31,11 @@ import kotlin.time.Instant
  *
  * A received offer ([OfferDirection.RECEIVED]) is only ever [SuspicionLevel.IMPERSONATION] or [SuspicionLevel.NONE]:
  * it is flagged when it is active, takes at least one of this account's items, and comes from a partner on the
- * known-scam list. DMarket's own deposit bots send exactly that give-only shape, so neither the give-only rule nor
- * the persona name applies to it, and leases and trust cannot explain an offer this device did not make.
+ * known-scam list. DMarket's own deposit bots send exactly that give-only shape, so the give-only rule does not apply
+ * to it, and leases and trust cannot explain an offer this device did not make. With the received-offer name check on,
+ * a candidate whose partner's persona name poses as DMarket is also flagged once DMarket has said the offer is not one
+ * of its own ([dmarketVerdicts] `false`) and the offer is at least the grace old; a `true`, a missing verdict or a
+ * younger offer leaves it [SuspicionLevel.NONE]. Only a known-scam partner outranks DMarket's `true`.
  */
 object SuspiciousOfferCheck {
     /** `ETradeOfferState` Active (2) and CreatedNeedsConfirmation (9): the offers that can still be confirmed. */
@@ -42,12 +46,25 @@ object SuspiciousOfferCheck {
 
     /**
      * Whether [offer] can be flagged at all: active, and for a received offer one that takes something from this
-     * account. The loop reads persona names only for the partners of the sent ones.
+     * account. The loop reads persona names only for the partners of the candidates.
      */
     fun candidate(offer: SteamSentOffer): Boolean = offer.state in ACTIVE_STATES &&
         (offer.direction == OfferDirection.SENT || offer.assetIdsGiven.isNotEmpty())
 
-    /** The level of one offer. */
+    /**
+     * Whether [offer] is a received candidate whose verdict rests on DMarket's answer: not from a known-scam partner,
+     * and from a partner whose persona name poses as DMarket. The loop asks DMarket about these offers and no other.
+     */
+    fun asksDmarket(offer: SteamSentOffer, knownScamPartners: Set<SteamId>, personaNames: Map<SteamId, String>): Boolean =
+        offer.direction == OfferDirection.RECEIVED &&
+            candidate(offer) &&
+            offer.partner !in knownScamPartners &&
+            personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true
+
+    /**
+     * The level of one offer. [receivedNameCheck], [dmarketVerdicts] (absent = no answer) and [isTradeOurGrace] apply
+     * to received offers only.
+     */
     fun classify(
         offer: SteamSentOffer,
         tracking: List<TrackedDeal>,
@@ -56,10 +73,20 @@ object SuspiciousOfferCheck {
         knownScamPartners: Set<SteamId>,
         now: Instant,
         personaNames: Map<SteamId, String> = emptyMap(),
+        receivedNameCheck: Boolean = false,
+        dmarketVerdicts: Map<OfferId, Boolean> = emptyMap(),
+        isTradeOurGrace: Duration = Duration.ZERO,
     ): SuspicionLevel {
         if (!candidate(offer)) return SuspicionLevel.NONE
         if (offer.partner in knownScamPartners) return SuspicionLevel.IMPERSONATION
-        if (offer.direction == OfferDirection.RECEIVED) return SuspicionLevel.NONE
+        if (offer.direction == OfferDirection.RECEIVED) {
+            val notOurs = dmarketVerdicts[offer.offerId] == false && now - offer.createdAt >= isTradeOurGrace
+            return if (receivedNameCheck && notOurs && asksDmarket(offer, knownScamPartners, personaNames)) {
+                SuspicionLevel.IMPERSONATION
+            } else {
+                SuspicionLevel.NONE
+            }
+        }
         if (personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true) return SuspicionLevel.IMPERSONATION
         val giveOnly = offer.assetIdsGiven.isNotEmpty() && offer.assetIdsReceived.isEmpty()
         val linked = tracking.any { it.steamOfferId == offer.offerId }
@@ -85,12 +112,19 @@ object SuspiciousOfferCheck {
         knownScamPartners: Set<SteamId>,
         now: Instant,
         personaNames: Map<SteamId, String> = emptyMap(),
+        receivedNameCheck: Boolean = false,
+        dmarketVerdicts: Map<OfferId, Boolean> = emptyMap(),
+        isTradeOurGrace: Duration = Duration.ZERO,
     ): List<SuspiciousOffer> = sent.mapNotNull { offer ->
-        val level = classify(offer, tracking, leases, trustedPartners, knownScamPartners, now, personaNames)
+        val level = classify(
+            offer, tracking, leases, trustedPartners, knownScamPartners, now, personaNames,
+            receivedNameCheck, dmarketVerdicts, isTradeOurGrace,
+        )
         if (level == SuspicionLevel.NONE) {
             null
         } else {
-            SuspiciousOffer(offer.offerId, offer.partner, offer.assetIdsGiven, level, personaNames[offer.partner], offer.direction)
+            val byName = offer.direction == OfferDirection.RECEIVED && offer.partner !in knownScamPartners
+            SuspiciousOffer(offer.offerId, offer.partner, offer.assetIdsGiven, level, personaNames[offer.partner], offer.direction, byName)
         }
     }
 }

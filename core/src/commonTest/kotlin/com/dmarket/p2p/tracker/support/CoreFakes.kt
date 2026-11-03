@@ -48,6 +48,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenRefreshClient
@@ -293,6 +294,18 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         personaNamesQueried += steamIds
         if (personaNamesThrows) error("simulated personaNames failure")
         return personaNames.filterKeys { it in steamIds }
+    }
+}
+
+// ---- FakeDmarketOfferVerifier ------------------------------------------------------------------
+
+/** Answers from [answers] (absent = no answer) and records every offer it was asked about, in order. */
+class FakeDmarketOfferVerifier(var answers: Map<OfferId, Boolean?> = emptyMap()) : DmarketOfferVerifier {
+    val asked = mutableListOf<OfferId>()
+
+    override suspend fun isOurs(offerId: OfferId): Boolean? {
+        asked += offerId
+        return answers[offerId]
     }
 }
 

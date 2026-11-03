@@ -36,6 +36,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
@@ -92,6 +93,8 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
      *
      * [scanReceivedOffers] makes the suspicious-offer check read the offers sent to this account too
      * ([SteamReadClient.offers]); off by default, so a host wiring its own ports keeps the sent-only read.
+     * [offerVerifier] asks DMarket whether a received offer named like DMarket is its own; without one such an
+     * offer is never flagged by its name.
      */
     fun createLoop(
         config: LoopConfig,
@@ -127,6 +130,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         notifications: SteamNotificationReader = NoOpSteamNotificationReader,
         random: Random = Random.Default,
         scanReceivedOffers: Boolean = false,
+        offerVerifier: DmarketOfferVerifier? = null,
     ): TradeTrackerLoop {
         val provider = SteamCredentialProvider(
             vault = vault,
@@ -162,6 +166,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             notifications = notifications,
             random = random,
             scanReceivedOffers = scanReceivedOffers,
+            offerVerifier = offerVerifier,
         )
     }
 

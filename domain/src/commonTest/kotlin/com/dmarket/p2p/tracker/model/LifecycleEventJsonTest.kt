@@ -72,6 +72,22 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun suspicious_offers_carry_by_name_only_when_set() {
+        val byName = SuspiciousOffer(
+            OfferId("o1"),
+            SteamId("76561198000000002"),
+            setOf(AssetId("a1")),
+            SuspicionLevel.IMPERSONATION,
+            direction = OfferDirection.RECEIVED,
+            byName = true,
+        )
+        val rows = parse(LifecycleEvent.SuspiciousOutgoingOffers(listOf(byName, byName.copy(byName = false))))["offers"]!!
+            .jsonArray.map { it.jsonObject }
+        assertEquals("true", rows[0]["byName"]?.jsonPrimitive?.content)
+        assertEquals(null, rows[1]["byName"])
+    }
+
+    @Test
     fun heartbeat_sent_carries_counts_and_ttl() {
         val json = parse(LifecycleEvent.HeartbeatSent(ttlSeconds = 180, trackingCount = 3, directiveCount = 1))
         assertEquals("HeartbeatSent", json["event"]?.jsonPrimitive?.content)

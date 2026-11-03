@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class SuspiciousOfferCheckTest {
@@ -39,8 +40,13 @@ class SuspiciousOfferCheckTest {
     )
 
     /** A received offer that takes this account's items and gives nothing: the shape of a DMarket deposit bot's. */
-    private fun received(from: SteamId = partner, gives: Set<String> = setOf("a1"), receives: Set<String> = emptySet(), state: Int = 2) =
-        offer(to = from, gives = gives, receives = receives, state = state, direction = OfferDirection.RECEIVED)
+    private fun received(
+        from: SteamId = partner,
+        gives: Set<String> = setOf("a1"),
+        receives: Set<String> = emptySet(),
+        state: Int = 2,
+        at: Instant = now - 1.minutes,
+    ) = offer(to = from, gives = gives, receives = receives, state = state, at = at, direction = OfferDirection.RECEIVED)
 
     private fun lease(to: SteamId = partner, assets: Set<String> = setOf("a1", "a2"), at: Instant = now - 2.minutes) =
         CreateLease(DealId("deal-1"), to, assets.mapTo(mutableSetOf(), ::AssetId), at)
@@ -216,5 +222,96 @@ class SuspiciousOfferCheckTest {
             now = now,
         )
         assertEquals(listOf(OfferDirection.RECEIVED, OfferDirection.SENT), flagged.map { it.direction })
+    }
+
+    // ---- received-offer name check (DMarket's own verdict) ----
+
+    private val grace = 2.minutes
+    private val dmBot = mapOf(partner to "DM Bot")
+    private val oldEnough = now - grace
+
+    private fun named(
+        offer: SteamSentOffer,
+        verdicts: Map<OfferId, Boolean>,
+        on: Boolean = true,
+        names: Map<SteamId, String> = dmBot,
+        scam: Set<SteamId> = setOf(scammer),
+    ) = SuspiciousOfferCheck.classify(offer, emptyList(), emptyList(), emptySet(), scam, now, names, on, verdicts, grace)
+
+    @Test
+    fun a_received_offer_named_like_dmarket_that_dmarket_disowns_past_the_grace_is_impersonation() {
+        assertEquals(SuspicionLevel.IMPERSONATION, named(received(at = oldEnough), mapOf(OfferId("o1") to false)))
+    }
+
+    @Test
+    fun dmarkets_not_ours_on_an_offer_younger_than_the_grace_is_none() {
+        val young = received(at = oldEnough + 1.seconds)
+        assertEquals(SuspicionLevel.NONE, named(young, mapOf(OfferId("o1") to false)))
+    }
+
+    @Test
+    fun a_received_offer_dmarket_owns_is_none() {
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), mapOf(OfferId("o1") to true)))
+    }
+
+    @Test
+    fun a_received_offer_with_no_dmarket_answer_is_none() {
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), emptyMap()))
+    }
+
+    @Test
+    fun dmarkets_not_ours_is_ignored_while_the_name_check_is_off() {
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), mapOf(OfferId("o1") to false), on = false))
+    }
+
+    @Test
+    fun dmarkets_not_ours_does_not_flag_a_partner_whose_name_is_not_dmarkets() {
+        val plain = mapOf(partner to "Alice")
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), mapOf(OfferId("o1") to false), names = plain))
+        assertEquals(false, SuspiciousOfferCheck.asksDmarket(received(), setOf(scammer), plain))
+    }
+
+    @Test
+    fun a_known_scam_partner_outranks_dmarkets_ours() {
+        // Pin of order: the known-scam list is checked before DMarket's answer.
+        val fromScammer = received(from = scammer, at = oldEnough)
+        assertEquals(SuspicionLevel.IMPERSONATION, named(fromScammer, mapOf(OfferId("o1") to true), names = mapOf(scammer to "DM Bot")))
+        assertEquals(false, SuspiciousOfferCheck.asksDmarket(fromScammer, setOf(scammer), mapOf(scammer to "DM Bot")))
+    }
+
+    @Test
+    fun only_an_active_received_offer_named_like_dmarket_that_takes_an_item_asks_dmarket() {
+        assertEquals(true, SuspiciousOfferCheck.asksDmarket(received(), setOf(scammer), dmBot))
+        assertEquals(false, SuspiciousOfferCheck.asksDmarket(received(gives = emptySet(), receives = setOf("b1")), setOf(scammer), dmBot))
+        assertEquals(false, SuspiciousOfferCheck.asksDmarket(received(state = 3), setOf(scammer), dmBot))
+        assertEquals(false, SuspiciousOfferCheck.asksDmarket(offer(), setOf(scammer), dmBot))
+    }
+
+    @Test
+    fun a_sent_offer_ignores_dmarkets_verdict() {
+        // Pin: the sent path keeps its own rules.
+        val sent = offer(at = oldEnough)
+        assertEquals(SuspicionLevel.IMPERSONATION, named(sent, mapOf(OfferId("o1") to true)))
+        assertEquals(SuspicionLevel.UNLINKED_GIVE_ONLY, named(sent, mapOf(OfferId("o1") to true), names = emptyMap()))
+    }
+
+    @Test
+    fun only_a_received_offer_flagged_on_the_name_is_marked_by_name() {
+        val byName = received(at = oldEnough)
+        val fromScammer = received(from = scammer, at = oldEnough).copy(offerId = OfferId("o2"))
+        val sent = offer(at = oldEnough).copy(offerId = OfferId("o3"))
+        val found = SuspiciousOfferCheck.evaluate(
+            sent = listOf(byName, fromScammer, sent),
+            tracking = emptyList(),
+            leases = emptyList(),
+            trustedPartners = emptySet(),
+            knownScamPartners = setOf(scammer),
+            now = now,
+            personaNames = dmBot,
+            receivedNameCheck = true,
+            dmarketVerdicts = mapOf(OfferId("o1") to false, OfferId("o2") to false),
+            isTradeOurGrace = grace,
+        )
+        assertEquals(mapOf("o1" to true, "o2" to false, "o3" to false), found.associate { it.offerId.value to it.byName })
     }
 }

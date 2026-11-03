@@ -30,7 +30,9 @@ enum class SuspicionLevel {
 
 /**
  * An active offer the check flagged. [level] is never [SuspicionLevel.NONE]; [personaName] is the partner's, when read.
- * [partner] and [assetIdsGiven] are from this account's side in either [direction] (see [SteamSentOffer]).
+ * [partner] and [assetIdsGiven] are from this account's side in either [direction] (see [SteamSentOffer]). [byName] marks a
+ * received impersonation flagged on the partner's persona name and DMarket's "not ours", not on the known-scam list
+ * the check ran with, so a host can tell the two apart without its own copy of that list.
  */
 data class SuspiciousOffer(
     val offerId: OfferId,
@@ -39,4 +41,5 @@ data class SuspiciousOffer(
     val level: SuspicionLevel,
     val personaName: String? = null,
     val direction: OfferDirection = OfferDirection.SENT,
+    val byName: Boolean = false,
 )

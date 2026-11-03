@@ -91,6 +91,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
@@ -326,6 +327,15 @@ private data class WriteAttempt(
  */
 internal val HOST_REQUESTED_SENT_OFFERS_FLOOR = 30.seconds
 
+/**
+ * How many received offers one guard scan asks DMarket about ([DmarketOfferVerifier]); the rest wait for the next
+ * scan. One request each, so a page of lookalike offers cannot turn into a burst against DMarket's public limit.
+ */
+internal const val MAX_DMARKET_VERIFICATIONS_PER_SCAN = 5
+
+/** The [LifecycleEvent.SteamReadFailed] axis of a missing DMarket answer. */
+private const val IS_TRADE_OUR_AXIS = "is_trade_our"
+
 /** A steamid64 in the individual-account range, the only form a known-scam entry can match an offer partner in. */
 private val KNOWN_SCAM_STEAM_ID = Regex("^7656119\\d{10}$")
 
@@ -431,6 +441,11 @@ class TradeTrackerLoop(
      * Off by default so a host that wires its own ports keeps today's sent-only read; the web facade turns it on.
      */
     private val scanReceivedOffers: Boolean = false,
+    /**
+     * DMarket's answer to "is this offer yours?", for received offers named like DMarket when
+     * `TrackerConfig.receivedOfferNameCheck` is on. `null` means no answer for any offer, so no name-based warning.
+     */
+    private val offerVerifier: DmarketOfferVerifier? = null,
 ) {
     init {
         // A proven write is a write the PROVER performs — TLSN requires the prover to be the TLS client, so
@@ -1043,6 +1058,12 @@ class TradeTrackerLoop(
 
     private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> =
         ids.filter { KNOWN_SCAM_STEAM_ID.matches(it) }.mapTo(mutableSetOf(), ::SteamId)
+
+    /**
+     * Received offers DMarket said are its own. Only `true` is kept, and only for offers the latest read still lists:
+     * a "not ours" may turn into "ours" once DMarket records its bot's offer, so it is asked again every scan.
+     */
+    private val dmarketOwnedOffers = mutableSetOf<OfferId>()
 
     /** Calls to [awaitDirectiveOutcome] waiting on a deal's `create_offer`, keyed by deal. Guarded by [createWaitersLock]. */
     private val createWaiters = mutableMapOf<DealId, CompletableDeferred<CreateOfferResult>>()
@@ -2060,7 +2081,9 @@ class TradeTrackerLoop(
      * at most once per `CadenceConfig.activeOfferIntervalMs` (per [HOST_REQUESTED_SENT_OFFERS_FLOOR] when the host asked),
      * by a stamp that survives respawns. With no tracked
      * deal and no request it adds no Steam read at all. The persona names of the active sent offers' partners are read
-     * for the impersonation check; when that read fails the other checks still run, without names.
+     * for the impersonation check, and with `TrackerConfig.receivedOfferNameCheck` on also those of the received
+     * candidates not on the known-scam list, which DMarket is then asked about ([dmarketVerdicts]); when the names read
+     * fails the other checks still run, without names.
      */
     private suspend fun checkSentOffers(tracking: List<TrackedDeal>, credential: SteamCredential, alreadyRead: List<SteamSentOffer>?) {
         val offerGuard = offerGuard ?: return
@@ -2078,18 +2101,22 @@ class TradeTrackerLoop(
         }
         sentOffersCheckRequested = false
         runCatching { offerGuard.setLastScanAt(now) }
-        val nameCandidates = sent.filter { it.direction == OfferDirection.SENT && SuspiciousOfferCheck.candidate(it) }
+        val nameCheck = config.tunables.receivedOfferNameCheck
+        val nameCandidates = sent.filter {
+            SuspiciousOfferCheck.candidate(it) &&
+                (it.direction == OfferDirection.SENT || nameCheck && it.partner !in knownScamPartners)
+        }
         val partners = nameCandidates.mapTo(mutableSetOf()) { it.partner }
-        var namesRead = true
         val personaNames = if (partners.isEmpty()) {
             emptyMap()
         } else {
             runCatching { steamReader.personaNames(credential, partners) }.getOrElse {
                 emit(LifecycleEvent.SteamReadFailed("persona_names", it.redactedSummary()))
-                namesRead = false
                 emptyMap()
             }
         }
+        val held = mutableSetOf<OfferId>()
+        val verdicts = if (nameCheck) dmarketVerdicts(sent, personaNames, offerGuard, held) else emptyMap()
         val found = SuspiciousOfferCheck.evaluate(
             sent = sent,
             tracking = tracking,
@@ -2098,13 +2125,99 @@ class TradeTrackerLoop(
             knownScamPartners = knownScamPartners,
             now = now,
             personaNames = personaNames,
+            receivedNameCheck = nameCheck,
+            dmarketVerdicts = verdicts,
+            isTradeOurGrace = config.tunables.isTradeOurGrace,
         )
-        // Without the names a name-based warning cannot be re-derived, so those offers count as unlisted: never cleared.
-        val unjudged = if (namesRead) emptySet() else nameCandidates.mapTo(mutableSetOf()) { it.offerId }
+        // Without the partner's name (a failed read, or a profile the read left out) or DMarket's answer a name-based
+        // warning cannot be re-derived, so those offers count as unlisted: never cleared.
+        val unjudged = held + nameCandidates.filter { it.partner !in personaNames }.mapTo(mutableSetOf()) { it.offerId }
         val delta = offerGuard.unreported(found, sent.filter { it.offerId !in unjudged }.mapTo(mutableSetOf()) { it.offerId })
         if (delta.fresh.isNotEmpty() || delta.cleared.isNotEmpty()) {
             emit(LifecycleEvent.SuspiciousOutgoingOffers(delta.fresh, delta.cleared))
         }
+    }
+
+    /**
+     * DMarket's answers for the received offers whose verdict rests on them ([SuspiciousOfferCheck.asksDmarket]): one
+     * request per offer, at most [MAX_DMARKET_VERIFICATIONS_PER_SCAN] per scan, with a remembered `true` answering
+     * without one. The offers left without an answer (no verifier, a failed request, past the cap) are added to
+     * [held], so a warning already shown for one is kept rather than cleared on missing evidence. The first failed
+     * request ends the asking for this scan: a DMarket that is down would otherwise hold the cycle once per offer.
+     *
+     * A received offer already warned about is asked about too when its partner's name no longer poses as DMarket: a
+     * rename is not DMarket's "ours", so its "not ours" holds the warning, and only a `true` (or the offer leaving the
+     * read, or the name check going off) clears it.
+     *
+     * The cap goes first to offers not yet warned about, newest first: a warned offer stays warned without an answer,
+     * and only a `true` is remembered (in memory, lost on a respawn), so read order alone would ask the same offers
+     * every scan and never reach the rest. Ordering by the persisted warnings survives the respawns.
+     */
+    private suspend fun dmarketVerdicts(
+        offers: List<SteamSentOffer>,
+        personaNames: Map<SteamId, String>,
+        offerGuard: OfferGuardStore,
+        held: MutableSet<OfferId>,
+    ): Map<OfferId, Boolean> {
+        dmarketOwnedOffers.retainAll(offers.mapTo(mutableSetOf()) { it.offerId })
+        val warned = runCatching { offerGuard.reported() }.getOrDefault(emptySet())
+        val renamed = { offer: SteamSentOffer ->
+            offer.offerId in warned &&
+                offer.direction == OfferDirection.RECEIVED &&
+                SuspiciousOfferCheck.candidate(offer) &&
+                offer.partner !in knownScamPartners &&
+                offer.partner in personaNames
+        }
+        val candidates = offers
+            .filter { SuspiciousOfferCheck.asksDmarket(it, knownScamPartners, personaNames) || renamed(it) }
+            .sortedWith(compareBy<SteamSentOffer> { it.offerId in warned }.thenByDescending { it.createdAt })
+        val verdicts = mutableMapOf<OfferId, Boolean>()
+        var asked = 0
+        var deferred = 0
+        var failed = false
+        for (offer in candidates) {
+            val id = offer.offerId
+            if (id in dmarketOwnedOffers) {
+                verdicts[id] = true
+                continue
+            }
+            val verifier = offerVerifier
+            if (verifier == null || failed || asked == MAX_DMARKET_VERIFICATIONS_PER_SCAN) {
+                if (verifier != null && !failed) deferred++
+                held += id
+                continue
+            }
+            asked++
+            val answer = try {
+                verifier.isOurs(id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                emit(LifecycleEvent.SteamReadFailed(IS_TRADE_OUR_AXIS, e.redactedSummary()))
+                failed = true
+                held += id
+                continue
+            }
+            when (answer) {
+                null -> {
+                    emit(LifecycleEvent.SteamReadFailed(IS_TRADE_OUR_AXIS, "no answer for offer ${id.value}"))
+                    failed = true
+                    held += id
+                }
+                true -> {
+                    dmarketOwnedOffers += id
+                    verdicts[id] = true
+                }
+                false -> {
+                    verdicts[id] = false
+                    if (!SuspiciousOfferCheck.asksDmarket(offer, knownScamPartners, personaNames)) held += id
+                }
+            }
+        }
+        if (deferred > 0) {
+            emit(LifecycleEvent.SteamReadFailed(IS_TRADE_OUR_AXIS, "$deferred offers left for the next scan"))
+        }
+        return verdicts
     }
 
     /**

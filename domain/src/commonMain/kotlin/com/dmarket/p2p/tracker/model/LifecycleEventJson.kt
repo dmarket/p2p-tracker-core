@@ -239,6 +239,7 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
                         putJsonArray("assetIdsGiven") { offer.assetIdsGiven.forEach { add(it.value) } }
                         offer.personaName?.let { put("personaName", it) }
                         put("direction", offer.direction.name)
+                        if (offer.byName) put("byName", true)
                     }
                 }
             }

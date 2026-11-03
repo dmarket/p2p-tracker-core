@@ -46,6 +46,9 @@ interface OfferGuardStore {
      */
     suspend fun unreported(found: List<SuspiciousOffer>, seen: Set<OfferId>): GuardDelta
 
+    /** The offers currently on record as reported, at any level. */
+    suspend fun reported(): Set<OfferId>
+
     suspend fun lastScanAt(): Instant?
 
     suspend fun setLastScanAt(at: Instant)
@@ -122,6 +125,11 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
             write(DeviceVaultKeys.GUARD_NOTIFIED, TrackerJson.encodeToString(notifiedSerializer, stored))
         }
         GuardDelta(fresh, cleared)
+    }
+
+    override suspend fun reported(): Set<OfferId> = mutex.withLock {
+        restore()
+        notified.keys.toSet()
     }
 
     override suspend fun lastScanAt(): Instant? = mutex.withLock {

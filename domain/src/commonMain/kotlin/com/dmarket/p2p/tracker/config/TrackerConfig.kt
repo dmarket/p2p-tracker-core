@@ -57,7 +57,21 @@ data class TrackerConfig(
      * Appended last for the positional-construction reason given on [steamWrites].
      */
     val knownScamPartners: Set<String> = setOf("76561198781084366"),
+    /**
+     * Whether a received offer from an account whose persona name poses as DMarket is checked against DMarket's
+     * own record of its bots' offers, and flagged when DMarket says it is not one of them. Off until that record is
+     * confirmed live: with it off, received offers are flagged only by [knownScamPartners].
+     */
+    val receivedOfferNameCheck: Boolean = false,
+    /**
+     * How old (by Steam's `time_created`) a received offer must be before DMarket's "not ours" counts, in ms. DMarket
+     * may record its bot's offer a little after Steam lists it; a younger offer is asked again on the next scan.
+     */
+    val isTradeOurGraceMs: Int = 120_000,
 ) {
+    /** [isTradeOurGraceMs] as a [Duration]. */
+    @JsExport.Ignore val isTradeOurGrace: Duration get() = isTradeOurGraceMs.milliseconds
+
     companion object {
 
         const val DEFAULT_DMARKET_BASE_URL: String = "https://api.dmarket.com"

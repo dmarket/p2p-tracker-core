@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAck
@@ -18,6 +19,7 @@ import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.policy.ExponentialBackoff
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
@@ -50,13 +52,23 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPath
 import io.ktor.http.fromHttpToGmtDate
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+
+/**
+ * How long [KtorMarketplaceClient.isOurs] waits for DMarket, well under the shared request timeout: the loop asks while
+ * it holds the cycle, so a slow public endpoint must not stall the heartbeat and the page-triggered create behind it.
+ */
+internal val IS_TRADE_OUR_TIMEOUT = 5.seconds
 
 /** Thrown on HTTP 429; [retryAfterSeconds] carries the `Retry-After` header when present. */
 class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rate limited (Retry-After=$retryAfterSeconds)")
@@ -85,6 +97,8 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * to fix, not the gateway's, and a `/notary` 409 `P2P_DEAL_CLOSED` names why a proof was refused. See
  * [gatewayErrorCode] for where the code is read from.
  *
+ * [isOurs] is the one call sent without [authenticator]: see its KDoc.
+ *
  * Audit boundary: no method here accepts a Steam credential — by construction the Steam JWT can never
  * be sent to the marketplace. The client also uses a DMarket-only [HttpClient], physically separate
  * from the Steam reader's transport.
@@ -97,13 +111,17 @@ class KtorMarketplaceClient(
     private val random: Random = Random.Default,
     private val maxReportBodyBytes: Int = 0,
     private val onServerDate: ((Instant) -> Unit)? = null,
-) : MarketplaceClient {
+) : MarketplaceClient,
+    DmarketOfferVerifier {
 
     /** C2 deal calls (`accept`/`create-trade`/`getDeal`). */
     private val p2pPath = "/exchange/v1/p2p"
 
     /** C1 trade-tracker base; ingress prepends `/exchange/v1`, the gateway registers the ext routes at root. */
     private val extPath = "$p2pPath/ext"
+
+    /** Public, unauthenticated: answers whether a Steam trade offer id is one of DMarket's own. */
+    private val isTradeOurPath = "/marketplace-api/v1/plugin/is-trade-our"
 
     override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse {
         val text = postJson("$baseUrl$extPath/heartbeat", TrackerJson.encodeToString(request.toDto()), readErrorCode = true)
@@ -192,6 +210,32 @@ class KtorMarketplaceClient(
     override suspend fun getDeal(id: DealId): Deal {
         val text = getJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}")
         return TrackerJson.decodeFromString<DealDto>(text).toDomain()
+    }
+
+    /**
+     * One `GET {baseUrl}/marketplace-api/v1/plugin/is-trade-our/{offerId}`, answered from its `isTradeOur` boolean.
+     *
+     * Sent with no `Authorization`, no 401 refresh and no retry: the route is public, and a verdict on someone
+     * else's offer must never spend or rotate this account's session. Any failure (a status, a body without a JSON
+     * boolean `isTradeOur`, no reply within [IS_TRADE_OUR_TIMEOUT]) is `null`, never an exception, so it cannot move
+     * the blocking state. A host-supplied [httpClient] that injects auth in its own transport would still attach it
+     * here; only the web facade wires this today.
+     */
+    override suspend fun isOurs(offerId: OfferId): Boolean? = withTimeoutOrNull(IS_TRADE_OUR_TIMEOUT) {
+        try {
+            val response = httpClient.get("$baseUrl$isTradeOurPath/${offerId.value.encodeURLPath()}")
+            // Checked here, not left to sanitizeHttpFailures: a host-supplied client may not install it.
+            if (response.status.isSuccess()) {
+                val field = (TrackerJson.parseToJsonElement(response.bodyAsText()) as? JsonObject)?.get("isTradeOur") as? JsonPrimitive
+                field?.takeUnless { it.isString }?.booleanOrNull
+            } else {
+                null
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // ---- private -----------------------------------------------------------------------------------

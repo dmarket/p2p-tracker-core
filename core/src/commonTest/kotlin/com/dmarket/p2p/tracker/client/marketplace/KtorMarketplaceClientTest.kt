@@ -20,7 +20,9 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.support.FakeMarketplaceAuthenticator
+import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockEngineConfig
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.engine.mock.respondError
 import io.ktor.http.ContentType
@@ -29,6 +31,8 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
@@ -38,6 +42,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class KtorMarketplaceClientTest {
@@ -677,5 +682,104 @@ class KtorMarketplaceClientTest {
         val engine = MockEngine { respond("", HttpStatusCode.InternalServerError) }
         val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
         assertNull(assertFailsWith<MarketplaceServerErrorException> { client.heartbeat(aHeartbeat()) }.errorCode)
+    }
+
+    // ---- is-trade-our ----------------------------------------------------------------------
+
+    /** Answers every request with [respond], recording each; the authenticator would attach and refresh a token. */
+    private class IsTradeOurProbe(
+        val respond: suspend io.ktor.client.engine.mock.MockRequestHandleScope.() -> io.ktor.client.request.HttpResponseData,
+    ) {
+        val requests = mutableListOf<io.ktor.client.request.HttpRequestData>()
+        val auth = FakeMarketplaceAuthenticator(token = "test-bearer-token")
+        val client = KtorMarketplaceClient(
+            createHttpClient(
+                MockEngine {
+                    requests += it
+                    respond()
+                },
+            ),
+            "https://gateway.dmarket.com",
+            auth,
+        )
+    }
+
+    /**
+     * On the default dispatcher: MockEngine answers on its own thread, so under runTest's virtual clock the request
+     * looks idle and isOurs' timeout would fire before any reply.
+     */
+    private suspend fun KtorMarketplaceClient.isOursInRealTime(id: OfferId) =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { isOurs(id) }
+
+    private fun isTradeOur(body: String, status: HttpStatusCode = HttpStatusCode.OK) =
+        IsTradeOurProbe { respond(body, status, jsonHeaders()) }
+
+    @Test
+    fun is_ours_sends_one_unauthenticated_get_to_the_exact_path() = runTest {
+        val probe = isTradeOur("""{"isTradeOur":true}""")
+        assertEquals(true, probe.client.isOursInRealTime(OfferId("8123456789")))
+
+        val request = probe.requests.single()
+        assertEquals(HttpMethod.Get, request.method)
+        assertEquals("$baseUrl/marketplace-api/v1/plugin/is-trade-our/8123456789", request.url.toString())
+        assertNull(request.headers[HttpHeaders.Authorization])
+        assertEquals(0 to 0, probe.auth.tokenCalls to probe.auth.refreshCalls)
+    }
+
+    @Test
+    fun is_ours_reads_false() = runTest {
+        assertEquals(false, isTradeOur("""{"isTradeOur":false}""").client.isOursInRealTime(OfferId("1")))
+    }
+
+    @Test
+    fun is_ours_without_a_json_boolean_is_no_answer() = runTest {
+        for (body in listOf("""{}""", """{"isTradeOur":"true"}""", """{"isTradeOur":null}""", """[true]""", "not json")) {
+            assertNull(isTradeOur(body).client.isOursInRealTime(OfferId("1")), body)
+        }
+    }
+
+    @Test
+    fun is_ours_on_a_failed_status_is_no_answer_after_one_request() = runTest {
+        for (status in listOf(
+            HttpStatusCode.Unauthorized,
+            HttpStatusCode.NotFound,
+            HttpStatusCode.TooManyRequests,
+            HttpStatusCode.InternalServerError,
+        )) {
+            val probe = isTradeOur("""{"isTradeOur":true}""", status)
+            assertNull(probe.client.isOursInRealTime(OfferId("1")), "$status")
+            assertEquals(1, probe.requests.size, "$status")
+            assertEquals(0, probe.auth.refreshCalls, "$status")
+        }
+    }
+
+    @Test
+    fun is_ours_on_a_failed_status_is_no_answer_from_a_client_without_the_failure_mapping() = runTest {
+        // A host-supplied client: Ktor's default expectSuccess = false hands the 500's body back as if it answered.
+        val engine = MockEngine { respond("""{"isTradeOur":false}""", HttpStatusCode.InternalServerError, jsonHeaders()) }
+        val client = KtorMarketplaceClient(HttpClient(engine), baseUrl, FakeMarketplaceAuthenticator(token = "t"))
+        assertNull(client.isOursInRealTime(OfferId("1")))
+    }
+
+    @Test
+    fun is_ours_on_a_transport_failure_is_no_answer() = runTest {
+        val probe = IsTradeOurProbe { error("connection reset") }
+        assertNull(probe.client.isOursInRealTime(OfferId("1")))
+    }
+
+    @Test
+    fun is_ours_that_takes_longer_than_its_own_timeout_is_no_answer() = runTest {
+        // On the test's virtual clock, so the 10 s reply is late against the 5 s timeout without taking real time.
+        val engine = MockEngine(
+            MockEngineConfig().apply {
+                dispatcher = StandardTestDispatcher(testScheduler)
+                addHandler {
+                    delay(10.seconds)
+                    respond("""{"isTradeOur":true}""", HttpStatusCode.OK, jsonHeaders())
+                }
+            },
+        )
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, FakeMarketplaceAuthenticator(token = "t"))
+        assertNull(client.isOurs(OfferId("1")))
     }
 }

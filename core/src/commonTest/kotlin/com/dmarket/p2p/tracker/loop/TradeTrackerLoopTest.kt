@@ -54,6 +54,7 @@ import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
 import com.dmarket.p2p.tracker.port.host.EventObserver
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
@@ -68,6 +69,7 @@ import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeCredentialVault
 import com.dmarket.p2p.tracker.support.FakeDeviceIdStore
+import com.dmarket.p2p.tracker.support.FakeDmarketOfferVerifier
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.FakeMarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.support.FakeNotaryProver
@@ -193,6 +195,7 @@ class TradeTrackerLoopTest {
         surface: RuntimeSurface = RuntimeSurface.WebChrome,
         offerGuard: OfferGuardStore? = null,
         scanReceivedOffers: Boolean = false,
+        offerVerifier: DmarketOfferVerifier? = null,
         // null keeps LoopConfig's own default (2 s, 4 s, 8 s).
         createDirectiveRetryDelays: List<Duration>? = null,
     ): TradeTrackerLoop {
@@ -239,6 +242,7 @@ class TradeTrackerLoopTest {
             notaryThrottle = notaryThrottle,
             offerGuard = offerGuard,
             scanReceivedOffers = scanReceivedOffers,
+            offerVerifier = offerVerifier,
         )
     }
 
@@ -6847,6 +6851,312 @@ class TradeTrackerLoopTest {
         val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
         assertEquals(listOf(SuspicionLevel.IMPERSONATION), events.flatMap { e -> e.offers.map { it.level } })
         assertTrue(events.all { it.cleared.isEmpty() }, "no names is no evidence the warning stopped applying")
+    }
+
+    // ---- received offers named like DMarket: DMarket's own verdict (is-trade-our) ----
+
+    private val namedLikeBot = SteamId("76561198000000777")
+
+    /** A received give-only offer from [namedLikeBot], made long enough ago for a "not ours" to count. */
+    private fun fromBotLookalike(id: String) = receivedGiveOnly(id).copy(createdAt = FakeClock().now() - 5.minutes)
+
+    private val nameCheckOn = TrackerConfig.defaults().copy(receivedOfferNameCheck = true)
+
+    private fun botLookalikeReader(vararg offers: SteamSentOffer) = FakeSteamReadClient().apply {
+        receivedOffers = offers.toList()
+        personaNames = mapOf(namedLikeBot to "DM Bot")
+    }
+
+    private fun nameCheckLoop(
+        reader: FakeSteamReadClient,
+        verifier: FakeDmarketOfferVerifier,
+        clock: FakeClock = FakeClock(),
+        observer: RecordingEventObserver = RecordingEventObserver(),
+        tunables: TrackerConfig = nameCheckOn,
+    ) = loop(
+        marketplace = createLease(),
+        reader = reader,
+        clock = clock,
+        eventObserver = observer,
+        tunables = tunables,
+        offerGuard = PersistedOfferGuardStore(),
+        scanReceivedOffers = true,
+        offerVerifier = verifier,
+    )
+
+    private suspend fun TradeTrackerLoop.nextScan(clock: FakeClock) {
+        clock.advance(180.seconds)
+        forceHeartbeatNow()
+        runOnce()
+    }
+
+    @Test
+    fun with_the_name_check_off_dmarket_is_never_asked_and_no_received_name_is_read() = runTest {
+        val verifier = FakeDmarketOfferVerifier()
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        nameCheckLoop(reader, verifier, tunables = TrackerConfig.defaults()).runOnce()
+
+        assertEquals(1, reader.offersCalls)
+        assertTrue(verifier.asked.isEmpty())
+        assertTrue(reader.personaNamesQueried.isEmpty())
+    }
+
+    @Test
+    fun with_the_name_check_off_dmarket_is_not_asked_even_when_a_sent_offer_brought_the_name() = runTest {
+        val verifier = FakeDmarketOfferVerifier()
+        // The sent offer to the same partner gets its name read, so only the switch keeps the received one unasked.
+        val reader = botLookalikeReader(fromBotLookalike("offer-1")).apply {
+            sentOffers = listOf(sentOffer(id = "offer-sent", partner = namedLikeBot.value, state = 2))
+        }
+        nameCheckLoop(reader, verifier, tunables = TrackerConfig.defaults()).runOnce()
+
+        assertEquals(listOf(setOf(namedLikeBot)), reader.personaNamesQueried)
+        assertTrue(verifier.asked.isEmpty())
+    }
+
+    @Test
+    fun with_the_name_check_on_received_candidates_names_are_read_and_a_plain_name_asks_nothing() = runTest {
+        val verifier = FakeDmarketOfferVerifier()
+        val reader = botLookalikeReader(fromBotLookalike("offer-1")).apply { personaNames = mapOf(namedLikeBot to "Alice") }
+        nameCheckLoop(reader, verifier).runOnce()
+
+        assertEquals(listOf(setOf(namedLikeBot)), reader.personaNamesQueried)
+        assertTrue(verifier.asked.isEmpty())
+    }
+
+    @Test
+    fun a_received_offer_that_takes_nothing_asks_dmarket_nothing() = runTest {
+        val verifier = FakeDmarketOfferVerifier()
+        val withdrawal = fromBotLookalike("offer-1").copy(assetIdsGiven = emptySet(), assetIdsReceived = setOf(AssetId("asset-5")))
+        val reader = botLookalikeReader(withdrawal)
+        nameCheckLoop(reader, verifier).runOnce()
+
+        assertTrue(verifier.asked.isEmpty())
+        assertTrue(reader.personaNamesQueried.isEmpty())
+    }
+
+    @Test
+    fun dmarkets_not_ours_on_a_received_bot_lookalike_is_an_impersonation() = runTest {
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
+        nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, observer = observer).runOnce()
+
+        val reported = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().single().offers.single()
+        assertEquals(OfferId("offer-1") to SuspicionLevel.IMPERSONATION, reported.offerId to reported.level)
+    }
+
+    @Test
+    fun at_most_five_offers_are_asked_per_scan_and_the_rest_wait_for_the_next() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val offers = (1..7).map { fromBotLookalike("offer-$it") }
+        val verifier = FakeDmarketOfferVerifier(offers.associate { it.offerId to false })
+        val l = nameCheckLoop(botLookalikeReader(*offers.toTypedArray()), verifier, clock, observer)
+        l.runOnce()
+
+        assertEquals(offers.take(5).map { it.offerId }.toSet(), verifier.asked.toSet())
+        assertTrue(
+            observer.events.any {
+                it is LifecycleEvent.SteamReadFailed &&
+                    it.axis == "is_trade_our" &&
+                    it.reason == "2 offers left for the next scan"
+            },
+        )
+    }
+
+    @Test
+    fun dmarkets_ours_is_remembered_and_not_asked_again() = runTest {
+        val clock = FakeClock()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to true))
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock)
+        l.runOnce()
+        l.nextScan(clock)
+
+        assertEquals(listOf(OfferId("offer-1")), verifier.asked)
+    }
+
+    @Test
+    fun a_remembered_ours_is_forgotten_once_a_read_no_longer_lists_the_offer() = runTest {
+        val clock = FakeClock()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to true))
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        val l = nameCheckLoop(reader, verifier, clock)
+        l.runOnce()
+        reader.receivedOffers = listOf(fromBotLookalike("offer-2"))
+        l.nextScan(clock)
+        reader.receivedOffers = listOf(fromBotLookalike("offer-1"))
+        l.nextScan(clock)
+
+        assertEquals(listOf("offer-1", "offer-2", "offer-1"), verifier.asked.map { it.value })
+    }
+
+    @Test
+    fun dmarkets_not_ours_is_asked_again_and_a_later_ours_clears_the_warning() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        l.runOnce()
+        verifier.answers = mapOf(OfferId("offer-1") to true)
+        l.nextScan(clock)
+
+        assertEquals(2, verifier.asked.size)
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(OfferId("offer-1")), events.first().offers.map { it.offerId })
+        assertEquals(listOf(OfferId("offer-1")), events.last().cleared)
+    }
+
+    @Test
+    fun no_answer_from_dmarket_raises_nothing_and_is_reported() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier()
+        val first = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        first.runOnce()
+
+        assertTrue(observer.events.none { it is LifecycleEvent.SuspiciousOutgoingOffers })
+        assertTrue(observer.events.any { it is LifecycleEvent.SteamReadFailed && it.axis == "is_trade_our" })
+    }
+
+    @Test
+    fun no_answer_after_a_not_ours_does_not_clear_the_warning() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        l.runOnce()
+        verifier.answers = emptyMap()
+        l.nextScan(clock)
+
+        assertEquals(2, verifier.asked.size)
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(SuspicionLevel.IMPERSONATION), events.flatMap { e -> e.offers.map { it.level } })
+        assertTrue(events.all { it.cleared.isEmpty() }, "no answer is no evidence the warning stopped applying")
+    }
+
+    @Test
+    fun a_failed_dmarket_request_ends_the_asking_for_this_scan() = runTest {
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier()
+        val offers = (1..3).map { fromBotLookalike("offer-$it") }
+        nameCheckLoop(botLookalikeReader(*offers.toTypedArray()), verifier, observer = observer).runOnce()
+
+        assertEquals(1, verifier.asked.size)
+        assertEquals(1, observer.events.count { it is LifecycleEvent.SteamReadFailed && it.axis == "is_trade_our" })
+        assertTrue(observer.events.none { it is LifecycleEvent.SuspiciousOutgoingOffers })
+    }
+
+    @Test
+    fun a_sender_renamed_away_from_dmarket_keeps_the_warning_until_dmarket_says_ours() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        val l = nameCheckLoop(reader, verifier, clock, observer)
+        l.runOnce()
+        reader.personaNames = mapOf(namedLikeBot to "Bob")
+        l.nextScan(clock)
+
+        assertEquals(2, verifier.asked.size)
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(OfferId("offer-1")), events.flatMap { e -> e.offers.map { it.offerId } })
+        assertTrue(events.all { it.cleared.isEmpty() }, "a rename is no evidence the offer is DMarket's")
+
+        verifier.answers = mapOf(OfferId("offer-1") to true)
+        l.nextScan(clock)
+        assertEquals(listOf(OfferId("offer-1")), observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().last().cleared)
+    }
+
+    @Test
+    fun offers_not_yet_warned_about_get_the_cap_first_so_every_offer_is_reached() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val offers = (1..7).map { fromBotLookalike("offer-$it") }
+        val verifier = FakeDmarketOfferVerifier(offers.associate { it.offerId to false })
+        val l = nameCheckLoop(botLookalikeReader(*offers.toTypedArray()), verifier, clock, observer)
+        l.runOnce()
+        verifier.asked.clear()
+        l.nextScan(clock)
+
+        assertEquals(listOf("offer-6", "offer-7"), verifier.asked.take(2).map { it.value })
+        val warned = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().flatMap { e ->
+            e.offers.map { it.offerId }
+        }
+        assertEquals(offers.map { it.offerId }.toSet(), warned.toSet())
+    }
+
+    @Test
+    fun the_newest_offer_not_yet_warned_about_is_asked_first() = runTest {
+        val verifier = FakeDmarketOfferVerifier()
+        val older = (1..5).map { fromBotLookalike("offer-$it") }
+        val newest = fromBotLookalike("offer-6").let { it.copy(createdAt = it.createdAt + 1.minutes) }
+        nameCheckLoop(botLookalikeReader(*(older + newest).toTypedArray()), verifier).runOnce()
+
+        assertEquals(OfferId("offer-6"), verifier.asked.first())
+    }
+
+    @Test
+    fun a_cancelled_dmarket_request_stops_the_scan_instead_of_counting_as_a_failure() = runTest {
+        val observer = RecordingEventObserver()
+        val asked = mutableListOf<OfferId>()
+        val verifier = DmarketOfferVerifier {
+            asked += it
+            throw CancellationException("stopped")
+        }
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"), fromBotLookalike("offer-2"))
+        val l = loop(
+            marketplace = createLease(),
+            reader = reader,
+            eventObserver = observer,
+            tunables = nameCheckOn,
+            offerGuard = PersistedOfferGuardStore(),
+            scanReceivedOffers = true,
+            offerVerifier = verifier,
+        )
+
+        assertFailsWith<CancellationException> { l.runOnce() }
+        assertEquals(1, asked.size)
+        assertTrue(observer.events.none { it is LifecycleEvent.SteamReadFailed && it.axis == "is_trade_our" })
+    }
+
+    @Test
+    fun a_received_warning_is_kept_when_the_names_read_leaves_its_partner_out() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        val l = nameCheckLoop(reader, verifier, clock, observer)
+        l.runOnce()
+        reader.personaNames = emptyMap()
+        l.nextScan(clock)
+
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(OfferId("offer-1")), events.flatMap { e -> e.offers.map { it.offerId } })
+        assertTrue(events.all { it.cleared.isEmpty() }, "a profile the read left out is no evidence the warning stopped applying")
+    }
+
+    @Test
+    fun a_sent_name_warning_is_kept_when_the_names_read_leaves_its_partner_out() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val reader = FakeSteamReadClient().apply {
+            // A swap, so the name is the only thing that flags it.
+            val swap = sentOffer(
+                id = "offer-sent",
+                partner = namedLikeBot.value,
+                state = 2,
+            ).copy(assetIdsReceived = setOf(AssetId("asset-5")))
+            sentOffers = listOf(swap)
+            personaNames = mapOf(namedLikeBot to "DM Bot")
+        }
+        val l = nameCheckLoop(reader, FakeDmarketOfferVerifier(), clock, observer, tunables = TrackerConfig.defaults())
+        l.runOnce()
+        reader.personaNames = emptyMap()
+        l.nextScan(clock)
+
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(OfferId("offer-sent")), events.flatMap { e -> e.offers.map { it.offerId } })
+        assertTrue(events.all { it.cleared.isEmpty() })
     }
 
     /** One hour of cycles a minute apart, each with a heartbeat; returns the sent-offers reads made. */

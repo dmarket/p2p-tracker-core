@@ -255,6 +255,8 @@ fun createBrowserLoop(
         directivesEnabled = true,
         // Fake DMarket bots send their scam as an offer TO the user, so the guard reads that list too.
         scanReceivedOffers = true,
+        // Unauthenticated `is-trade-our`, asked only while `receivedOfferNameCheck` is on.
+        offerVerifier = marketplace,
         // Push delivery is the host's job (it calls `deliverPush`); the lib owns no push transport.
     )
 }
