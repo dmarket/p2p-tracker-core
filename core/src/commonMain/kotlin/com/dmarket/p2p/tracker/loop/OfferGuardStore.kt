@@ -39,12 +39,14 @@ interface OfferGuardStore {
     suspend fun trustPartner(partner: SteamId)
 
     /**
-     * Records [found] as the offers currently flagged among [seen], the ids the Steam read listed, and returns what
-     * changed since the last report: the offers not yet reported at their level, and the reported ones [seen] lists
-     * that are no longer in [found]. A reported offer the read did not list is not cleared: the account-wide list is not
-     * proven complete, so its absence says nothing about the offer. It stays on record, up to [MAX_UNLISTED_NOTIFIED].
+     * Records [found] as the offers currently flagged among [judged], the ids the Steam read listed and the check could
+     * judge this scan (the caller leaves out offers whose name or DMarket answer is missing), and returns what changed
+     * since the last report: the offers not yet reported at their level, and the reported ones in [judged] that are no
+     * longer in [found]. A reported offer not in [judged] is not cleared: the read did not list it (the account-wide list
+     * is not proven complete) or its verdict could not be re-derived, so this scan says nothing about it. It stays on
+     * record, up to [MAX_UNLISTED_NOTIFIED].
      */
-    suspend fun unreported(found: List<SuspiciousOffer>, seen: Set<OfferId>): GuardDelta
+    suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>): GuardDelta
 
     /** The offers currently on record as reported, at any level. */
     suspend fun reported(): Set<OfferId>
@@ -119,25 +121,25 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
     }
 
     override suspend fun trustedPartners(): Set<SteamId> = mutex.withLock {
-        trusted += read(DeviceVaultKeys.GUARD_TRUSTED_PARTNERS, partnersSerializer).orEmpty().mapNotNull(::steamIdOrNull)
+        refreshTrusted()
         trusted.toSet()
     }
 
     override suspend fun trustPartner(partner: SteamId) = mutex.withLock {
-        trusted += read(DeviceVaultKeys.GUARD_TRUSTED_PARTNERS, partnersSerializer).orEmpty().mapNotNull(::steamIdOrNull)
+        refreshTrusted()
         if (trusted.add(partner)) {
             write(DeviceVaultKeys.GUARD_TRUSTED_PARTNERS, TrackerJson.encodeToString(partnersSerializer, trusted.map { it.value }.sorted()))
         }
     }
 
-    override suspend fun unreported(found: List<SuspiciousOffer>, seen: Set<OfferId>): GuardDelta = mutex.withLock {
+    override suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>): GuardDelta = mutex.withLock {
         restore()
         val fresh = found.filter { notified[it.offerId] != it.level }
         val current = found.associate { it.offerId to it.level }
-        val cleared = notified.keys.filter { it in seen && it !in current }
+        val cleared = notified.keys.filter { it in judged && it !in current }
         // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
         // (paged out, or from a scan since turned off) would otherwise stay on record forever.
-        val unlisted = notified.entries.filter { it.key !in seen }.takeLast(MAX_UNLISTED_NOTIFIED)
+        val unlisted = notified.entries.filter { it.key !in judged }.takeLast(MAX_UNLISTED_NOTIFIED)
         val next = unlisted.associate { it.key to it.value } + current
         if (next != notified) {
             notified.clear()
@@ -204,6 +206,11 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         }
         scannedAt = runCatching { storage.get(DeviceVaultKeys.GUARD_SCANNED_AT) }.getOrNull()
             ?.toLongOrNull()?.let(Instant::fromEpochMilliseconds)
+    }
+
+    /** Folds the host's trusted-partner writes in. Call inside [mutex]. */
+    private suspend fun refreshTrusted() {
+        trusted += read(DeviceVaultKeys.GUARD_TRUSTED_PARTNERS, partnersSerializer).orEmpty().mapNotNull(::steamIdOrNull)
     }
 
     private suspend fun <T> read(key: String, serializer: KSerializer<T>): T? {

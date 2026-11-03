@@ -2103,8 +2103,8 @@ class TradeTrackerLoop(
         runCatching { offerGuard.setLastScanAt(now) }
         val nameCheck = config.tunables.receivedOfferNameCheck
         val nameCandidates = sent.filter {
-            SuspiciousOfferCheck.candidate(it) &&
-                (it.direction == OfferDirection.SENT || nameCheck && it.partner !in knownScamPartners)
+            (it.direction == OfferDirection.SENT && SuspiciousOfferCheck.candidate(it)) ||
+                (nameCheck && SuspiciousOfferCheck.receivedNameCandidate(it, knownScamPartners))
         }
         val partners = nameCandidates.mapTo(mutableSetOf()) { it.partner }
         val personaNames = if (partners.isEmpty()) {
@@ -2115,14 +2115,15 @@ class TradeTrackerLoop(
                 emptyMap()
             }
         }
+        val sentIds = sent.mapTo(mutableSetOf()) { it.offerId }
         val held = mutableSetOf<OfferId>()
         val serverTimes = mutableMapOf<OfferId, Instant>()
-        val verdicts = if (nameCheck) dmarketVerdicts(sent, personaNames, offerGuard, held, serverTimes) else emptyMap()
+        val verdicts = if (nameCheck) dmarketVerdicts(sent, sentIds, personaNames, offerGuard, held, serverTimes) else emptyMap()
         // The grace is measured on DMarket's clock, this "not ours" reply's Date minus the first one's, persisted so a
         // respawn does not restart it and a device clock change cannot move it.
         val notOursFor = if (nameCheck) {
             val since = runCatching {
-                offerGuard.recordNotOurs(verdicts, sent.mapTo(mutableSetOf()) { it.offerId }, serverTimes)
+                offerGuard.recordNotOurs(verdicts, sentIds, serverTimes)
             }.getOrDefault(emptyMap())
             serverTimes.mapNotNull { (id, at) -> since[id]?.let { id to at - it } }.toMap()
         } else {
@@ -2169,18 +2170,17 @@ class TradeTrackerLoop(
      */
     private suspend fun dmarketVerdicts(
         offers: List<SteamSentOffer>,
+        offerIds: Set<OfferId>,
         personaNames: Map<SteamId, String>,
         offerGuard: OfferGuardStore,
         held: MutableSet<OfferId>,
         serverTimes: MutableMap<OfferId, Instant>,
     ): Map<OfferId, Boolean> {
-        dmarketOwnedOffers.retainAll(offers.mapTo(mutableSetOf()) { it.offerId })
+        dmarketOwnedOffers.retainAll(offerIds)
         val warned = runCatching { offerGuard.reported() }.getOrDefault(emptySet())
         val renamed = { offer: SteamSentOffer ->
             offer.offerId in warned &&
-                offer.direction == OfferDirection.RECEIVED &&
-                SuspiciousOfferCheck.candidate(offer) &&
-                offer.partner !in knownScamPartners &&
+                SuspiciousOfferCheck.receivedNameCandidate(offer, knownScamPartners) &&
                 offer.partner in personaNames
         }
         val candidates = offers

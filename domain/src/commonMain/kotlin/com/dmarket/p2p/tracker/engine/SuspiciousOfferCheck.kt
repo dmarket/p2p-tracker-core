@@ -54,14 +54,21 @@ object SuspiciousOfferCheck {
         (offer.direction == OfferDirection.SENT || offer.assetIdsGiven.isNotEmpty())
 
     /**
+     * Whether [offer] is a received [candidate] not from a known-scam partner: the received offers whose verdict can rest
+     * on the partner's persona name and DMarket's answer.
+     */
+    fun receivedNameCandidate(offer: SteamSentOffer, knownScamPartners: Set<SteamId>): Boolean =
+        offer.direction == OfferDirection.RECEIVED && candidate(offer) && offer.partner !in knownScamPartners
+
+    /**
      * Whether [offer] is a received candidate whose verdict rests on DMarket's answer: not from a known-scam partner,
      * and from a partner whose persona name poses as DMarket. The loop asks DMarket about these offers and no other.
      */
     fun asksDmarket(offer: SteamSentOffer, knownScamPartners: Set<SteamId>, personaNames: Map<SteamId, String>): Boolean =
-        offer.direction == OfferDirection.RECEIVED &&
-            candidate(offer) &&
-            offer.partner !in knownScamPartners &&
-            personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true
+        receivedNameCandidate(offer, knownScamPartners) && posesAsDmarket(offer.partner, personaNames)
+
+    private fun posesAsDmarket(partner: SteamId, personaNames: Map<SteamId, String>): Boolean =
+        personaNames[partner]?.let(DmarketImpersonation::impersonates) == true
 
     /**
      * The level of one offer. [receivedNameCheck], [dmarketVerdicts] (absent = no answer), [isTradeOurGrace] and
@@ -86,13 +93,13 @@ object SuspiciousOfferCheck {
             val held = notOursFor[offer.offerId]
             val pastGrace = isTradeOurGrace == Duration.ZERO || held != null && held >= isTradeOurGrace
             val notOurs = dmarketVerdicts[offer.offerId] == false && pastGrace
-            return if (receivedNameCheck && notOurs && asksDmarket(offer, knownScamPartners, personaNames)) {
+            return if (receivedNameCheck && notOurs && posesAsDmarket(offer.partner, personaNames)) {
                 SuspicionLevel.IMPERSONATION
             } else {
                 SuspicionLevel.NONE
             }
         }
-        if (personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true) return SuspicionLevel.IMPERSONATION
+        if (posesAsDmarket(offer.partner, personaNames)) return SuspicionLevel.IMPERSONATION
         val giveOnly = offer.assetIdsGiven.isNotEmpty() && offer.assetIdsReceived.isEmpty()
         val linked = tracking.any { it.steamOfferId == offer.offerId }
         val leased = leases.any { lease ->
