@@ -56,6 +56,7 @@ import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamSessionScraper
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionGateway
 import com.dmarket.p2p.tracker.runtime.TradeTrackerCore
+import com.dmarket.p2p.tracker.runtime.missingDealIdJson
 import com.dmarket.p2p.tracker.runtime.toOutcomeJson
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
@@ -653,12 +654,7 @@ class DebugSessionHandle internal constructor(private val driver: DebugDriver, p
      */
     @OptIn(DelicateCoroutinesApi::class)
     internal fun awaitCreate(dealId: String, timeoutMs: Int): Promise<String> = GlobalScope.promise {
-        if (dealId.isBlank()) {
-            return@promise buildJsonObject {
-                put("ok", false)
-                put("error", "missing deal_id")
-            }.toString()
-        }
+        if (dealId.isBlank()) return@promise missingDealIdJson()
         driver.loop.awaitDirectiveOutcome(DealId(dealId), timeoutMs.milliseconds, GlobalScope).toOutcomeJson()
     }
 }
@@ -668,17 +664,16 @@ class DebugSessionHandle internal constructor(private val driver: DebugDriver, p
 fun stopDebugSession(handle: DebugSessionHandle) = handle.stopInternal()
 
 /**
- * Runs one heartbeat cycle now. The fallback for a `CreateTrade` postMessage that carries **no**
- * `directive_id`: instead of the FE-fast-path create, let the regular heartbeat/directive flow run (the
- * backend leases the `create_offer` directive and the loop executes it on its own cadence).
+ * Runs one heartbeat cycle now: the regular heartbeat/directive flow, in which the backend leases directives and
+ * the loop executes them on its own cadence, without the page's create trigger.
  */
 @JsExport
 fun nudgeSession(handle: DebugSessionHandle) = handle.nudge()
 
 /**
  * The FE-triggered "create trade" entry — the SW calls this when the dmarket.com content script relays a
- * validated `window.postMessage`. Takes only the deal id: forces a heartbeat and returns the outcome JSON of the
- * backend's `create_offer` directive for that deal.
+ * validated `window.postMessage`. Takes only the deal id: fetches the backend's `create_offer` directive for that deal
+ * with `POST /create-trade` and returns its outcome JSON.
  */
 @JsExport
 fun awaitCreateInSession(handle: DebugSessionHandle, dealId: String, timeoutMs: Int): Promise<String> =

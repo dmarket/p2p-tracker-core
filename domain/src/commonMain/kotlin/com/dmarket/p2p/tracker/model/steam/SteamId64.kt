@@ -29,6 +29,11 @@ fun requireSteamId64(value: String): SteamId {
 /** True if [SteamId.value] is a strict, well-formed `steamID64`. */
 fun SteamId.isValidSteamId64(): Boolean = STEAM_ID64.matches(value)
 
+/** True for the steamid64 form a known-scam entry, `trustPartner` and a pushed Steam token accept: 17 digits from `7656119`. */
+fun isIndividualSteamId64(value: String): Boolean = INDIVIDUAL_STEAM_ID64.matches(value)
+
+private val INDIVIDUAL_STEAM_ID64 = Regex("^7656119\\d{10}$")
+
 /** The individual-account base: `steamid64 = STEAM_ID64_BASE + accountid`. */
 private const val STEAM_ID64_BASE = 76561197960265728L
 

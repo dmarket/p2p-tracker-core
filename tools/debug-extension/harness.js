@@ -36,15 +36,15 @@ export function hasSession() {
 }
 
 /**
- * FE "create trade" trigger → forces a heartbeat and returns the outcome of the backend's create_offer
- * directive for the deal. Only the deal id is passed: nothing from the page reaches Steam.
+ * FE "create trade" trigger → fetches the backend's create_offer directive for the deal (POST /create-trade)
+ * and returns its outcome. Only the deal id is passed: nothing from the page reaches Steam.
  */
 export async function awaitCreate({ dealId, timeoutMs = 30000 }) {
   if (!handle) throw new Error("no running debug session");
   return await mod.awaitCreateInSession(handle, dealId || "", timeoutMs);
 }
 
-/** Run one heartbeat cycle now (fallback when a CreateTrade postMessage has no directive_id). */
+/** Run one heartbeat cycle now, without the page's create trigger. */
 export function nudge() {
   if (handle) mod.nudgeSession(handle);
 }

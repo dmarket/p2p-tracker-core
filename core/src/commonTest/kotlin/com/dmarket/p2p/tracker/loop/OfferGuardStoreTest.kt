@@ -120,7 +120,7 @@ class OfferGuardStoreTest {
         val storage = InMemoryDeviceKeyValueStore()
         PersistedOfferGuardStore(storage).recordNotOurs(notOurs("o1"), ids("o1"), at(t0, "o1"))
 
-        assertEquals(mapOf(OfferId("o1") to t0), PersistedOfferGuardStore(storage).notOursSince())
+        assertEquals(mapOf(OfferId("o1") to t0), PersistedOfferGuardStore(storage).recordNotOurs(emptyMap(), ids("o1"), emptyMap()))
     }
 
     @Test
@@ -129,7 +129,7 @@ class OfferGuardStoreTest {
         val all = (0..MAX_NOT_OURS_SINCE).map { OfferId("o$it") }
         all.forEachIndexed { i, id -> store.recordNotOurs(mapOf(id to false), all.toSet(), mapOf(id to t0 + i.seconds)) }
 
-        val kept = store.notOursSince()
+        val kept = store.recordNotOurs(emptyMap(), all.toSet(), emptyMap())
         assertEquals(MAX_NOT_OURS_SINCE, kept.size)
         assertEquals(false, OfferId("o0") in kept, "the oldest stamp goes first")
     }

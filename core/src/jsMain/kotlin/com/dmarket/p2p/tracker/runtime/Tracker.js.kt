@@ -23,8 +23,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.promise
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlin.js.ExperimentalJsExport
 import kotlin.js.JsExport
 import kotlin.js.Promise
@@ -140,7 +138,7 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
  * - `{ ok:false, status:"throttled",          scope, retryAfterSeconds }` — deferred by this device's own
  *   back-pressure after an earlier refusal; nothing was sent to Steam.
  * - `{ ok:false, status:"account_mismatch",   linkedSteamId, tokenSteamId }` — blocked before any write.
- * - `{ ok:false, error }` — a blank deal id (no cycle forced).
+ * - `{ ok:false, error }` — a blank deal id (nothing was asked of the backend).
  *
  * **`cause` is the field to branch on for a failure, never `error`.** `error` is free-form text kept for
  * diagnostics; `cause` is a stable enum name from [com.dmarket.p2p.tracker.policy.SteamCreateFailureCause] —
@@ -152,12 +150,7 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
 fun awaitDirectiveOutcome(handle: TrackerHandle, dealId: String, timeoutMs: Int): Promise<String> {
     val h = handle as JsTrackerHandle
     return h.scope.promise {
-        if (dealId.isBlank()) {
-            return@promise buildJsonObject {
-                put("ok", false)
-                put("error", "missing deal_id")
-            }.toString()
-        }
+        if (dealId.isBlank()) return@promise missingDealIdJson()
         h.loop.awaitDirectiveOutcome(DealId(dealId), timeoutMs.milliseconds, h.scope).toOutcomeJson()
     }
 }

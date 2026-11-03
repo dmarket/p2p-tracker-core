@@ -8,6 +8,12 @@ import kotlinx.serialization.json.put
  * The outcome JSON a JS host receives for a create ([awaitDirectiveOutcome], and the debug harness's create entry).
  * One serialiser, so the shipped facade and the debug console cannot describe one result two ways.
  */
+/** The outcome JSON for a call that named no deal: nothing ran. */
+fun missingDealIdJson(): String = buildJsonObject {
+    put("ok", false)
+    put("error", "missing deal_id")
+}.toString()
+
 fun CreateOfferResult.toOutcomeJson(): String {
     val result = this
     return buildJsonObject {

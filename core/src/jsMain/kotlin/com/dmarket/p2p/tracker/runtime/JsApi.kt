@@ -36,6 +36,7 @@ import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.notary.DelegatingNotaryProver
 import com.dmarket.p2p.tracker.port.host.EventObserver
@@ -307,8 +308,6 @@ fun createBrowserSteamClient(): SteamReadClient = SteamEndpointsConfig().let { e
 private fun steamSecretParamNames(endpoints: SteamEndpointsConfig): Set<String> =
     NetworkRedaction.plusSecretParam(endpoints.paramAccessToken)
 
-private val STEAM_ID64 = Regex("^7656119\\d{10}$")
-
 /**
  * Marks [steamId] (a steamid64) as a partner the user trusts: a give-only outgoing offer to it is no longer reported
  * as suspicious. Writes `guard_trusted_partners`, which a running tracker reads on its next check, so no handle is
@@ -316,6 +315,6 @@ private val STEAM_ID64 = Regex("^7656119\\d{10}$")
  */
 @JsExport
 fun trustPartner(steamId: String): Promise<Unit> = CoroutineScope(Dispatchers.Default).promise {
-    require(STEAM_ID64.matches(steamId)) { "trustPartner expects a steamid64" }
+    require(isIndividualSteamId64(steamId)) { "trustPartner expects a steamid64" }
     PersistedOfferGuardStore(WebExtKeyValueStore()).trustPartner(SteamId(steamId))
 }

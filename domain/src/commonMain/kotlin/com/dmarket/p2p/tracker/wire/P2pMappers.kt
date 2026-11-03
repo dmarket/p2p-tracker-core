@@ -218,16 +218,15 @@ fun DealDto.toDomain(): Deal = Deal(
 
 /** [DealActionResponseDto.createOffer] as the `create_offer` [Directive] for [dealId]; `null` for a blank directive id. */
 fun CreateOfferDto.toDirective(dealId: DealId): Directive? = directiveId.takeIf { it.isNotBlank() }?.let {
-    Directive(
-        directiveId = DirectiveId(it),
-        action = DirectiveAction.CREATE_OFFER,
-        dealId = dealId,
-        partnerSteamId = partnerSteamId?.takeIf { id -> id.isNotBlank() }?.let(::SteamId),
-        assetIds = assetIds.map(::AssetId),
+    DirectiveDto(
+        directiveId = it,
+        dealId = dealId.value,
+        action = DirectiveAction.CREATE_OFFER.wireName,
+        partnerSteamId = partnerSteamId,
+        assetIds = assetIds,
         tradeToken = tradeToken,
         contextId = contextId,
-        rawAction = DirectiveAction.CREATE_OFFER.wireName,
-    )
+    ).toDomain()
 }
 
 fun DealActionResponseDto.toDomain(dealId: DealId): DealActionResult = DealActionResult(

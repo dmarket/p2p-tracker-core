@@ -27,14 +27,13 @@ sealed interface SteamTokenCheck {
  * The signature is not verified (see [SteamTokenJwt]).
  */
 object PushedSteamToken {
-    private val STEAM_ID64 = Regex("^7656119\\d{10}$")
     private val REFRESH_AUDIENCES = setOf("renew", "derive")
     private val SESSION_AUDIENCES = setOf("web", "web:community")
 
     fun check(token: String, now: Instant): SteamTokenCheck {
         val trimmed = token.trim()
         val claims = SteamTokenJwt.claimsOrNull(trimmed) ?: return SteamTokenCheck.Refused("not a Steam access token")
-        val subject = claims.sub?.takeIf { STEAM_ID64.matches(it) } ?: return SteamTokenCheck.Refused("no steamid64 subject")
+        val subject = claims.sub?.takeIf { isIndividualSteamId64(it) } ?: return SteamTokenCheck.Refused("no steamid64 subject")
         val audience = claims.aud.map { it.lowercase() }
         if (audience.any { it in REFRESH_AUDIENCES }) return SteamTokenCheck.Refused("a refresh token is never accepted")
         if (audience.none { it in SESSION_AUDIENCES }) return SteamTokenCheck.Refused("the token has no web or web:community audience")

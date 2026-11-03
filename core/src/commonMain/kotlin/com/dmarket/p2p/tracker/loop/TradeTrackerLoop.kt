@@ -75,6 +75,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
 import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.OnlineBudgetLesson
@@ -336,9 +337,6 @@ internal const val MAX_DMARKET_VERIFICATIONS_PER_SCAN = 5
 /** The [LifecycleEvent.SteamReadFailed] axis of a missing DMarket answer. */
 private const val IS_TRADE_OUR_AXIS = "is_trade_our"
 
-/** A steamid64 in the individual-account range, the only form a known-scam entry can match an offer partner in. */
-private val KNOWN_SCAM_STEAM_ID = Regex("^7656119\\d{10}$")
-
 /**
  * How many heartbeats in a row must fail with a **transient** DMarket server error (5xx) before it is
  * surfaced as [TrackerBlock.DM_CONNECTION_ERROR], so a single server blip doesn't flash the error prompt.
@@ -538,9 +536,8 @@ class TradeTrackerLoop(
         // held in memory only, so on a respawned worker that guard would otherwise have nothing to compare.
         if (lastActiveTracking == null) heartbeatNow()
         if (waiter.isCompleted) return
-        // Final, and decided without the backend: no call can change which Steam account is signed in.
-        mismatchTokenSteamId?.let { token ->
-            waiter.complete(CreateOfferResult.AccountMismatch(lastLinkedSteamId ?: token, token))
+        accountMismatch()?.let {
+            waiter.complete(it)
             return
         }
         val retryDelays = config.createDirectiveRetryDelays.iterator()
@@ -595,6 +592,10 @@ class TradeTrackerLoop(
         null
     }
 
+    /** Final, and decided without the backend: no call can change which Steam account is signed in. */
+    private fun accountMismatch(): CreateOfferResult.AccountMismatch? =
+        mismatchTokenSteamId?.let { token -> CreateOfferResult.AccountMismatch(lastLinkedSteamId ?: token, token) }
+
     /**
      * The answer for a deal whose `create_offer` this device cannot or need not run. A wrong-account verdict blocks
      * every Steam write before directives run, so it is the answer when set. Otherwise the deal's claim says whether this
@@ -603,7 +604,7 @@ class TradeTrackerLoop(
      * backend again.
      */
     private suspend fun settleWithoutDirective(dealId: DealId): CreateOfferResult? {
-        mismatchTokenSteamId?.let { token -> return CreateOfferResult.AccountMismatch(lastLinkedSteamId ?: token, token) }
+        accountMismatch()?.let { return it }
         val claim = claims.all().firstOrNull { it.dealId == dealId && it.action == DirectiveAction.CREATE_OFFER }
         claim?.outcome?.steamOfferId?.let { return CreateOfferResult.AlreadyCreated(it) }
         if (claim?.phase == ClaimPhase.IN_FLIGHT) return CreateOfferResult.CreateInFlight(dealId)
@@ -1056,8 +1057,7 @@ class TradeTrackerLoop(
         return true
     }
 
-    private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> =
-        ids.filter { KNOWN_SCAM_STEAM_ID.matches(it) }.mapTo(mutableSetOf(), ::SteamId)
+    private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> = ids.filter(::isIndividualSteamId64).mapTo(mutableSetOf(), ::SteamId)
 
     /**
      * Received offers DMarket said are its own. Only `true` is kept, and only for offers the latest read still lists:

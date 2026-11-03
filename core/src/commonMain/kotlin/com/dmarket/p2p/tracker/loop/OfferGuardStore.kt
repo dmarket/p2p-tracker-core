@@ -55,11 +55,9 @@ interface OfferGuardStore {
 
     suspend fun setLastScanAt(at: Instant)
 
-    /** When DMarket first answered "not ours" for each offer still on record, by DMarket's server clock. */
-    suspend fun notOursSince(): Map<OfferId, Instant>
-
     /**
-     * Folds one scan's DMarket [verdicts] in and returns the result of [notOursSince]: an offer answered `false` keeps
+     * Folds one scan's DMarket [verdicts] in and returns when DMarket first answered "not ours" for each offer still on
+     * record, by DMarket's server clock: an offer answered `false` keeps
      * its first stamp, or gets its [serverTimes] entry (the reply's HTTP `Date`) when it has none, and none at all when
      * that reply carried no server time; one answered `true` is dropped; one with no answer keeps its stamp. Offers
      * [seen] does not list are dropped, and at most [MAX_NOT_OURS_SINCE] are kept, the most recent. Stamping on
@@ -164,11 +162,6 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         restore()
         scannedAt = at
         write(DeviceVaultKeys.GUARD_SCANNED_AT, at.toEpochMilliseconds().toString())
-    }
-
-    override suspend fun notOursSince(): Map<OfferId, Instant> = mutex.withLock {
-        restore()
-        notOurs.toMap()
     }
 
     override suspend fun recordNotOurs(
