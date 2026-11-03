@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.config.CadenceConfig
 import com.dmarket.p2p.tracker.config.NotaryBreakerConfig
 import com.dmarket.p2p.tracker.config.SteamWriteConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.FailedCancelCheck
 import com.dmarket.p2p.tracker.engine.FreshProofProgress
@@ -6857,10 +6858,13 @@ class TradeTrackerLoopTest {
 
     private val namedLikeBot = SteamId("76561198000000777")
 
-    /** A received give-only offer from [namedLikeBot], made long enough ago for a "not ours" to count. */
+    /** A received give-only offer from [namedLikeBot], made five minutes ago by Steam's clock. */
     private fun fromBotLookalike(id: String) = receivedGiveOnly(id).copy(createdAt = FakeClock().now() - 5.minutes)
 
     private val nameCheckOn = TrackerConfig.defaults().copy(receivedOfferNameCheck = true)
+
+    /** The name check with no grace, so a "not ours" counts on the scan that gets it. */
+    private val noGrace = nameCheckOn.copy(isTradeOurGraceMs = 0)
 
     private fun botLookalikeReader(vararg offers: SteamSentOffer) = FakeSteamReadClient().apply {
         receivedOffers = offers.toList()
@@ -6873,13 +6877,14 @@ class TradeTrackerLoopTest {
         clock: FakeClock = FakeClock(),
         observer: RecordingEventObserver = RecordingEventObserver(),
         tunables: TrackerConfig = nameCheckOn,
+        guard: OfferGuardStore = PersistedOfferGuardStore(),
     ) = loop(
         marketplace = createLease(),
         reader = reader,
         clock = clock,
         eventObserver = observer,
         tunables = tunables,
-        offerGuard = PersistedOfferGuardStore(),
+        offerGuard = guard,
         scanReceivedOffers = true,
         offerVerifier = verifier,
     )
@@ -6935,14 +6940,88 @@ class TradeTrackerLoopTest {
         assertTrue(reader.personaNamesQueried.isEmpty())
     }
 
-    @Test
-    fun dmarkets_not_ours_on_a_received_bot_lookalike_is_an_impersonation() = runTest {
-        val observer = RecordingEventObserver()
-        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
-        nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, observer = observer).runOnce()
+    /** DMarket's server clock, apart from the device's [FakeClock] on purpose. */
+    private val serverT0 = Instant.parse("2026-11-03T10:00:00Z")
 
-        val reported = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().single().offers.single()
+    private fun impersonations(observer: RecordingEventObserver) =
+        observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>().flatMap { it.offers }
+
+    @Test
+    fun dmarkets_not_ours_on_a_received_bot_lookalike_is_an_impersonation_once_the_grace_has_run() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false), serverTime = serverT0)
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        l.runOnce()
+
+        // Steam's time_created is already past the grace; the first "not ours" is not.
+        assertTrue(observer.events.none { it is LifecycleEvent.SuspiciousOutgoingOffers })
+        verifier.serverTime = serverT0 + 2.minutes
+        l.nextScan(clock)
+
+        val reported = impersonations(observer).single()
         assertEquals(OfferId("offer-1") to SuspicionLevel.IMPERSONATION, reported.offerId to reported.level)
+    }
+
+    @Test
+    fun the_grace_since_the_first_not_ours_survives_a_respawn() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val storage = InMemoryDeviceKeyValueStore()
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false), serverTime = serverT0)
+        nameCheckLoop(reader, verifier, clock, observer, guard = PersistedOfferGuardStore(storage)).runOnce()
+        // A new worker: only the storage carries over.
+        verifier.serverTime = serverT0 + 3.minutes
+        nameCheckLoop(reader, verifier, clock, observer, guard = PersistedOfferGuardStore(storage)).nextScan(clock)
+
+        assertEquals(OfferId("offer-1"), impersonations(observer).single().offerId)
+    }
+
+    @Test
+    fun a_device_clock_jumping_forward_between_scans_does_not_end_the_grace() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false), serverTime = serverT0)
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        l.runOnce()
+        clock.advance(1.hours)
+        verifier.serverTime = serverT0 + 1.minutes
+        l.nextScan(clock)
+
+        assertTrue(impersonations(observer).isEmpty(), "an hour on the device clock is a minute on DMarket's")
+        verifier.serverTime = serverT0 + 2.minutes
+        l.nextScan(clock)
+        assertEquals(OfferId("offer-1"), impersonations(observer).single().offerId)
+    }
+
+    @Test
+    fun a_device_clock_jumping_back_between_scans_does_not_stretch_the_grace() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val storage = InMemoryDeviceKeyValueStore()
+        val reader = botLookalikeReader(fromBotLookalike("offer-1"))
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false), serverTime = serverT0)
+        nameCheckLoop(reader, verifier, clock, observer, guard = PersistedOfferGuardStore(storage)).runOnce()
+        clock.advance(-1.hours)
+        verifier.serverTime = serverT0 + 2.minutes
+        // A fresh worker with a fresh scan stamp, so the earlier device clock still lets the scan run.
+        storage.remove(DeviceVaultKeys.GUARD_SCANNED_AT)
+        nameCheckLoop(reader, verifier, clock, observer, guard = PersistedOfferGuardStore(storage)).nextScan(clock)
+
+        assertEquals(OfferId("offer-1"), impersonations(observer).single().offerId)
+    }
+
+    @Test
+    fun a_not_ours_reply_with_no_date_never_raises_a_warning() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false), serverTime = null)
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        repeat(3) { l.nextScan(clock) }
+
+        assertEquals(3, verifier.asked.size)
+        assertTrue(impersonations(observer).isEmpty())
     }
 
     @Test
@@ -6995,7 +7074,7 @@ class TradeTrackerLoopTest {
         val clock = FakeClock()
         val observer = RecordingEventObserver()
         val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
-        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer, tunables = noGrace)
         l.runOnce()
         verifier.answers = mapOf(OfferId("offer-1") to true)
         l.nextScan(clock)
@@ -7023,7 +7102,7 @@ class TradeTrackerLoopTest {
         val clock = FakeClock()
         val observer = RecordingEventObserver()
         val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
-        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer)
+        val l = nameCheckLoop(botLookalikeReader(fromBotLookalike("offer-1")), verifier, clock, observer, tunables = noGrace)
         l.runOnce()
         verifier.answers = emptyMap()
         l.nextScan(clock)
@@ -7052,7 +7131,7 @@ class TradeTrackerLoopTest {
         val observer = RecordingEventObserver()
         val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
         val reader = botLookalikeReader(fromBotLookalike("offer-1"))
-        val l = nameCheckLoop(reader, verifier, clock, observer)
+        val l = nameCheckLoop(reader, verifier, clock, observer, tunables = noGrace)
         l.runOnce()
         reader.personaNames = mapOf(namedLikeBot to "Bob")
         l.nextScan(clock)
@@ -7073,7 +7152,7 @@ class TradeTrackerLoopTest {
         val observer = RecordingEventObserver()
         val offers = (1..7).map { fromBotLookalike("offer-$it") }
         val verifier = FakeDmarketOfferVerifier(offers.associate { it.offerId to false })
-        val l = nameCheckLoop(botLookalikeReader(*offers.toTypedArray()), verifier, clock, observer)
+        val l = nameCheckLoop(botLookalikeReader(*offers.toTypedArray()), verifier, clock, observer, tunables = noGrace)
         l.runOnce()
         verifier.asked.clear()
         l.nextScan(clock)
@@ -7125,7 +7204,7 @@ class TradeTrackerLoopTest {
         val observer = RecordingEventObserver()
         val verifier = FakeDmarketOfferVerifier(mapOf(OfferId("offer-1") to false))
         val reader = botLookalikeReader(fromBotLookalike("offer-1"))
-        val l = nameCheckLoop(reader, verifier, clock, observer)
+        val l = nameCheckLoop(reader, verifier, clock, observer, tunables = noGrace)
         l.runOnce()
         reader.personaNames = emptyMap()
         l.nextScan(clock)

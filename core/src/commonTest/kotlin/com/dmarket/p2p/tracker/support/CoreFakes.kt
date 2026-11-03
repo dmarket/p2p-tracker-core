@@ -48,6 +48,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
@@ -299,13 +300,16 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
 
 // ---- FakeDmarketOfferVerifier ------------------------------------------------------------------
 
-/** Answers from [answers] (absent = no answer) and records every offer it was asked about, in order. */
-class FakeDmarketOfferVerifier(var answers: Map<OfferId, Boolean?> = emptyMap()) : DmarketOfferVerifier {
+/**
+ * Answers from [answers] (absent = no answer), stamped with [serverTime] (the reply's `Date`, `null` = none), and
+ * records every offer it was asked about, in order.
+ */
+class FakeDmarketOfferVerifier(var answers: Map<OfferId, Boolean?> = emptyMap(), var serverTime: Instant? = null) : DmarketOfferVerifier {
     val asked = mutableListOf<OfferId>()
 
-    override suspend fun isOurs(offerId: OfferId): Boolean? {
+    override suspend fun isOurs(offerId: OfferId): DmarketOfferAnswer {
         asked += offerId
-        return answers[offerId]
+        return DmarketOfferAnswer(answers[offerId], serverTime)
     }
 }
 

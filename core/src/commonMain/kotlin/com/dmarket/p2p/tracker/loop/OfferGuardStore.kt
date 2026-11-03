@@ -52,10 +52,29 @@ interface OfferGuardStore {
     suspend fun lastScanAt(): Instant?
 
     suspend fun setLastScanAt(at: Instant)
+
+    /** When DMarket first answered "not ours" for each offer still on record, by DMarket's server clock. */
+    suspend fun notOursSince(): Map<OfferId, Instant>
+
+    /**
+     * Folds one scan's DMarket [verdicts] in and returns the result of [notOursSince]: an offer answered `false` keeps
+     * its first stamp, or gets its [serverTimes] entry (the reply's HTTP `Date`) when it has none, and none at all when
+     * that reply carried no server time; one answered `true` is dropped; one with no answer keeps its stamp. Offers
+     * [seen] does not list are dropped, and at most [MAX_NOT_OURS_SINCE] are kept, the most recent. Stamping on
+     * DMarket's clock keeps the grace off the device clock, which a user can move between scans.
+     */
+    suspend fun recordNotOurs(
+        verdicts: Map<OfferId, Boolean>,
+        seen: Set<OfferId>,
+        serverTimes: Map<OfferId, Instant>,
+    ): Map<OfferId, Instant>
 }
 
 /** How many reported offers the reads no longer list [PersistedOfferGuardStore] keeps on record. */
 internal const val MAX_UNLISTED_NOTIFIED = 200
+
+/** How many "not ours" stamps [PersistedOfferGuardStore] keeps. */
+internal const val MAX_NOT_OURS_SINCE = 200
 
 /** What [OfferGuardStore.unreported] has to tell the host: offers to warn about now, and earlier warnings to take down. */
 data class GuardDelta(val fresh: List<SuspiciousOffer>, val cleared: List<OfferId>)
@@ -78,10 +97,12 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
     private val leaseSerializer = ListSerializer(StoredLease.serializer())
     private val partnersSerializer = ListSerializer(String.serializer())
     private val notifiedSerializer = MapSerializer(String.serializer(), String.serializer())
+    private val notOursSerializer = MapSerializer(String.serializer(), Long.serializer())
     private val mutex = Mutex()
     private val leases = mutableListOf<CreateLease>()
     private val trusted = mutableSetOf<SteamId>()
     private val notified = mutableMapOf<OfferId, SuspicionLevel>()
+    private val notOurs = mutableMapOf<OfferId, Instant>()
     private var scannedAt: Instant? = null
     private var restored = false
 
@@ -143,7 +164,33 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         write(DeviceVaultKeys.GUARD_SCANNED_AT, at.toEpochMilliseconds().toString())
     }
 
-    /** Folds the persisted leases, reports and scan time into memory once. Call inside [mutex]. */
+    override suspend fun notOursSince(): Map<OfferId, Instant> = mutex.withLock {
+        restore()
+        notOurs.toMap()
+    }
+
+    override suspend fun recordNotOurs(
+        verdicts: Map<OfferId, Boolean>,
+        seen: Set<OfferId>,
+        serverTimes: Map<OfferId, Instant>,
+    ): Map<OfferId, Instant> = mutex.withLock {
+        restore()
+        val next = notOurs.filterKeys { it in seen && verdicts[it] != true }.toMutableMap()
+        verdicts.forEach { (id, ours) ->
+            val at = serverTimes[id]
+            if (!ours && id in seen && at != null && id !in next) next[id] = at
+        }
+        val capped = next.entries.sortedBy { it.value }.takeLast(MAX_NOT_OURS_SINCE).associate { it.key to it.value }
+        if (capped != notOurs) {
+            notOurs.clear()
+            notOurs += capped
+            val stored = notOurs.entries.associate { (id, at) -> id.value to at.toEpochMilliseconds() }
+            write(DeviceVaultKeys.GUARD_NOT_OURS_SINCE, TrackerJson.encodeToString(notOursSerializer, stored))
+        }
+        notOurs.toMap()
+    }
+
+    /** Folds the persisted leases, reports, "not ours" stamps and scan time into memory once. Call inside [mutex]. */
     private suspend fun restore() {
         if (restored) return
         restored = true
@@ -151,6 +198,9 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         read(DeviceVaultKeys.GUARD_NOTIFIED, notifiedSerializer)?.forEach { (id, level) ->
             val parsed = SuspicionLevel.entries.firstOrNull { it.name == level } ?: return@forEach
             if (id.isNotBlank()) notified[OfferId(id)] = parsed
+        }
+        read(DeviceVaultKeys.GUARD_NOT_OURS_SINCE, notOursSerializer)?.forEach { (id, ms) ->
+            if (id.isNotBlank()) notOurs[OfferId(id)] = Instant.fromEpochMilliseconds(ms)
         }
         scannedAt = runCatching { storage.get(DeviceVaultKeys.GUARD_SCANNED_AT) }.getOrNull()
             ?.toLongOrNull()?.let(Instant::fromEpochMilliseconds)

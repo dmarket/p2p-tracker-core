@@ -9,6 +9,9 @@ import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 class OfferGuardStoreTest {
     private fun flagged(id: String, level: SuspicionLevel = SuspicionLevel.IMPERSONATION) =
@@ -72,5 +75,62 @@ class OfferGuardStoreTest {
         // The newest unlisted one is still on record.
         val last = "o${MAX_UNLISTED_NOTIFIED - 1}"
         assertEquals(listOf(OfferId(last)), store.unreported(emptyList(), ids(last)).cleared)
+    }
+
+    // ---- "not ours" stamps ----
+
+    private val t0 = Instant.parse("2026-10-30T12:00:00Z")
+
+    private fun notOurs(vararg ids: String) = ids.associate { OfferId(it) to false }
+
+    private fun at(time: Instant, vararg ids: String) = ids.associate { OfferId(it) to time }
+
+    @Test
+    fun the_first_not_ours_is_stamped_with_its_server_time_and_a_later_one_keeps_that_stamp() = runTest {
+        val store = PersistedOfferGuardStore()
+        assertEquals(mapOf(OfferId("o1") to t0), store.recordNotOurs(notOurs("o1"), ids("o1"), at(t0, "o1")))
+        assertEquals(mapOf(OfferId("o1") to t0), store.recordNotOurs(notOurs("o1"), ids("o1"), at(t0 + 3.minutes, "o1")))
+    }
+
+    @Test
+    fun a_not_ours_with_no_server_time_creates_no_stamp() = runTest {
+        val store = PersistedOfferGuardStore()
+        assertEquals(emptyMap(), store.recordNotOurs(notOurs("o1"), ids("o1"), emptyMap()))
+    }
+
+    @Test
+    fun an_ours_drops_the_stamp_and_no_answer_keeps_it() = runTest {
+        val store = PersistedOfferGuardStore()
+        store.recordNotOurs(notOurs("o1", "o2"), ids("o1", "o2"), at(t0, "o1", "o2"))
+
+        val next = store.recordNotOurs(mapOf(OfferId("o1") to true), ids("o1", "o2"), emptyMap())
+        assertEquals(mapOf(OfferId("o2") to t0), next)
+    }
+
+    @Test
+    fun a_stamp_for_an_offer_the_read_no_longer_lists_is_dropped() = runTest {
+        val store = PersistedOfferGuardStore()
+        store.recordNotOurs(notOurs("o1"), ids("o1"), at(t0, "o1"))
+
+        assertEquals(emptyMap(), store.recordNotOurs(emptyMap(), ids("o2"), emptyMap()))
+    }
+
+    @Test
+    fun the_stamps_survive_a_respawn() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        PersistedOfferGuardStore(storage).recordNotOurs(notOurs("o1"), ids("o1"), at(t0, "o1"))
+
+        assertEquals(mapOf(OfferId("o1") to t0), PersistedOfferGuardStore(storage).notOursSince())
+    }
+
+    @Test
+    fun only_the_most_recent_stamps_are_kept() = runTest {
+        val store = PersistedOfferGuardStore()
+        val all = (0..MAX_NOT_OURS_SINCE).map { OfferId("o$it") }
+        all.forEachIndexed { i, id -> store.recordNotOurs(mapOf(id to false), all.toSet(), mapOf(id to t0 + i.seconds)) }
+
+        val kept = store.notOursSince()
+        assertEquals(MAX_NOT_OURS_SINCE, kept.size)
+        assertEquals(false, OfferId("o0") in kept, "the oldest stamp goes first")
     }
 }

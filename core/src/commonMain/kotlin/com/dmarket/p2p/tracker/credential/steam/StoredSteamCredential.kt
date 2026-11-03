@@ -155,6 +155,13 @@ object DeviceVaultKeys {
     const val GUARD_SCANNED_AT = "tracker_guard_scanned_at"
 
     /**
+     * Stores the JSON-encoded map of received offer id to the epoch-millis DMarket first answered it is not one of its
+     * own, by DMarket's server clock (the reply's HTTP `Date`), so the received-offer name check's grace is not
+     * restarted by a service-worker respawn nor moved by the device clock. Holds only offers the last scan's Steam read listed. See `PersistedOfferGuardStore`.
+     */
+    const val GUARD_NOT_OURS_SINCE = "tracker_guard_not_ours_since"
+
+    /**
      * Stores the JSON-encoded proof-generation back-pressure state (until when proving is parked after
      * repeated failures, plus the escalation ladder) so a cooldown outlives a process death.
      *

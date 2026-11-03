@@ -17,6 +17,7 @@ import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.support.FakeMarketplaceAuthenticator
@@ -708,8 +709,10 @@ class KtorMarketplaceClientTest {
      * On the default dispatcher: MockEngine answers on its own thread, so under runTest's virtual clock the request
      * looks idle and isOurs' timeout would fire before any reply.
      */
-    private suspend fun KtorMarketplaceClient.isOursInRealTime(id: OfferId) =
+    private suspend fun KtorMarketplaceClient.answerInRealTime(id: OfferId) =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { isOurs(id) }
+
+    private suspend fun KtorMarketplaceClient.isOursInRealTime(id: OfferId) = answerInRealTime(id).isOurs
 
     private fun isTradeOur(body: String, status: HttpStatusCode = HttpStatusCode.OK) =
         IsTradeOurProbe { respond(body, status, jsonHeaders()) }
@@ -780,6 +783,29 @@ class KtorMarketplaceClientTest {
             },
         )
         val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, FakeMarketplaceAuthenticator(token = "t"))
-        assertNull(client.isOurs(OfferId("1")))
+        assertNull(client.isOurs(OfferId("1")).isOurs)
+    }
+
+    @Test
+    fun is_ours_carries_the_replys_date_and_hands_it_to_on_server_date() = runTest {
+        val dates = mutableListOf<Instant>()
+        var date: String? = "Tue, 03 Nov 2026 10:02:00 GMT"
+        val engine = MockEngine {
+            val headers = listOfNotNull(
+                HttpHeaders.ContentType to listOf(ContentType.Application.Json.toString()),
+                date?.let { HttpHeaders.Date to listOf(it) },
+            )
+            respond("""{"isTradeOur":false}""", HttpStatusCode.OK, headersOf(*headers.toTypedArray()))
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator, onServerDate = { dates += it })
+        val at = Instant.parse("2026-11-03T10:02:00Z")
+
+        assertEquals(DmarketOfferAnswer(false, at), client.answerInRealTime(OfferId("1")))
+        assertEquals(listOf(at), dates)
+        date = "yesterday-ish"
+        assertEquals(DmarketOfferAnswer(false, null), client.answerInRealTime(OfferId("1")))
+        date = null
+        assertEquals(DmarketOfferAnswer(false, null), client.answerInRealTime(OfferId("1")))
+        assertEquals(listOf(at), dates)
     }
 }

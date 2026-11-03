@@ -2116,7 +2116,18 @@ class TradeTrackerLoop(
             }
         }
         val held = mutableSetOf<OfferId>()
-        val verdicts = if (nameCheck) dmarketVerdicts(sent, personaNames, offerGuard, held) else emptyMap()
+        val serverTimes = mutableMapOf<OfferId, Instant>()
+        val verdicts = if (nameCheck) dmarketVerdicts(sent, personaNames, offerGuard, held, serverTimes) else emptyMap()
+        // The grace is measured on DMarket's clock, this "not ours" reply's Date minus the first one's, persisted so a
+        // respawn does not restart it and a device clock change cannot move it.
+        val notOursFor = if (nameCheck) {
+            val since = runCatching {
+                offerGuard.recordNotOurs(verdicts, sent.mapTo(mutableSetOf()) { it.offerId }, serverTimes)
+            }.getOrDefault(emptyMap())
+            serverTimes.mapNotNull { (id, at) -> since[id]?.let { id to at - it } }.toMap()
+        } else {
+            emptyMap()
+        }
         val found = SuspiciousOfferCheck.evaluate(
             sent = sent,
             tracking = tracking,
@@ -2128,6 +2139,7 @@ class TradeTrackerLoop(
             receivedNameCheck = nameCheck,
             dmarketVerdicts = verdicts,
             isTradeOurGrace = config.tunables.isTradeOurGrace,
+            notOursFor = notOursFor,
         )
         // Without the partner's name (a failed read, or a profile the read left out) or DMarket's answer a name-based
         // warning cannot be re-derived, so those offers count as unlisted: never cleared.
@@ -2152,12 +2164,15 @@ class TradeTrackerLoop(
      * The cap goes first to offers not yet warned about, newest first: a warned offer stays warned without an answer,
      * and only a `true` is remembered (in memory, lost on a respawn), so read order alone would ask the same offers
      * every scan and never reach the rest. Ordering by the persisted warnings survives the respawns.
+     *
+     * Each `false` that came with a server time (the reply's `Date`) puts it in [serverTimes].
      */
     private suspend fun dmarketVerdicts(
         offers: List<SteamSentOffer>,
         personaNames: Map<SteamId, String>,
         offerGuard: OfferGuardStore,
         held: MutableSet<OfferId>,
+        serverTimes: MutableMap<OfferId, Instant>,
     ): Map<OfferId, Boolean> {
         dmarketOwnedOffers.retainAll(offers.mapTo(mutableSetOf()) { it.offerId })
         val warned = runCatching { offerGuard.reported() }.getOrDefault(emptySet())
@@ -2188,7 +2203,7 @@ class TradeTrackerLoop(
                 continue
             }
             asked++
-            val answer = try {
+            val reply = try {
                 verifier.isOurs(id)
             } catch (e: CancellationException) {
                 throw e
@@ -2198,7 +2213,7 @@ class TradeTrackerLoop(
                 held += id
                 continue
             }
-            when (answer) {
+            when (reply.isOurs) {
                 null -> {
                     emit(LifecycleEvent.SteamReadFailed(IS_TRADE_OUR_AXIS, "no answer for offer ${id.value}"))
                     failed = true
@@ -2210,6 +2225,7 @@ class TradeTrackerLoop(
                 }
                 false -> {
                     verdicts[id] = false
+                    reply.serverTime?.let { serverTimes[id] = it }
                     if (!SuspiciousOfferCheck.asksDmarket(offer, knownScamPartners, personaNames)) held += id
                 }
             }

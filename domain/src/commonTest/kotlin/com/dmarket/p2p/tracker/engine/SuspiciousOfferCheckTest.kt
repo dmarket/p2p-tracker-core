@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -236,7 +237,8 @@ class SuspiciousOfferCheckTest {
         on: Boolean = true,
         names: Map<SteamId, String> = dmBot,
         scam: Set<SteamId> = setOf(scammer),
-    ) = SuspiciousOfferCheck.classify(offer, emptyList(), emptyList(), emptySet(), scam, now, names, on, verdicts, grace)
+        held: Map<OfferId, Duration> = mapOf(OfferId("o1") to grace),
+    ) = SuspiciousOfferCheck.classify(offer, emptyList(), emptyList(), emptySet(), scam, now, names, on, verdicts, grace, held)
 
     @Test
     fun a_received_offer_named_like_dmarket_that_dmarket_disowns_past_the_grace_is_impersonation() {
@@ -244,9 +246,27 @@ class SuspiciousOfferCheckTest {
     }
 
     @Test
-    fun dmarkets_not_ours_on_an_offer_younger_than_the_grace_is_none() {
-        val young = received(at = oldEnough + 1.seconds)
-        assertEquals(SuspicionLevel.NONE, named(young, mapOf(OfferId("o1") to false)))
+    fun dmarkets_not_ours_held_for_less_than_the_grace_is_none() {
+        val young = mapOf(OfferId("o1") to grace - 1.seconds)
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), mapOf(OfferId("o1") to false), held = young))
+    }
+
+    @Test
+    fun the_grace_runs_from_the_first_not_ours_and_not_from_steams_time_created() {
+        // A device clock running fast makes Steam's time_created look old; DMarket's own clock does not.
+        val skewed = received(at = now - 1.hours)
+        val fresh = mapOf(OfferId("o1") to 10.seconds)
+        assertEquals(SuspicionLevel.NONE, named(skewed, mapOf(OfferId("o1") to false), held = fresh))
+    }
+
+    @Test
+    fun dmarkets_not_ours_with_no_measurement_is_none_unless_the_grace_is_zero() {
+        val notOurs = mapOf(OfferId("o1") to false)
+        assertEquals(SuspicionLevel.NONE, named(received(at = oldEnough), notOurs, held = emptyMap()))
+        val noGrace = SuspiciousOfferCheck.classify(
+            received(), emptyList(), emptyList(), emptySet(), setOf(scammer), now, dmBot, true, notOurs, Duration.ZERO,
+        )
+        assertEquals(SuspicionLevel.IMPERSONATION, noGrace)
     }
 
     @Test
@@ -311,6 +331,7 @@ class SuspiciousOfferCheckTest {
             receivedNameCheck = true,
             dmarketVerdicts = mapOf(OfferId("o1") to false, OfferId("o2") to false),
             isTradeOurGrace = grace,
+            notOursFor = mapOf(OfferId("o1") to grace, OfferId("o2") to grace),
         )
         assertEquals(mapOf("o1" to true, "o2" to false, "o3" to false), found.associate { it.offerId.value to it.byName })
     }

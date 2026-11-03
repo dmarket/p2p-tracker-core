@@ -19,6 +19,7 @@ import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.policy.ExponentialBackoff
+import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
@@ -217,26 +218,29 @@ class KtorMarketplaceClient(
      *
      * Sent with no `Authorization`, no 401 refresh and no retry: the route is public, and a verdict on someone
      * else's offer must never spend or rotate this account's session. Any failure (a status, a body without a JSON
-     * boolean `isTradeOur`, no reply within [IS_TRADE_OUR_TIMEOUT]) is `null`, never an exception, so it cannot move
-     * the blocking state. A host-supplied [httpClient] that injects auth in its own transport would still attach it
+     * boolean `isTradeOur`, no reply within [IS_TRADE_OUR_TIMEOUT]) is an `isOurs` of `null`, never an exception, so it
+     * cannot move the blocking state. The reply's `Date` is the answer's `serverTime` and reaches [onServerDate] too.
+     * A host-supplied [httpClient] that injects auth in its own transport would still attach it
      * here; only the web facade wires this today.
      */
-    override suspend fun isOurs(offerId: OfferId): Boolean? = withTimeoutOrNull(IS_TRADE_OUR_TIMEOUT) {
+    override suspend fun isOurs(offerId: OfferId): DmarketOfferAnswer = withTimeoutOrNull(IS_TRADE_OUR_TIMEOUT) {
         try {
             val response = httpClient.get("$baseUrl$isTradeOurPath/${offerId.value.encodeURLPath()}")
+            val serverTime = heardDate(response.headers[HttpHeaders.Date])
             // Checked here, not left to sanitizeHttpFailures: a host-supplied client may not install it.
-            if (response.status.isSuccess()) {
+            val ours = if (response.status.isSuccess()) {
                 val field = (TrackerJson.parseToJsonElement(response.bodyAsText()) as? JsonObject)?.get("isTradeOur") as? JsonPrimitive
                 field?.takeUnless { it.isString }?.booleanOrNull
             } else {
                 null
             }
+            DmarketOfferAnswer(ours, serverTime)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            null
+            DmarketOfferAnswer(null)
         }
-    }
+    } ?: DmarketOfferAnswer(null)
 
     // ---- private -----------------------------------------------------------------------------------
 
@@ -264,11 +268,10 @@ class KtorMarketplaceClient(
         return response.bodyAsText()
     }
 
-    /** Hands [onServerDate] the instant a reply's `Date` names; a missing or malformed one is skipped. */
-    private fun heardDate(header: String?) {
-        val listener = onServerDate ?: return
-        val millis = header?.let { runCatching { it.fromHttpToGmtDate().timestamp }.getOrNull() } ?: return
-        listener(Instant.fromEpochMilliseconds(millis))
+    /** Hands [onServerDate] the instant a reply's `Date` names and returns it; a missing or malformed one is `null`. */
+    private fun heardDate(header: String?): Instant? {
+        val millis = header?.let { runCatching { it.fromHttpToGmtDate().timestamp }.getOrNull() } ?: return null
+        return Instant.fromEpochMilliseconds(millis).also { onServerDate?.invoke(it) }
     }
 
     /** GET [url] with bearer auth; same 401-refresh-and-retry / 429 / server-error handling as POST. */

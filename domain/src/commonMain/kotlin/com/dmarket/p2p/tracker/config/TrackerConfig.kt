@@ -64,8 +64,9 @@ data class TrackerConfig(
      */
     val receivedOfferNameCheck: Boolean = false,
     /**
-     * How old (by Steam's `time_created`) a received offer must be before DMarket's "not ours" counts, in ms. DMarket
-     * may record its bot's offer a little after Steam lists it; a younger offer is asked again on the next scan.
+     * How long after DMarket first said "not ours" about a received offer (by DMarket's server clock, the replies'
+     * HTTP `Date`, persisted across respawns) that answer counts, in ms. DMarket may record its bot's offer a little after Steam lists it; within
+     * the grace the offer is asked again on the next scan.
      */
     val isTradeOurGraceMs: Int = 120_000,
 ) {

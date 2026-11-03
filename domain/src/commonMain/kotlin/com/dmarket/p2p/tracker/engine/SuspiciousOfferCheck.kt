@@ -34,8 +34,10 @@ import kotlin.time.Instant
  * known-scam list. DMarket's own deposit bots send exactly that give-only shape, so the give-only rule does not apply
  * to it, and leases and trust cannot explain an offer this device did not make. With the received-offer name check on,
  * a candidate whose partner's persona name poses as DMarket is also flagged once DMarket has said the offer is not one
- * of its own ([dmarketVerdicts] `false`) and the offer is at least the grace old; a `true`, a missing verdict or a
- * younger offer leaves it [SuspicionLevel.NONE]. Only a known-scam partner outranks DMarket's `true`.
+ * of its own ([dmarketVerdicts] `false`) and that answer has held for at least the grace ([notOursFor], measured on
+ * DMarket's server clock from its first "not ours"); a `true`, a missing verdict, no measurement or a shorter one leaves
+ * it [SuspicionLevel.NONE]. Neither Steam's `time_created` nor the device clock is used for the grace: a device clock
+ * running fast, or moved between scans, would shorten it. Only a known-scam partner outranks DMarket's `true`.
  */
 object SuspiciousOfferCheck {
     /** `ETradeOfferState` Active (2) and CreatedNeedsConfirmation (9): the offers that can still be confirmed. */
@@ -62,8 +64,8 @@ object SuspiciousOfferCheck {
             personaNames[offer.partner]?.let(DmarketImpersonation::impersonates) == true
 
     /**
-     * The level of one offer. [receivedNameCheck], [dmarketVerdicts] (absent = no answer) and [isTradeOurGrace] apply
-     * to received offers only.
+     * The level of one offer. [receivedNameCheck], [dmarketVerdicts] (absent = no answer), [isTradeOurGrace] and
+     * [notOursFor] (how long DMarket has been answering `false`, by its server clock) apply to received offers only.
      */
     fun classify(
         offer: SteamSentOffer,
@@ -76,11 +78,14 @@ object SuspiciousOfferCheck {
         receivedNameCheck: Boolean = false,
         dmarketVerdicts: Map<OfferId, Boolean> = emptyMap(),
         isTradeOurGrace: Duration = Duration.ZERO,
+        notOursFor: Map<OfferId, Duration> = emptyMap(),
     ): SuspicionLevel {
         if (!candidate(offer)) return SuspicionLevel.NONE
         if (offer.partner in knownScamPartners) return SuspicionLevel.IMPERSONATION
         if (offer.direction == OfferDirection.RECEIVED) {
-            val notOurs = dmarketVerdicts[offer.offerId] == false && now - offer.createdAt >= isTradeOurGrace
+            val held = notOursFor[offer.offerId]
+            val pastGrace = isTradeOurGrace == Duration.ZERO || held != null && held >= isTradeOurGrace
+            val notOurs = dmarketVerdicts[offer.offerId] == false && pastGrace
             return if (receivedNameCheck && notOurs && asksDmarket(offer, knownScamPartners, personaNames)) {
                 SuspicionLevel.IMPERSONATION
             } else {
@@ -115,10 +120,11 @@ object SuspiciousOfferCheck {
         receivedNameCheck: Boolean = false,
         dmarketVerdicts: Map<OfferId, Boolean> = emptyMap(),
         isTradeOurGrace: Duration = Duration.ZERO,
+        notOursFor: Map<OfferId, Duration> = emptyMap(),
     ): List<SuspiciousOffer> = sent.mapNotNull { offer ->
         val level = classify(
             offer, tracking, leases, trustedPartners, knownScamPartners, now, personaNames,
-            receivedNameCheck, dmarketVerdicts, isTradeOurGrace,
+            receivedNameCheck, dmarketVerdicts, isTradeOurGrace, notOursFor,
         )
         if (level == SuspicionLevel.NONE) {
             null
