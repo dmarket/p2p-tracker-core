@@ -316,12 +316,13 @@ class SuspiciousOfferCheckTest {
     }
 
     @Test
-    fun only_a_received_offer_flagged_on_the_name_is_marked_by_name() {
+    fun an_impersonation_flagged_on_the_name_is_marked_by_name_in_either_direction() {
         val byName = received(at = oldEnough)
         val fromScammer = received(from = scammer, at = oldEnough).copy(offerId = OfferId("o2"))
         val sent = offer(at = oldEnough).copy(offerId = OfferId("o3"))
+        val sentToScammer = offer(at = oldEnough).copy(offerId = OfferId("o4"), partner = scammer)
         val found = SuspiciousOfferCheck.evaluate(
-            sent = listOf(byName, fromScammer, sent),
+            sent = listOf(byName, fromScammer, sent, sentToScammer),
             tracking = emptyList(),
             leases = emptyList(),
             trustedPartners = emptySet(),
@@ -333,6 +334,9 @@ class SuspiciousOfferCheckTest {
             isTradeOurGrace = grace,
             notOursFor = mapOf(OfferId("o1") to grace, OfferId("o2") to grace),
         )
-        assertEquals(mapOf("o1" to true, "o2" to false, "o3" to false), found.associate { it.offerId.value to it.byName })
+        assertEquals(
+            mapOf("o1" to true, "o2" to false, "o3" to true, "o4" to false),
+            found.associate { it.offerId.value to it.byName },
+        )
     }
 }

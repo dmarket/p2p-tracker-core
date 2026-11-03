@@ -14,6 +14,15 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A warning on an active offer is cleared while the persona-name read fails, unless the warning itself was made on the
+  name (DMA-818). Before, a failed `GetPlayerSummaries` held every warning on an active sent offer, so a retracted
+  `knownScamPartners` entry or a stale `UNLINKED_GIVE_ONLY` stayed until the offer closed.
+  `SuspiciousOffer.byName` now also marks a sent offer flagged on the name, and `tracker_guard_notified` records the
+  basis: a list-made impersonation is stored as `IMPERSONATION_BY_LIST`, and a bare `IMPERSONATION` written by an
+  older build reads as made on the name.
+
 ## [1.2.0-beta] - 2026-11-03
 
 ### Added

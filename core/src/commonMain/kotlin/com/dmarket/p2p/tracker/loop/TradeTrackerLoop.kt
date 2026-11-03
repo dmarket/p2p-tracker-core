@@ -2142,10 +2142,12 @@ class TradeTrackerLoop(
             isTradeOurGrace = config.tunables.isTradeOurGrace,
             notOursFor = notOursFor,
         )
-        // Without the partner's name (a failed read, or a profile the read left out) or DMarket's answer a name-based
-        // warning cannot be re-derived, so those offers count as unlisted: never cleared.
-        val unjudged = held + nameCandidates.filter { it.partner !in personaNames }.mapTo(mutableSetOf()) { it.offerId }
-        val delta = offerGuard.unreported(found, sent.filter { it.offerId !in unjudged }.mapTo(mutableSetOf()) { it.offerId })
+        // Without DMarket's answer a received warning cannot be re-derived, so those offers count as unlisted: never
+        // cleared. Without the partner's name (a failed read, or a profile the read left out) only a warning made on the
+        // name is kept; one made on the known-scam list or on the offer itself is still judged.
+        val judged = sent.filter { it.offerId !in held }.mapTo(mutableSetOf()) { it.offerId }
+        val nameless = nameCandidates.filter { it.partner !in personaNames }.mapTo(mutableSetOf()) { it.offerId }
+        val delta = offerGuard.unreported(found, judged, nameless)
         if (delta.fresh.isNotEmpty() || delta.cleared.isNotEmpty()) {
             emit(LifecycleEvent.SuspiciousOutgoingOffers(delta.fresh, delta.cleared))
         }
