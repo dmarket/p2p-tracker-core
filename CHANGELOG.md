@@ -16,6 +16,11 @@ GitHub Release.
 
 ### Fixed
 
+- A token rotation rewrites each DMarket cookie with the attributes read from that cookie itself. Before, both
+  `dm-trade-token` and `dm-trade-refresh-token` were rewritten with the refresh cookie's attributes, so an
+  `HttpOnly` flag (or a different `domain`/`path`/`sameSite`) set only on the access cookie was dropped on the next
+  rotation. A cookie that was never read borrows the other's attributes, as before (DMA-815).
+
 - Persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails` (DMA-857). The
   `GetPlayerSummaries` read never worked: Steam answers it `400 Required parameter 'key' is missing` for a user
   `access_token`, so no partner name ever reached `SuspiciousOfferCheck` and an offer to an account renamed to
