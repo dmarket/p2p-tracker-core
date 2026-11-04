@@ -14,6 +14,18 @@ class ProverPiecesTest {
     private val settings = ProverSettings(notaryUrl = "wss://notary.test/provenance/v1/", threadCount = 4, assetsDir = "/opt/sdk")
 
     @Test
+    fun ipc_preserves_proxy_and_old_settings_default_to_mpc() {
+        val old = ToChild.Prove(1, request, "token", "session", settings)
+        val oldJson = ProverIpc.encode(old)
+        assertFalse("\"mode\"" in oldJson)
+        assertEquals("mpc", (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.mode)
+        val proxy = old.copy(settings = settings.copy(mode = "proxy"))
+        assertEquals(proxy, ProverIpc.toChild(ProverIpc.encode(proxy)))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "unknown") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "proxy", targetAddress = "localhost:443") }
+    }
+
+    @Test
     fun the_ipc_round_trips_and_its_strings_hide_the_secrets() {
         val token = steamToken()
         val prove = ToChild.Prove(7, request, token, "abc123", settings)

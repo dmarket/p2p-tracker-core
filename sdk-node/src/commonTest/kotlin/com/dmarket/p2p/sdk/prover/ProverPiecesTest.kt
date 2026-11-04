@@ -8,6 +8,16 @@ import kotlin.test.assertTrue
 
 class ProverPiecesTest {
     @Test
+    fun proxy_mode_is_opt_in_and_survives_sdk_config_parsing() {
+        assertEquals("mpc", ProverConfig().mode)
+        val config = com.dmarket.p2p.sdk.SdkConfig.parse(
+            """{"managementSecret":"${"s".repeat(32)}","dataDir":"/data","prover":{"mode":"proxy"}}""",
+        )
+        assertEquals("proxy", config.prover.mode)
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(mode = "unknown") }
+    }
+
+    @Test
     fun a_cgroup_limit_is_read_from_either_version() {
         assertEquals(536_870_912L, ProverMemory.limitBytes("536870912\n", null))
         assertNull(ProverMemory.limitBytes("max\n", "1"))

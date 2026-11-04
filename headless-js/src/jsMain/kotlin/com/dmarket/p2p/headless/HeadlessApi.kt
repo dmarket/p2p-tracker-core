@@ -186,7 +186,12 @@ private fun proofHost(options: HeadlessOptions, prover: ProverOptions, files: Pr
     return ForkedProofHost(
         script = files.script,
         args = emptyList(),
-        settings = ProverSettings(notaryUrl = options.notaryUrl, threadCount = prover.threadCount, assetsDir = files.assetsDir),
+        settings = ProverSettings(
+            notaryUrl = options.notaryUrl,
+            threadCount = prover.threadCount,
+            assetsDir = files.assetsDir,
+            mode = prover.mode,
+        ),
         clock = clock,
         limits = ProverLimits(prover.connectDeadline, prover.sessionDeadline, prover.proofsPerChild),
         onLine = { _, stream, line -> onLine?.let { runCatching { it(stream, line) } } },

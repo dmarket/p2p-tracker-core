@@ -14,7 +14,8 @@ import kotlinx.serialization.json.Json
  * @property rootStorePem PEM roots that replace the prover's bundled set for the target's certificate. A test
  *   stand's fixture CA; never set in production.
  * @property targetAddress `host:port` the child dials for the target leg in place of `serverName:443`, the TLS
- *   server name staying the target's. A test stand's echo server; never set in production.
+ *   server name staying the target's. MPC-only; proxy routing belongs to the notary. Never set in production.
+ * @property mode `mpc` (default, including old IPC) or `proxy`.
  */
 @Serializable
 data class ProverSettings(
@@ -23,7 +24,13 @@ data class ProverSettings(
     @SerialName("assetsDir") val assetsDir: String,
     @SerialName("rootStorePem") val rootStorePem: String? = null,
     @SerialName("targetAddress") val targetAddress: String? = null,
+    @SerialName("mode") val mode: String = "mpc",
 ) {
+    init {
+        require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
+        require(mode != "proxy" || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
+    }
+
     companion object {
         /**
          * The prover's MPC threads per process, unless a host sets its own. Each thread adds about 12 MB to a proof's

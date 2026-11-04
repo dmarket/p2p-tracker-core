@@ -707,8 +707,15 @@ data class NotaryConfig(
      * Appended last, per the rule on [acceptedProofTtlMs].
      */
     val sentBudgetMarginPercent: Int = 15,
+    /**
+     * Issuance protocol: `mpc` (default) or `proxy`. Proxy needs a proxy-capable prover and an enabled,
+     * routed notary. The notary opens the target connection; [proxyBaseUrl] and MPC online budgets are
+     * unused. There is no automatic fallback. Appended to preserve existing JS constructor positions.
+     */
+    val mode: String = "mpc",
 ) {
     init {
+        require(mode == "mpc" || mode == "proxy") { "notary.mode must be mpc or proxy" }
         require(acceptedProofTtlMs >= 0) { "acceptedProofTtlMs must be >= 0, was $acceptedProofTtlMs" }
         require(sentBudgetMarginPercent >= 0) {
             "sentBudgetMarginPercent must be >= 0, was $sentBudgetMarginPercent"

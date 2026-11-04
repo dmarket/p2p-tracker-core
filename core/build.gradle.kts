@@ -6,6 +6,19 @@ plugins {
     id("dmarket.kmp.library")
 }
 
+// An unpublished candidate may be tested/shipped from a local tarball, but only with an explicit
+// version and integrity anchor. The normal registry pin remains the default.
+val proverTarball = providers.gradleProperty("tlsnProverTarball").orNull?.let { file(it) }
+val proverVersion = providers.gradleProperty("tlsnProverVersion").orNull
+val proverIntegrity = providers.gradleProperty("tlsnProverIntegrity").orNull
+require(
+    listOf(proverTarball, proverVersion, proverIntegrity).all { it == null } ||
+        listOf(proverTarball, proverVersion, proverIntegrity).all { it != null },
+) {
+    "tlsnProverTarball, tlsnProverVersion and tlsnProverIntegrity must be supplied together"
+}
+val proverDependency = proverTarball?.let { "file:${it.absolutePath}" } ?: TlsnProverPin.VERSION
+
 // The TLSN prover this library ships is pinned once, in build-logic (TlsnProverPin): the headless package
 // ships the same one.
 
@@ -47,7 +60,7 @@ kotlin {
             // it. It is declared only so the Kotlin/JS npm install fetches it for copyTlsnProver below and for
             // the jsTest contract test. prepare-package.sh blanks `dependencies` in the published
             // package.json, so a consumer of @dmarket/p2p-tracker-core does not install a second copy.
-            implementation(npm(TlsnProverPin.PACKAGE, TlsnProverPin.VERSION))
+            implementation(npm(TlsnProverPin.PACKAGE, proverDependency))
         }
     }
 }
@@ -163,8 +176,9 @@ val verifyTlsnProver by tasks.registering(VerifyTlsnProver::class) {
     // the configuration cache.
     val name = TlsnProverPin.PACKAGE
     packageName.set(name)
-    packageVersion.set(TlsnProverPin.VERSION)
-    packageIntegrity.set(TlsnProverPin.INTEGRITY)
+    packageVersion.set(proverVersion ?: TlsnProverPin.VERSION)
+    packageIntegrity.set(proverIntegrity ?: TlsnProverPin.INTEGRITY)
+    proverTarball?.let { packageArchive.set(it) }
     packageDir.set(npm.nodeModulesDir.map { it.dir(name) })
     installLock.set(npm.nodeJsRoot.rootPackageDirectory.map { it.file("yarn.lock") })
     stamp.set(layout.buildDirectory.file("tlsn-prover/verified.txt"))

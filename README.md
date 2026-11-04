@@ -367,6 +367,10 @@ convention.** The real prover is selected on one condition: a host proof delegat
 [`NoOpNotaryProver`](core/src/commonMain/kotlin/com/dmarket/p2p/tracker/adapter/notary/NoOpNotaryProver.kt)
 — no WASM prover runs, no notary socket opens, and the `wss://` proxy default is inert. That is the state
 of every caller that passes no prover (mobile today) and of Firefox, which cannot host one.
+Proxy issuance is opt-in through `TrackerConfig.notary.mode = "proxy"` (headless/SDK: `prover.mode`).
+It needs proxy-capable prover assets and an enabled, routed notary. It opens only the notary channel;
+omitted modes keep MPC. See [mode selection and candidate setup](core/PROVER.md#choosing-the-issuance-mode).
+
 The prover ships inside the package (`pkg/` + `transport/`, next to the library's ESM entry, taken at
 build time from an exact-pinned release of
 [`@dmarket/steam-provenance`](https://www.npmjs.com/package/@dmarket/steam-provenance)) but is

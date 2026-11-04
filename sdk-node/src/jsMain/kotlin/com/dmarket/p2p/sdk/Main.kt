@@ -89,7 +89,13 @@ private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): Node
         log.error("prover files not found: no proofs will be made", "assetsDir" to config.prover.assetsDir)
         return null
     }
-    val settings = ProverSettings(notaryUrl = config.prover.notaryUrl, threadCount = config.prover.threadCount, assetsDir = assets)
+    val settings =
+        ProverSettings(
+            notaryUrl = config.prover.notaryUrl,
+            threadCount = config.prover.threadCount,
+            assetsDir = assets,
+            mode = config.prover.mode,
+        )
     val script = NodeModules.process.argv[1] as String
     val limits = ProverLimits(proofsPerChild = config.prover.proofsPerChild)
     return NodeProofHostFactory { onOutcome ->

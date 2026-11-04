@@ -4,6 +4,61 @@ The optional proof path runs a prebuilt WebAssembly prover from the `dmarket/ste
 This file is the integration contract on our side; the prover's own consumer contract is the `README.md`
 inside its npm package.
 
+## Choosing the issuance mode
+
+`TrackerConfig.notary.mode` accepts `"mpc"` (default) or `"proxy"`. Pass that config to the browser's
+`proveNotaryTransition` or to `runHostedProof`. For `createHeadlessTracker`, use
+`prover: { mode: "proxy" }`; the Node SDK config file accepts `"prover": { "mode": "proxy" }`.
+The mode travels to each child in `ProverSettings`. Omitted modes keep MPC, including old IPC messages.
+Invalid modes fail configuration; there is no automatic protocol fallback.
+
+Proxy uses `createProxyProver` / `proveProxy` and exactly one notary channel. The notary must enable
+proxy and allow the request's TLS server name in its operator-owned routes. `proxyBaseUrl` is the
+browser's **MPC target tunnel**, not a notary-proxy setting. Proxy never calls `connectTarget` or
+`connectProxy`, and a child `targetAddress` override is rejected. The notary establishes the target TCP
+connection; TLS identity and custom test roots still come from the proven read and `rootStorePem`.
+
+Both modes use the same HTTP request, authentication, presentation policy and response-status hook.
+Proxy passes the configured/per-read send and receive ceilings under `limits`, without MPC send-budget
+sizing. MPC online byte/record preprocessing settings are not sent. Other proxy wire, record, handshake
+and certificate ceilings retain the prover's finite defaults; the notary also applies its own limits.
+Tracing identifies `mode=proxy target=notary`. Worker lifecycle, cross-origin isolation, child deadlines
+and concurrency limits still apply.
+
+**Assets:** the default pinned 1.0.1 package supports MPC only. Selecting proxy with old assets fails
+before WASM compilation, worker initialization or the notary upgrade. Supply a proxy-capable package
+(such as the 1.1.0 candidate from the matching steam-provenance branch) using headless/SDK `assetsDir`,
+or build both distributions with the verified candidate override below. Proxy support is additive;
+these changes do not imply that a new prover release or a proxy-enabled production notary is deployed.
+
+Injected `WasmProverModule` implementations retain their one-argument `initialize` entry point.
+To support proxy they must also implement `initialize(threadCount, mode)` and honor the request's mode;
+the default overload rejects proxy so old modules cannot silently issue MPC instead.
+
+### Building with an unpublished candidate
+
+The registry pin is unchanged. A local candidate build requires all three Gradle properties together:
+
+Kotlin/JS caches transitive npm metadata in compiled libraries. When switching between the registry
+pin and a candidate (or between candidates), run `./gradlew clean` first, then refresh the untracked
+Yarn lock with the same three properties used for the build:
+
+```bash
+./gradlew clean
+./gradlew kotlinUpgradeYarnLock :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution \
+  -PtlsnProverTarball=/absolute/path/to/dmarket-steam-provenance-1.1.0.tgz \
+  -PtlsnProverVersion=1.1.0 \
+  -PtlsnProverIntegrity='sha512-<base64 from the reviewed npm pack output>'
+```
+
+Use the tarball produced by steam-provenance's guarded package staging, and its `pack.json` integrity.
+The override verifies the archive's SHA-512 against that explicit anchor, binds Yarn's resolved file
+hash to the same archive, then performs the normal version, provenance and complete shipped-file
+checksum checks. A partial override or mismatched integrity fails the build. These are build inputs,
+not runtime options. Omit all three to return to the shipping pin. After 1.1.0 is published, use the
+normal pin-bump procedure below and verify the registry integrity rather than assuming it matches a
+local candidate.
+
 ## Where it comes from
 
 One exact release of the npm package
@@ -55,7 +110,7 @@ the real `pkg/`, and CI runs `check` before the distribution task. Each run logs
 TLSN prover @dmarket/steam-provenance@<version> verified (<n> files): GIT_SHA=… WASM_SHA256=… TRANSPORT_VERSION=…
 ```
 
-1. **Integrity.** The lockfile entry the npm install used must carry `TlsnProverPin.INTEGRITY`. yarn checks
+1. **Integrity.** For the default registry build, the lockfile entry the npm install used must carry `TlsnProverPin.INTEGRITY`. yarn checks
    the download against the registry's integrity and records it there, so this ties the whole npm tarball
    to a value committed in this repository.
 2. **Version and commit.** The installed `package.json` must be `TlsnProverPin.VERSION`, and its `gitHead`
