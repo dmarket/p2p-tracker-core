@@ -9,7 +9,7 @@ import com.dmarket.p2p.tracker.port.host.CredentialVault
  * Suitable for JVM tests, browser demos, and any context where OS-level secure storage is not
  * available. **Not suitable for production use in mobile/extension targets** — credentials are
  * stored in plain memory and lost on process exit. Phase 3 replaces this with Keychain (iOS),
- * EncryptedSharedPreferences (Android), and `chrome.storage.local` (web extension).
+ * EncryptedSharedPreferences (Android), and `chrome.storage.session` (web extension).
  */
 class InMemoryCredentialVault : CredentialVault {
     // No @Volatile: JS is single-threaded; JVM callers share a single coroutine scope per loop.

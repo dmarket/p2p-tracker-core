@@ -21,6 +21,11 @@ GitHub Release.
   `HttpOnly` flag (or a different `domain`/`path`/`sameSite`) set only on the access cookie was dropped on the next
   rotation. A cookie that was never read borrows the other's attributes, as before (DMA-815).
 
+- The web vault keeps the scraped Steam credential (`steam_credential`) in `storage.session` instead of
+  `storage.local`, so it is held in memory only and never written to disk (DMA-817). Construction removes the
+  copy earlier builds left in `storage.local`. A host that opens `storage.session` to content scripts with
+  `setAccessLevel` exposes the token to them and must close it first.
+
 - Persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails` (DMA-857). The
   `GetPlayerSummaries` read never worked: Steam answers it `400 Required parameter 'key' is missing` for a user
   `access_token`, so no partner name ever reached `SuspiciousOfferCheck` and an offer to an account renamed to

@@ -6,48 +6,48 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * Tests for [WebExtStorageCredentialVault] running against an in-memory `chrome.storage.local`
- * shim installed on `globalThis`.
+ * Tests for [WebExtStorageCredentialVault] running against in-memory `chrome.storage.local` and
+ * `chrome.storage.session` shims installed on `globalThis`.
  *
- * The shim uses a pure-JS closure so Kotlin/JS name-mangling is not a concern, and Promise
- * resolution is synchronous (the shim wraps values in `Promise.resolve`).
+ * The shim uses a pure-JS closure per area so Kotlin/JS name-mangling is not a concern, and every call
+ * returns an already-resolved Promise (matching Chrome MV3 behaviour).
  */
 class WebExtStorageCredentialVaultTest {
 
     @BeforeTest
     fun installChromeMock() {
-        // Installs a minimal chrome.storage.local shim that stores values in a JS-level closure.
-        // All calls return Promises (matching Chrome MV3 behaviour).
         js(
             """
             (function () {
-                var store = {};
-                globalThis.chrome = {
-                    storage: {
-                        local: {
-                            get: function (key) {
-                                var result = {};
-                                if (store[key] !== undefined) { result[key] = store[key]; }
-                                return Promise.resolve(result);
-                            },
-                            set: function (items) {
-                                Object.keys(items).forEach(function (k) { store[k] = items[k]; });
-                                return Promise.resolve(undefined);
-                            },
-                            remove: function (key) {
-                                delete store[key];
-                                return Promise.resolve(undefined);
-                            }
+                function area() {
+                    var store = {};
+                    return {
+                        get: function (key) {
+                            var result = {};
+                            if (store[key] !== undefined) { result[key] = store[key]; }
+                            return Promise.resolve(result);
+                        },
+                        set: function (items) {
+                            Object.keys(items).forEach(function (k) { store[k] = items[k]; });
+                            return Promise.resolve(undefined);
+                        },
+                        remove: function (key) {
+                            delete store[key];
+                            return Promise.resolve(undefined);
                         }
-                    }
-                };
+                    };
+                }
+                globalThis.chrome = { storage: { local: area(), session: area() } };
             })()
             """,
         )
     }
+
+    private val key = DeviceVaultKeys.STEAM_CREDENTIAL
 
     // ---- steam credential round-trip -----------------------------------------------------------
 
@@ -84,12 +84,48 @@ class WebExtStorageCredentialVaultTest {
         assertNull(vault.readSteamCredential())
     }
 
-    // ---- on-disk key shape check --------------------------------------------------------------
+    // ---- memory-only storage -----------------------------------------------------------------
+
+    @Test
+    fun write_lands_in_session_storage_and_never_in_local() = runTest {
+        WebExtStorageCredentialVault().writeSteamCredential(fakeSteamCredential(token = "test-token"))
+
+        assertNotNull(webExtStorageGet(key, STORAGE_SESSION))
+        assertNull(webExtStorageGet(key, STORAGE_LOCAL))
+    }
+
+    @Test
+    fun construction_removes_the_legacy_local_copy_without_any_vault_call() = runTest {
+        webExtStorageSet(key, "{\"token\":\"old\"}", STORAGE_LOCAL)
+
+        WebExtStorageCredentialVault()
+
+        assertNull(webExtStorageGet(key, STORAGE_LOCAL))
+    }
+
+    @Test
+    fun legacy_local_token_is_not_carried_over_so_the_loop_re_scrapes() = runTest {
+        webExtStorageSet(key, "{\"token\":\"old\"}", STORAGE_LOCAL)
+
+        assertNull(WebExtStorageCredentialVault().readSteamCredential())
+        assertNull(webExtStorageGet(key, STORAGE_LOCAL))
+    }
+
+    @Test
+    fun clear_leaves_session_storage_empty() = runTest {
+        val vault = WebExtStorageCredentialVault()
+        vault.writeSteamCredential(fakeSteamCredential())
+
+        vault.clearSteamCredential()
+
+        assertNull(webExtStorageGet(key, STORAGE_SESSION))
+    }
+
+    // ---- stored key shape check --------------------------------------------------------------
 
     @Test
     fun device_vault_key_constants_are_stable() = runTest {
-        // These key names are stored on disk in chrome.storage.local; changing them is a
-        // breaking migration for any user with existing stored credentials.
+        // The legacy-copy removal and the extension's hygiene/diagnostics code address this key by name.
         assertEquals("steam_credential", DeviceVaultKeys.STEAM_CREDENTIAL)
     }
 }
