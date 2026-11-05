@@ -16,28 +16,18 @@ GitHub Release.
 
 ### Fixed
 
-- A token rotation rewrites each DMarket cookie with the attributes read from that cookie itself. Before, both
-  `dm-trade-token` and `dm-trade-refresh-token` were rewritten with the refresh cookie's attributes, so an
-  `HttpOnly` flag (or a different `domain`/`path`/`sameSite`) set only on the access cookie was dropped on the next
-  rotation. A cookie that was never read borrows the other's attributes, as before (DMA-815).
+- Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) instead of
+  copying the refresh cookie's (DMA-815).
 
-- The web vault keeps the scraped Steam credential (`steam_credential`) in `storage.session` instead of
-  `storage.local`, so it is held in memory only and never written to disk (DMA-817). Construction removes the
-  copy earlier builds left in `storage.local`. A host that opens `storage.session` to content scripts with
-  `setAccessLevel` exposes the token to them and must close it first.
+- The web vault keeps the Steam credential in `storage.session` instead of `storage.local` and removes the old
+  copy. A host that opens `storage.session` to content scripts with `setAccessLevel` must close it first (DMA-817).
 
-- Persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails` (DMA-857). The
-  `GetPlayerSummaries` read never worked: Steam answers it `400 Required parameter 'key' is missing` for a user
-  `access_token`, so no partner name ever reached `SuspiciousOfferCheck` and an offer to an account renamed to
-  "D market" stayed `UNLINKED_GIVE_ONLY` unless the partner was in `knownScamPartners`. New
-  `SteamEndpointsConfig.getPlayerLinkDetailsPath`, appended last so no positional `copy()` slot moves.
+- Partner persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails`, so an
+  offer to a renamed account is now flagged. New config field `SteamEndpointsConfig.getPlayerLinkDetailsPath`
+  (DMA-857).
 
-- A warning on an active offer is cleared while the persona-name read fails, unless the warning itself was made on the
-  name (DMA-818). Before, a failed `GetPlayerSummaries` held every warning on an active sent offer, so a retracted
-  `knownScamPartners` entry or a stale `UNLINKED_GIVE_ONLY` stayed until the offer closed.
-  `SuspiciousOffer.byName` now also marks a sent offer flagged on the name, and `tracker_guard_notified` records the
-  basis: a list-made impersonation is stored as `IMPERSONATION_BY_LIST`, and a bare `IMPERSONATION` written by an
-  older build reads as made on the name.
+- A warning on an active offer is cleared while the persona-name read fails, unless the warning was made on the
+  name. `SuspiciousOffer.byName` now also marks a sent offer flagged on the name (DMA-818).
 
 ## [1.2.0-beta] - 2026-11-03
 
