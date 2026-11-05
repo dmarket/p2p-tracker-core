@@ -48,9 +48,8 @@ version: 2.1
 #      (needs the CircleCI Org ID, Project ID, Pipeline Definition ID, and VCS origin URL).
 # The headless package is published first, so until both are in place for it publish_npm fails before it
 # reaches core, and nothing is released.
-# Only secret still needed: GITHUB_TOKEN (contents:write) from the org-wide context org-global, taken by
-# publish_npm (the tag + GitHub Release on STABLE releases) and delete_release_branch, as in the extension
-# repository. No project environment variable: org-global is rotated in one place for every repo.
+# Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
+# releases. Snapshots need no secrets at all.
 
 executors:
   jdk-node:
@@ -153,160 +152,155 @@ jobs:
   publish_npm:
     executor: node-publish
     steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: Load release vars
-          command: cat release.env >> "$BASH_ENV"
-      - run:
-          name: Ensure npm supports CircleCI trusted publishing (>= 11.11.0)
-          # 11.11.0 is when npm's OIDC flow learned about CircleCI (not the 11.5.1 GA floor, which
-          # is GitHub Actions/GitLab only). Normally a no-op version check; the upgrade only runs
-          # if the bundled npm is too old, and it pins the npm 11 line (npm 12 wants newer Node ->
-          # EBADENGINE risk on image bumps).
-          command: |
-            REQUIRED="11.11.0"
-            CURRENT="$(npm --version)"
-            if [ "$(printf '%s\n' "$REQUIRED" "$CURRENT" | sort -V | head -n1)" != "$REQUIRED" ]; then
-              echo "npm $CURRENT < $REQUIRED — upgrading to the npm 11 line."
-              npm install -g npm@11
-            fi
-            npm --version
-      - run:
-          name: Publish both packages to npm via OIDC (+ tag & GitHub Release for stable versions)
-          command: |
-            set -euo pipefail
-            # Headless first, core second. Core is what the web extension consumes, and its users are live:
-            # if the headless publish fails, core is not published, so the extension never gets a release
-            # whose pair is missing and that has no tag. If core fails after headless, headless waits without
-            # a tag, but nothing picks it up on its own: its consumers pin exact versions and move to a new one
-            # deliberately. Either way a re-run converges, because each package skips what npm already has.
-            PKG_DIRS="headless-js/build/dist/js/productionLibrary core/build/dist/js/productionLibrary"
-            echo "Target: $VERSION (dist-tag: $DIST_TAG, snapshot: $IS_SNAPSHOT, branch: $CIRCLE_BRANCH)"
+    - checkout
+    - attach_workspace:
+        at: .
+    - run:
+        name: Load release vars
+        command: cat release.env >> "$BASH_ENV"
+    - run:
+        name: Ensure npm supports CircleCI trusted publishing (>= 11.11.0)
+        command: |
+          REQUIRED="11.11.0"
+          CURRENT="$(npm --version)"
+          if [ "$(printf '%s\n' "$REQUIRED" "$CURRENT" | sort -V | head -n1)" != "$REQUIRED" ]; then
+            echo "npm $CURRENT < $REQUIRED — upgrading to the npm 11 line."
+            npm install -g npm@11
+          fi
+          npm --version
+    - run:
+        name: Publish both packages to npm via OIDC (+ tag & GitHub Release for stable versions)
+        command: |
+          set -euo pipefail
+          # Headless first, core second. Core is what the web extension consumes, and its users are live:
+          # if the headless publish fails, core is not published, so the extension never gets a release
+          # whose pair is missing and that has no tag. If core fails after headless, headless waits without
+          # a tag, but nothing picks it up on its own: its consumers pin exact versions and move to a new one
+          # deliberately. Either way a re-run converges, because each package skips what npm already has.
+          PKG_DIRS="headless-js/build/dist/js/productionLibrary core/build/dist/js/productionLibrary"
+          echo "Target: $VERSION (dist-tag: $DIST_TAG, snapshot: $IS_SNAPSHOT, branch: $CIRCLE_BRANCH)"
 
-            # --- Opt-out guard: "[skip publish]" in the commit message (resolved in prepare-package.sh). ---
-            if [ "${SKIP_PUBLISH:-false}" = "true" ]; then
-              echo "Skipping: commit message contains [skip publish] — no npm publish, no tag, no Release."
-              exit 0
-            fi
+          # --- Opt-out guard: "[skip publish]" in the commit message (resolved in prepare-package.sh). ---
+          if [ "${SKIP_PUBLISH:-false}" = "true" ]; then
+            echo "Skipping: commit message contains [skip publish] — no npm publish, no tag, no Release."
+            exit 0
+          fi
 
-            # --- Branch/version agreement: the branch names the version it releases. ---
-            # A hard failure, not a skip: reaching this job means a human approved a release, and the
-            # only ways to get here disagreeing are a bump that was forgotten or a branch cut from the
-            # wrong place. Both would publish a version nobody proposed.
-            BRANCH_VERSION="${CIRCLE_BRANCH#release/v}"
-            EXPECTED_VERSION="$VERSION_NAME"
-            if [ -n "${SNAPSHOT_LABEL:-}" ]; then EXPECTED_VERSION="$VERSION_NAME-$SNAPSHOT_LABEL"; fi
-            if [ "$BRANCH_VERSION" != "$EXPECTED_VERSION" ]; then
-              echo "ERROR: branch '$CIRCLE_BRANCH' proposes $BRANCH_VERSION but gradle.properties says $VERSION_NAME." >&2
+          # --- Branch/version agreement: the branch names the version it releases. ---
+          # A hard failure, not a skip: reaching this job means a human approved a release, and the
+          # only ways to get here disagreeing are a bump that was forgotten or a branch cut from the
+          # wrong place. Both would publish a version nobody proposed.
+          BRANCH_VERSION="${CIRCLE_BRANCH#release/v}"
+          EXPECTED_VERSION="$VERSION_NAME"
+          if [ -n "${SNAPSHOT_LABEL:-}" ]; then EXPECTED_VERSION="$VERSION_NAME-$SNAPSHOT_LABEL"; fi
+          if [ "$BRANCH_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "ERROR: branch '$CIRCLE_BRANCH' proposes $BRANCH_VERSION but gradle.properties says $VERSION_NAME." >&2
+            exit 1
+          fi
+
+          # --- Source: only main releases, or publishes the plain `snapshot`. ---
+          # A commit main does not have publishes only as a labelled snapshot
+          # (`release/v<x.y.z>-SNAPSHOT-<branch>`), under its own dist-tag, so a build of unmerged work can
+          # never become `latest` or the `snapshot` every consumer of the dev line pulls.
+          if [ -z "${SNAPSHOT_LABEL:-}" ]; then
+            git fetch -q origin main
+            if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+              echo "ERROR: $CIRCLE_SHA1 is not on main. A branch other than main publishes only a branch snapshot: VERSION_NAME <x.y.z>-SNAPSHOT on release/v<x.y.z>-SNAPSHOT-<branch>." >&2
               exit 1
             fi
+          fi
 
-            # --- Source: only main releases, or publishes the plain `snapshot`. ---
-            # A commit main does not have publishes only as a labelled snapshot
-            # (`release/v<x.y.z>-SNAPSHOT-<branch>`), under its own dist-tag, so a build of unmerged work can
-            # never become `latest` or the `snapshot` every consumer of the dev line pulls.
-            if [ -z "${SNAPSHOT_LABEL:-}" ]; then
-              git fetch -q origin main
-              if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
-                echo "ERROR: $CIRCLE_SHA1 is not on main. A branch other than main publishes only a branch snapshot: VERSION_NAME <x.y.z>-SNAPSHOT on release/v<x.y.z>-SNAPSHOT-<branch>." >&2
-                exit 1
-              fi
-            fi
+          # --- Changelog guard: a stable release must have a matching CHANGELOG section. ---
+          if [ "$IS_SNAPSHOT" = "false" ] && ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
+            echo "ERROR: CHANGELOG.md is missing a '## [$VERSION]' section for this stable release." >&2
+            exit 1
+          fi
 
-            # --- Changelog guard: a stable release must have a matching CHANGELOG section. ---
-            if [ "$IS_SNAPSHOT" = "false" ] && ! grep -qE "^## \[$VERSION\]" CHANGELOG.md; then
-              echo "ERROR: CHANGELOG.md is missing a '## [$VERSION]' section for this stable release." >&2
+          # --- Both distributions are this release's. ---
+          # Both come from the one build_and_test run that wrote release.env; a version that differs means
+          # the workspace holds a distribution that run did not prepare. Checked for both before either is
+          # published, so a stale core is not found only after headless has gone out without it.
+          for PKG_DIR in $PKG_DIRS; do
+            PKG_VERSION="$(node -p "require('./$PKG_DIR/package.json').version")"
+            if [ "$PKG_VERSION" != "$VERSION" ]; then
+              echo "ERROR: $PKG_DIR holds version $PKG_VERSION, but this release is $VERSION." >&2
               exit 1
             fi
+          done
 
-            # --- Both distributions are this release's. ---
-            # Both come from the one build_and_test run that wrote release.env; a version that differs means
-            # the workspace holds a distribution that run did not prepare. Checked for both before either is
-            # published, so a stale core is not found only after headless has gone out without it.
-            for PKG_DIR in $PKG_DIRS; do
-              PKG_VERSION="$(node -p "require('./$PKG_DIR/package.json').version")"
-              if [ "$PKG_VERSION" != "$VERSION" ]; then
-                echo "ERROR: $PKG_DIR holds version $PKG_VERSION, but this release is $VERSION." >&2
-                exit 1
-              fi
-            done
+          for PKG_DIR in $PKG_DIRS; do
+            NAME="$(node -p "require('./$PKG_DIR/package.json').name")"
 
-            for PKG_DIR in $PKG_DIRS; do
-              NAME="$(node -p "require('./$PKG_DIR/package.json').name")"
+            # --- Idempotency: skip the PUBLISH, not the job. ---
+            # Skipping the whole job here is what a re-run after a partial failure would hit: npm has the
+            # version, so the tag and Release below would never be created for it — and there is no second
+            # chance, because this same guard fires on every later attempt. So each step decides for itself
+            # whether its own artefact already exists, and an approved release converges on both packages
+            # published WITH the tag however many times it is run.
+            if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+              echo "$NAME@$VERSION already on npm — skipping its publish."
+            else
+              # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
+              # A fresh one for each package: npm exchanges it for a publish token for that one package, and
+              # whether the same id token is accepted a second time is not something to learn mid-release.
+              NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
+              export NPM_ID_TOKEN
+              (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
+              echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
+            fi
+          done
 
-              # --- Idempotency: skip the PUBLISH, not the job. ---
-              # Skipping the whole job here is what a re-run after a partial failure would hit: npm has the
-              # version, so the tag and Release below would never be created for it — and there is no second
-              # chance, because this same guard fires on every later attempt. So each step decides for itself
-              # whether its own artefact already exists, and an approved release converges on both packages
-              # published WITH the tag however many times it is run.
-              if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
-                echo "$NAME@$VERSION already on npm — skipping its publish."
-              else
-                # --- OIDC trusted publishing: mint a short-lived id token; npm exchanges it. No stored token. ---
-                # A fresh one for each package: npm exchanges it for a publish token for that one package, and
-                # whether the same id token is accepted a second time is not something to learn mid-release.
-                NPM_ID_TOKEN="$(circleci run oidc get --claims '{"aud": "npm:registry.npmjs.org"}')"
-                export NPM_ID_TOKEN
-                (cd "$PKG_DIR" && npm publish --tag "$DIST_TAG" --access public)
-                echo "Published $NAME@$VERSION under dist-tag '$DIST_TAG'."
-              fi
-            done
+          # --- Stable releases: annotated tag + GitHub Release from the changelog section. ---
+          #
+          # The tag is minted HERE, downstream of `hold_release`, and that is the point rather than an
+          # implementation detail: a tag is the durable public statement that a version was released, so it
+          # must not exist for a release nobody approved. Nothing earlier in this pipeline creates one. It
+          # comes after both publishes: a failed one has already ended the job (set -e), so a release that is
+          # only half on npm has no tag. One tag and one Release for the two packages, as they share a version.
+          if [ "$IS_SNAPSHOT" = "false" ]; then
+          bash .circleci/release-writer.sh -- bash -euo pipefail \<<'NATIVE_RELEASE_COMMAND'
+            git config user.name "circleci-bot"
+            git config user.email "ci@dmarket.com"
+            # Own idempotency, like the publish above: on a re-run the tag may already be pushed while the
+            # Release below is not, and `git tag` would fail the job before that could be repaired.
+            if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
+              echo "Tag v$VERSION already exists — skipping the tag."
+            else
+              git tag -a "v$VERSION" -m "Release v$VERSION"
+              git push "https://github.com/dmarket/p2p-tracker-core.git" "v$VERSION"
+              echo "Created git tag v$VERSION."
+            fi
 
-            # --- Stable releases: annotated tag + GitHub Release from the changelog section. ---
-            #
-            # The tag is minted HERE, downstream of `hold_release`, and that is the point rather than an
-            # implementation detail: a tag is the durable public statement that a version was released, so it
-            # must not exist for a release nobody approved. Nothing earlier in this pipeline creates one. It
-            # comes after both publishes: a failed one has already ended the job (set -e), so a release that is
-            # only half on npm has no tag. One tag and one Release for the two packages, as they share a version.
-            if [ "$IS_SNAPSHOT" = "false" ]; then
-              git config user.name "circleci-bot"
-              git config user.email "ci@dmarket.com"
-              # Own idempotency, like the publish above: on a re-run the tag may already be pushed while the
-              # Release below is not, and `git tag` would fail the job before that could be repaired.
-              if git ls-remote --exit-code --tags origin "v$VERSION" >/dev/null 2>&1; then
-                echo "Tag v$VERSION already exists — skipping the tag."
-              else
-                git tag -a "v$VERSION" -m "Release v$VERSION"
-                git push "https://x-access-token:${GITHUB_TOKEN}@github.com/dmarket/p2p-tracker-core.git" "v$VERSION"
-                echo "Created git tag v$VERSION."
-              fi
-
-              awk "/^## \[$VERSION\]/{f=1;next} /^## \[/{f=0} /^\[[^]]*\]:/{f=0} f" CHANGELOG.md >/tmp/notes.md
-              # Every version that reaches this step is a full release, `-beta` ones included (the suffix
-              # names the service's beta, not an unfinished build), so the Release is never a prerelease.
-              node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:false}))' >/tmp/release.json
-              if curl -sSf -o /dev/null \
-                -H "Authorization: token ${GITHUB_TOKEN}" \
+            awk "/^## \[$VERSION\]/{f=1;next} /^## \[/{f=0} /^\[[^]]*\]:/{f=0} f" CHANGELOG.md >/tmp/notes.md
+            # Every version that reaches this step is a full release, `-beta` ones included (the suffix
+            # names the service's beta, not an unfinished build), so the Release is never a prerelease.
+            node -e 'const fs=require("fs");const b=fs.readFileSync("/tmp/notes.md","utf8");const v=process.env.VERSION;const t="v"+v;process.stdout.write(JSON.stringify({tag_name:t,name:t,body:b,draft:false,prerelease:false}))' >/tmp/release.json
+            if curl -sSf -o /dev/null \
+              -H "Authorization: token ${RELEASE_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/dmarket/p2p-tracker-core/releases/tags/v$VERSION" 2>/dev/null; then
+              echo "GitHub Release v$VERSION already exists — nothing to create."
+            else
+              curl -sSf -X POST \
+                -H "Authorization: token ${RELEASE_TOKEN}" \
                 -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/dmarket/p2p-tracker-core/releases/tags/v$VERSION" 2>/dev/null; then
-                echo "GitHub Release v$VERSION already exists — nothing to create."
-              else
-                curl -sSf -X POST \
-                  -H "Authorization: token ${GITHUB_TOKEN}" \
-                  -H "Accept: application/vnd.github+json" \
-                  https://api.github.com/repos/dmarket/p2p-tracker-core/releases \
-                  -d @/tmp/release.json
-                echo "Created GitHub Release v$VERSION."
-              fi
+                https://api.github.com/repos/dmarket/p2p-tracker-core/releases \
+                -d @/tmp/release.json
+              echo "Created GitHub Release v$VERSION."
             fi
+          NATIVE_RELEASE_COMMAND
+          fi
 
-  # The last job of a release: deletes the release branch, snapshots included. Last rather than a step inside
-  # publish_npm, because publish_npm checks the branch out — and a failed publish is retried by
-  # re-running this workflow, which needs the branch to still exist.
   delete_release_branch:
     executor: node-publish
     steps:
-      - checkout
-      - run:
-          name: Delete the release branch
-          command: bash scripts/ci/delete-release-branch.sh
-
-  # TODO(Maven Central): when Android/iOS targets land, apply com.vanniktech.maven.publish and add a
-  # publish_maven job here (see the POM_* properties in gradle.properties).
+    - checkout
+    - run:
+        name: Delete the release branch
+        command: |
+          bash .circleci/release-writer.sh -- bash -euo pipefail \<<'NATIVE_RELEASE_COMMAND'
+          bash scripts/ci/delete-release-branch.sh
+          NATIVE_RELEASE_COMMAND
 
 workflows:
   ci:
@@ -332,14 +326,12 @@ workflows:
               # (`release/v1.0.1-SNAPSHOT-development`), that part minus its `-<label>`.
               only: /^release\/v\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/
       - publish_npm:
+          context: ["release-writer"]
           requires:
             - hold_release
-          context:
-            - org-global
           filters: *release_branches
       - delete_release_branch:
+          context: ["release-writer"]
           requires:
             - publish_npm
-          context:
-            - org-global
           filters: *release_branches

@@ -25,7 +25,7 @@
 #
 # Environment:
 #   REPO_SLUG      owner/repo (set by the executor in .circleci/config.yml)
-#   GITHUB_TOKEN   contents:write — the same credential `publish_npm` pushes the tag with
+#   RELEASE_TOKEN   contents:write — the same credential `publish_npm` pushes the tag with
 #   CIRCLE_BRANCH  the release branch (`release/vX.Y.Z`, `release/vX.Y.Z-SNAPSHOT[-<label>]`)
 #   CIRCLE_SHA1    the commit this pipeline built and released
 set -euo pipefail
@@ -33,11 +33,11 @@ set -euo pipefail
 : "${REPO_SLUG:?REPO_SLUG must be set (the CircleCI executor sets it)}"
 : "${CIRCLE_BRANCH:?CIRCLE_BRANCH must be set — this job runs on release branches only}"
 : "${CIRCLE_SHA1:?CIRCLE_SHA1 must be set}"
-: "${GITHUB_TOKEN:?GITHUB_TOKEN must be set (org-wide context org-global)}"
+: "${RELEASE_TOKEN:?RELEASE_TOKEN must be set (CircleCI project environment variable)}"
 
 # A trailing newline inside the push URL is a bare 403.
-GITHUB_TOKEN="$(printf '%s' "$GITHUB_TOKEN" | tr -d '[:space:]')"
-REMOTE="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO_SLUG}.git"
+RELEASE_TOKEN="$(printf '%s' "$RELEASE_TOKEN" | tr -d '[:space:]')"
+REMOTE="https://github.com/${REPO_SLUG}.git"
 
 # The workflow filter already limits this job to release branches; checked again because deleting the
 # wrong branch is the one mistake this script can make.
