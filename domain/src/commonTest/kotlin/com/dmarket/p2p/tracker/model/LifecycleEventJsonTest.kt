@@ -359,6 +359,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.DealLookupFailed("deal1", "404"),
             LifecycleEvent.ProgressStoreFailed("loadReported", "storage unavailable"),
             LifecycleEvent.WatchSummary(4, 4, 4, 0, 1, 3, 1),
+            LifecycleEvent.RevertWatchRearmed(2),
             LifecycleEvent.TradeStatusReported("deal1", "offer", 9),
             LifecycleEvent.TradeStatusReportFailed("deal1", "history", 12, "rejected"),
             LifecycleEvent.ProofSubmitted("deal1", "offer", verified = true),

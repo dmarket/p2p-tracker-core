@@ -31,6 +31,7 @@ import com.dmarket.p2p.tracker.engine.ProofFreshness
 import com.dmarket.p2p.tracker.engine.ProofIntent
 import com.dmarket.p2p.tracker.engine.ProofMintPolicy
 import com.dmarket.p2p.tracker.engine.ProofMintVerdict
+import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.ReportAck
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.engine.ReportPlan
@@ -2923,6 +2924,10 @@ class TradeTrackerLoop(
         // waiting for one. Kept apart from `proofFailed` because they answer different questions: that set
         // is about not advancing a baseline, this one is about whether the backend hears anything at all.
         val proofUnprovable = mutableSetOf<ProofIntent>()
+        // History transitions this pass saw but could not prove, and a later cycle CAN: the budget ran out, or
+        // the mint failed. Kept apart from `proofUnprovable` because a later cycle only gets the chance if it
+        // reads history again — see [rearmRevertWatchFor].
+        val historyProofOwed = mutableSetOf<DealId>()
         val acceptedProofs = loadAcceptedProofs(tracking)
         val claimSpent = loadUnprovenClaims(tracking)
         // What earlier refusals taught about each deal's online-decryption budget.
@@ -2985,6 +2990,11 @@ class TradeTrackerLoop(
                 // report goes out unproven instead of waiting for one that will never arrive. Also read off
                 // the reason, for the same reason: the gate and the decision share one source.
                 if (verdict.reason.unprovable) proofUnprovable += intent
+                // Only the budget: it is the one skip the very next cycle undoes. A missing or parked prover
+                // will not prove anything next cycle either, so re-reading history for it would be pure cost.
+                if (verdict.reason == ProofSkipReason.BUDGET_SPENT && intent.source == TradeStatusSource.HISTORY) {
+                    historyProofOwed += intent.dealId
+                }
                 emit(
                     LifecycleEvent.ProofSuppressed(
                         intent.dealId.value,
@@ -3016,6 +3026,9 @@ class TradeTrackerLoop(
                 // The backend never saw it, so it will never rule on it — same standing as a skip that
                 // submitted nothing. Report the transition unproven and keep retrying the proof.
                 proofUnprovable += intent
+                // "Retry next tick" holds for the history axis only if the next tick reads history. A prover
+                // that keeps failing parks itself (`notaryThrottle`), and a parked prover owes nothing here.
+                if (intent.source == TradeStatusSource.HISTORY) historyProofOwed += intent.dealId
                 continue
             }
             // Delivered but verified=false is terminal — the backend has ruled on these bytes; resubmitting
@@ -3047,6 +3060,7 @@ class TradeTrackerLoop(
                 ),
             )
         }
+        if (historyProofOwed.isNotEmpty()) rearmRevertWatchFor(historyProofOwed)
 
         // PROOFS FIRST, then the reports they corroborate.
         //
@@ -3188,19 +3202,23 @@ class TradeTrackerLoop(
         val unprovenReported = plan.reports
             .filter { ProofIntent(it.dealId, it.source, it.steamStatusCode) in proofUnprovable }
             .mapTo(HashSet()) { it.dealId to it.source }
-        persistReported(
-            accepted.filterNot {
-                (it.dealId to it.source) in proofFailed ||
-                    (it.dealId to it.source) in attributionPending ||
-                    (it.dealId to it.source) in unprovenReported
-            },
-            reportedBaseline,
-        )
-        // An accepted report is the end of that transition: its code is now in the dedup baseline, so no
+        val persisted = accepted.filterNot {
+            (it.dealId to it.source) in proofFailed ||
+                (it.dealId to it.source) in attributionPending ||
+                (it.dealId to it.source) in unprovenReported
+        }
+        persistReported(persisted, reportedBaseline)
+        // A PERSISTED report is the end of that transition: its code is now in the dedup baseline, so no
         // further intent will be planned for it and the stored verdict has nothing left to corroborate.
         // Pruned here rather than left to expire so the ledger tracks live work only.
+        //
+        // Only a persisted one. A report the backend accepted but the baseline withheld — a rollback whose actor
+        // has not resolved yet — is re-detected on the next history read, and the stored verdict is exactly
+        // what lets that re-detection go out as ALREADY_ACCEPTED instead of a fresh ~30 MB MPC session. Clearing
+        // it here re-proved the same 12 on every read, and since the first proof of a cycle is the only one the
+        // budget always allows, the re-proof took that slot from the other deals of the same click.
         val acceptedIntents = accepted.map { ProofIntent(it.dealId, it.source, it.steamStatusCode) }.toSet()
-        clearAcceptedProofs(acceptedIntents)
+        clearAcceptedProofs(persisted.mapTo(HashSet()) { ProofIntent(it.dealId, it.source, it.steamStatusCode) })
         // The unproven claims are released on the same event, MINUS the ones that were just claimed: those
         // transitions are still open by the paragraph above, so releasing their claim would re-send the same
         // unproven report on the next cycle, and every cycle after it. A claim is released when the
@@ -3542,6 +3560,35 @@ class TradeTrackerLoop(
         if (unresolved) return true
         val last = runCatching { loopState.revertWatchAt() }.getOrNull() ?: return true
         return clock.now() - last >= cadence.targetInterval(PollClass.RevertWatch)
+    }
+
+    /**
+     * Makes the NEXT cycle read history again, because [owed] deals have a history transition this cycle saw
+     * and could not prove.
+     *
+     * **The gap it closes.** A history read is account-wide, so ONE Steam click that rolls back several
+     * protected trades flips all of their rows to `12` on the same read. The cycle then mints one proof and
+     * skips the rest as [ProofSkipReason.BUDGET_SPENT] — on the promise that "the next wake re-plans it".
+     * That promise holds for the offer axis, which is read every cycle; it did NOT hold here. The skipped
+     * deals still carry `3` in the baseline (an unproven `12` is never persisted), so [historyDue] saw nothing
+     * unresolved and went back to the sparse interval: each further deal of the click waited one more
+     * `revertWatchIntervalMs` — an hour — for its proof, and its refund and fine with it. Measured on dev-02,
+     * 2026-11-05: four deals of one click proven at +16 s, +1 h, +1 h and +2 h.
+     *
+     * **Bounded by what can actually be proven.** Only a budget skip or a failed mint lands here: both are
+     * undone by a later cycle. A missing or parked prover is not, so it never re-arms, and a deal whose proof
+     * was refused or already accepted owes nothing — re-reading for those would be the
+     * 47-reads-in-72-minutes regression [historyDue] exists to close. Each re-armed cycle proves at least
+     * one more deal (the first proof of a cycle is never refused by the budget), so a click of N deals keeps
+     * the axis prompt for at most N cycles.
+     *
+     * Rewinds the persisted stamp rather than adding a flag, because the stamp is already what survives an
+     * MV3 respawn and already what [historyDue] reads; an in-memory flag would be lost between most cycles.
+     */
+    private suspend fun rearmRevertWatchFor(owed: Set<DealId>) {
+        val dueNow = clock.now() - cadence.targetInterval(PollClass.RevertWatch)
+        runCatching { loopState.setRevertWatchAt(dueNow) }
+        emit(LifecycleEvent.RevertWatchRearmed(owed.size))
     }
 
     /** Both Steam axes per tracked deal: offer by `steam_offer_id`; history by trade id, else by asset id. */
