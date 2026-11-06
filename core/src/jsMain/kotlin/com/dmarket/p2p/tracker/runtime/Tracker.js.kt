@@ -183,8 +183,8 @@ fun setKnownScamPartners(handle: TrackerHandle, ids: Array<String>): Boolean =
     (handle as JsTrackerHandle).loop.setKnownScamPartners(ids.asList())
 
 /**
- * Pauses ([paused] `true`) or resumes offer creation, for a host that must stop new deals, during a forced update for
- * one. While paused, no `create_offer` POSTs to Steam or is reported: its lease lapses and the backend leases it again
+ * Pauses ([paused] `true`) or resumes offer creation, for a host that must stop new deals (during a forced update,
+ * for example). While paused, no `create_offer` POSTs to Steam or is reported: its lease lapses and the backend leases it again
  * after the pause. A create this device already made is still restated to the backend, and cancels, trade tracking and
  * proofs carry on. Held in memory only: set it again after every start of the tracker.
  */
