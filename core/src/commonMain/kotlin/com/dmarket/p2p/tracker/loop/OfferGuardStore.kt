@@ -159,8 +159,9 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
             restore()
             val held = notified.filter { (id, record) -> id in nameless && record.byName }
             val judgedNow = judged - held.keys
-            val current = found.filter { it.offerId !in held }.associate { it.offerId to Notified(it.level, it.byName) }
-            val fresh = found.filter { it.offerId in current && notified[it.offerId] != current[it.offerId] }
+            val kept = found.filter { it.offerId !in held }
+            val current = kept.associate { it.offerId to Notified(it.level, it.byName) }
+            val fresh = kept.filter { notified[it.offerId] != current[it.offerId] }
             val cleared = notified.keys.filter { it in judgedNow && it !in current }
             // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
             // (paged out, or from a scan since turned off) would otherwise stay on record forever.

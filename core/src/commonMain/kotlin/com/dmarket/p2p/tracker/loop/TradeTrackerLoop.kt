@@ -1066,8 +1066,7 @@ class TradeTrackerLoop(
     }
 
     /** Whether the host paused offer creation ([setCreatesPaused]). */
-    internal var createsPaused: Boolean = false
-        private set
+    private var createsPaused: Boolean = false
 
     /**
      * Pauses or resumes offer creation. While paused, a `create_offer` that would POST to Steam is not run and not
