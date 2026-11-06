@@ -84,6 +84,7 @@ import com.dmarket.p2p.tracker.notary.ProvenReadBinding
 import com.dmarket.p2p.tracker.policy.CadencePolicy
 import com.dmarket.p2p.tracker.policy.CreateChain
 import com.dmarket.p2p.tracker.policy.CreateChainPlanner
+import com.dmarket.p2p.tracker.policy.NotaryProofThrottle
 import com.dmarket.p2p.tracker.policy.PollClass
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
 import com.dmarket.p2p.tracker.policy.SteamWriteThrottle
@@ -2924,11 +2925,13 @@ class TradeTrackerLoop(
         // waiting for one. Kept apart from `proofFailed` because they answer different questions: that set
         // is about not advancing a baseline, this one is about whether the backend hears anything at all.
         val proofUnprovable = mutableSetOf<ProofIntent>()
-        // History transitions this pass saw but could not prove, and a later cycle CAN: the budget ran out, or
-        // the mint failed. Kept apart from `proofUnprovable` because a later cycle only gets the chance if it
-        // reads history again — see [rearmRevertWatchFor].
+        // History transitions this pass saw and got no verdict for, and a later cycle CAN prove: the budget ran
+        // out, the prover is parked, a freshness demand took the read, or the mint failed. Kept apart from
+        // `proofUnprovable` because a later cycle only gets the chance if it reads history again — see
+        // [rearmRevertWatchFor], which also decides whether this pass earned that read.
         val historyProofOwed = mutableSetOf<DealId>()
         val acceptedProofs = loadAcceptedProofs(tracking)
+        val pinnedProofs = loadPinnedAcceptedProofs(acceptedProofs)
         val claimSpent = loadUnprovenClaims(tracking)
         // What earlier refusals taught about each deal's online-decryption budget.
         //
@@ -2959,6 +2962,9 @@ class TradeTrackerLoop(
                 // rather than waiting: if the demand's proof happens to satisfy this transition too, the
                 // next cycle sends it again, proven, and that path outranks the spent claim.
                 proofUnprovable += intent
+                // "The next cycle sends it again" needs the next cycle to read history: the baseline still
+                // holds the old code, so the sparse gate would otherwise put it an hour away.
+                if (intent.source == TradeStatusSource.HISTORY) historyProofOwed += intent.dealId
                 continue
             }
             // Whether this proof is spent at all is [ProofMintPolicy]'s call, not this loop's: four reasons it
@@ -2977,6 +2983,7 @@ class TradeTrackerLoop(
                 refused = proofRejected,
                 accepted = acceptedProofs,
                 acceptedTtlMs = config.tunables.notary.acceptedProofTtlMs,
+                pinned = pinnedProofs,
                 proverAvailable = proverAvailable,
                 proverParkedUntil = notaryThrottle.parkedUntil(now),
                 mintedThisCycle = mintedThisCycle,
@@ -2990,11 +2997,9 @@ class TradeTrackerLoop(
                 // report goes out unproven instead of waiting for one that will never arrive. Also read off
                 // the reason, for the same reason: the gate and the decision share one source.
                 if (verdict.reason.unprovable) proofUnprovable += intent
-                // Only the budget: it is the one skip the very next cycle undoes. A missing or parked prover
-                // will not prove anything next cycle either, so re-reading history for it would be pure cost.
-                if (verdict.reason == ProofSkipReason.BUDGET_SPENT && intent.source == TradeStatusSource.HISTORY) {
-                    historyProofOwed += intent.dealId
-                }
+                // Only the skips time undoes (the budget, a park): a missing prover stays missing, and the
+                // three settled answers will not change by reading again.
+                if (verdict.reason.deferred && intent.source == TradeStatusSource.HISTORY) historyProofOwed += intent.dealId
                 emit(
                     LifecycleEvent.ProofSuppressed(
                         intent.dealId.value,
@@ -3026,8 +3031,8 @@ class TradeTrackerLoop(
                 // The backend never saw it, so it will never rule on it — same standing as a skip that
                 // submitted nothing. Report the transition unproven and keep retrying the proof.
                 proofUnprovable += intent
-                // "Retry next tick" holds for the history axis only if the next tick reads history. A prover
-                // that keeps failing parks itself (`notaryThrottle`), and a parked prover owes nothing here.
+                // "Retry next tick" holds for the history axis only if the next tick reads history. Owed, but a
+                // failure alone never earns that read: see the verified-proof condition at the re-arm below.
                 if (intent.source == TradeStatusSource.HISTORY) historyProofOwed += intent.dealId
                 continue
             }
@@ -3060,7 +3065,11 @@ class TradeTrackerLoop(
                 ),
             )
         }
-        if (historyProofOwed.isNotEmpty()) rearmRevertWatchFor(historyProofOwed)
+        // Re-read only after a pass in which the backend VERIFIED a proof (this half or the demand half). That
+        // is the bound: a verified proof is never minted again (ALREADY_ACCEPTED, or a satisfied mark), so a
+        // click of N deals buys at most N extra reads, and a prover that only fails — fast or slow, counted by
+        // the breaker or not — buys none and leaves the axis sparse, as it was before the re-arm existed.
+        if (historyProofOwed.isNotEmpty() && proofsSubmitted > 0) rearmRevertWatchFor(historyProofOwed)
 
         // PROOFS FIRST, then the reports they corroborate.
         //
@@ -3218,7 +3227,15 @@ class TradeTrackerLoop(
         // it here re-proved the same 12 on every read, and since the first proof of a cycle is the only one the
         // budget always allows, the re-proof took that slot from the other deals of the same click.
         val acceptedIntents = accepted.map { ProofIntent(it.dealId, it.source, it.steamStatusCode) }.toSet()
-        clearAcceptedProofs(persisted.mapTo(HashSet()) { ProofIntent(it.dealId, it.source, it.steamStatusCode) })
+        val persistedIntents = persisted.mapTo(HashSet()) { ProofIntent(it.dealId, it.source, it.steamStatusCode) }
+        clearAcceptedProofs(persistedIntents)
+        // …and that stored verdict must outlive the sparse interval, or the re-send is re-proved anyway: the
+        // reuse window equals `revertWatchIntervalMs` by default, and the row is stamped after the mint while the
+        // revert watch is stamped before it, so the next sparse read usually finds the row just expired. So a
+        // verified transition whose report the backend ACCEPTED, held back only by the baseline, is pinned — it
+        // stops expiring until the baseline takes it or the deal leaves tracking. Re-pinned on every such pass
+        // (the store writes only on a change), so a row this pass re-recorded — which unpins it — is pinned again.
+        pinAcceptedProofs(acceptedIntents.filterTo(HashSet()) { it in proofVerified && it !in persistedIntents })
         // The unproven claims are released on the same event, MINUS the ones that were just claimed: those
         // transitions are still open by the paragraph above, so releasing their claim would re-send the same
         // unproven report on the next cycle, and every cycle after it. A claim is released when the
@@ -3336,7 +3353,9 @@ class TradeTrackerLoop(
      * intents: the prune rides this read, so gating it on intents would leave a terminated deal's row behind
      * until some other deal happened to need a proof. One `storage.local` read on a cycle that turns out not
      * to need the ledger is the cheaper half of that trade, and on the healthy path the map is empty anyway
-     * (an accepted report prunes its own row in the same cycle that wrote it).
+     * (a persisted report prunes its own row in the same cycle that wrote it). The exception is a report the
+     * backend accepted but the dedup baseline held back — a rollback whose actor has not resolved: its row is
+     * kept, and pinned, so the re-sent report reuses the verdict instead of a fresh MPC session.
      */
     private suspend fun loadAcceptedProofs(tracking: List<TrackedDeal>): Map<ProofIntent, Instant> {
         val stored = runCatching { progress.loadAcceptedProofs() }.getOrElse {
@@ -3348,6 +3367,28 @@ class TradeTrackerLoop(
         val stale = stored.keys.filterTo(HashSet()) { it.dealId !in trackedIds }
         if (stale.isNotEmpty()) clearAcceptedProofs(stale)
         return stored - stale
+    }
+
+    /**
+     * The pinned subset of [accepted] (see [TrackerProgressStore.pinAcceptedProofs]). Narrowed to [accepted],
+     * which is already pruned to the tracked deals, so a stale row cannot corroborate through its pin.
+     *
+     * **Fail-open** like the ledger itself: an unreadable pin set reads as "nothing pinned", which costs a
+     * re-proof once a row's window has passed — the behaviour before pins existed.
+     */
+    private suspend fun loadPinnedAcceptedProofs(accepted: Map<ProofIntent, Instant>): Set<ProofIntent> {
+        if (accepted.isEmpty()) return emptySet()
+        val pinned = runCatching { progress.loadPinnedAcceptedProofs() }.getOrElse {
+            emit(LifecycleEvent.ProgressStoreFailed("loadPinnedAcceptedProofs", it.redactedSummary()))
+            return emptySet()
+        }
+        return pinned.filterTo(HashSet()) { it in accepted }
+    }
+
+    private suspend fun pinAcceptedProofs(intents: Set<ProofIntent>) {
+        if (intents.isEmpty()) return
+        runCatching { progress.pinAcceptedProofs(intents) }
+            .onFailure { emit(LifecycleEvent.ProgressStoreFailed("pinAcceptedProofs", it.redactedSummary())) }
     }
 
     /**
@@ -3575,20 +3616,39 @@ class TradeTrackerLoop(
      * `revertWatchIntervalMs` — an hour — for its proof, and its refund and fine with it. Measured on dev-02,
      * 2026-11-05: four deals of one click proven at +16 s, +1 h, +1 h and +2 h.
      *
-     * **Bounded by what can actually be proven.** Only a budget skip or a failed mint lands here: both are
-     * undone by a later cycle. A missing or parked prover is not, so it never re-arms, and a deal whose proof
-     * was refused or already accepted owes nothing — re-reading for those would be the
-     * 47-reads-in-72-minutes regression [historyDue] exists to close. Each re-armed cycle proves at least
-     * one more deal (the first proof of a cycle is never refused by the budget), so a click of N deals keeps
-     * the axis prompt for at most N cycles.
+     * **Owed** is every history transition this pass got no verdict for and a later pass can prove: a budget
+     * skip, a parked prover ([ProofSkipReason.deferred]), a freshness demand that took the same read
+     * (`SUPERSEDED_BY_DEMAND`), or a failed mint. Not a missing prover, and not a refused or already accepted
+     * proof — re-reading for those buys nothing.
+     *
+     * **Bounded by verified proofs, not by failures.** The caller re-arms only after a pass in which the
+     * backend verified at least one proof. A verified proof is not minted again, so every re-armed read is paid
+     * for by one transition that is now settled: a click of N deals costs at most N extra reads. A prover that
+     * only fails earns no re-arm at all — a failure under `countedFailureMinMs` never reaches the breaker, so
+     * the breaker could not bound it — and those deals fall back to the sparse read, which is where they were
+     * before the re-arm existed.
+     *
+     * **Due when the prover can prove.** If the prover is parked after this pass, the read is due when the
+     * park ends, not on the next cycle: a read during the park would skip every proof as `PROVER_PARKED`
+     * again, and earn nothing.
      *
      * Rewinds the persisted stamp rather than adding a flag, because the stamp is already what survives an
      * MV3 respawn and already what [historyDue] reads; an in-memory flag would be lost between most cycles.
+     * The event goes out only once the new stamp is stored: it is what a repeat of the dev-02 case is read
+     * from, and a re-arm it reports must be one that happened.
      */
     private suspend fun rearmRevertWatchFor(owed: Set<DealId>) {
-        val dueNow = clock.now() - cadence.targetInterval(PollClass.RevertWatch)
-        runCatching { loopState.setRevertWatchAt(dueNow) }
-        emit(LifecycleEvent.RevertWatchRearmed(owed.size))
+        val now = clock.now()
+        val parkedUntil = notaryThrottle.parkedUntil(now)
+        val dueAt = parkedUntil ?: now
+        runCatching { loopState.setRevertWatchAt(dueAt - cadence.targetInterval(PollClass.RevertWatch)) }
+            .onFailure { failure ->
+                if (failure is CancellationException) throw failure
+                emit(LifecycleEvent.ProgressStoreFailed("setRevertWatchAt", failure.redactedSummary()))
+                return
+            }
+        val retryAfterSeconds = parkedUntil?.let { NotaryProofThrottle.retryAfterSeconds(it, now) }
+        emit(LifecycleEvent.RevertWatchRearmed(owed.size, retryAfterSeconds))
     }
 
     /** Both Steam axes per tracked deal: offer by `steam_offer_id`; history by trade id, else by asset id. */

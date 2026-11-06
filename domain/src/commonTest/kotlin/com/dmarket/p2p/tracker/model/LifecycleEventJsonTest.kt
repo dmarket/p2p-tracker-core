@@ -311,6 +311,16 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun a_re_armed_revert_watch_carries_a_retry_hint_only_behind_a_parked_prover() {
+        val parked = parse(LifecycleEvent.RevertWatchRearmed(owed = 3, retryAfterSeconds = 45))
+        assertEquals("RevertWatchRearmed", parked["event"]?.jsonPrimitive?.content)
+        assertEquals("3", parked["owed"]?.jsonPrimitive?.content)
+        assertEquals("45", parked["retryAfterSeconds"]?.jsonPrimitive?.content)
+        // Due on the next cycle: no deadline to report, so no field (the same shape as ProofSuppressed).
+        assertEquals(null, parse(LifecycleEvent.RevertWatchRearmed(owed = 1))["retryAfterSeconds"])
+    }
+
+    @Test
     fun encodes_a_stopped_create_chain_with_its_partner_and_skipped_count() {
         val json = parse(
             LifecycleEvent.CreateChainStopped(

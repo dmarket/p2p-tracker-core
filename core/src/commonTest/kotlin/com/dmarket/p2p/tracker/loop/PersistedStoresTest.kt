@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.loop
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
+import com.dmarket.p2p.tracker.engine.ProofIntent
 import com.dmarket.p2p.tracker.engine.ReportedStatus
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
@@ -10,6 +11,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
+import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
@@ -64,6 +66,45 @@ class PersistedStoresTest {
         val reread = PersistedTrackerProgressStore(storage)
         assertEquals(ReportedStatus(lastOfferCode = 3, lastHistoryCode = 12), reread.loadReported()[DealId("deal-1")])
         assertEquals(setOf(DirectiveId("dir-1")), reread.loadHandledDirectives())
+    }
+
+    @Test
+    fun a_pinned_accepted_proof_survives_a_new_instance_and_goes_with_its_row() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        val rollback = ProofIntent(DealId("deal-1"), TradeStatusSource.HISTORY, 12)
+        val delivered = ProofIntent(DealId("deal-2"), TradeStatusSource.HISTORY, 3)
+        val at = Instant.fromEpochMilliseconds(1_781_697_600_000)
+        PersistedTrackerProgressStore(storage).apply {
+            recordAcceptedProof(rollback, at)
+            recordAcceptedProof(delivered, at)
+            // deal-3 has no row: a pin of nothing is skipped rather than stored on its own.
+            pinAcceptedProofs(setOf(rollback, ProofIntent(DealId("deal-3"), TradeStatusSource.HISTORY, 12)))
+        }
+
+        val reread = PersistedTrackerProgressStore(storage)
+        assertEquals(setOf(rollback), reread.loadPinnedAcceptedProofs())
+        assertEquals(mapOf(rollback to at, delivered to at), reread.loadAcceptedProofs(), "a pin leaves the row itself as it was")
+
+        // A fresh verdict for the same transition replaces the row, and the pin with it.
+        reread.recordAcceptedProof(rollback, at)
+        assertEquals(emptySet(), reread.loadPinnedAcceptedProofs())
+        reread.pinAcceptedProofs(setOf(rollback))
+        reread.clearAcceptedProofs(setOf(rollback))
+        assertEquals(emptySet(), reread.loadPinnedAcceptedProofs(), "a cleared row takes its pin with it")
+        assertEquals(mapOf(delivered to at), reread.loadAcceptedProofs())
+    }
+
+    @Test
+    fun an_accepted_proof_row_from_an_earlier_build_reads_as_unpinned() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        storage.set(
+            DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS,
+            """[{"dealId":"deal-1","source":"history","steamStatusCode":12,"atMs":1781697600000}]""",
+        )
+        val store = PersistedTrackerProgressStore(storage)
+        val rollback = ProofIntent(DealId("deal-1"), TradeStatusSource.HISTORY, 12)
+        assertEquals(setOf(rollback), store.loadAcceptedProofs().keys)
+        assertEquals(emptySet(), store.loadPinnedAcceptedProofs())
     }
 
     @Test
