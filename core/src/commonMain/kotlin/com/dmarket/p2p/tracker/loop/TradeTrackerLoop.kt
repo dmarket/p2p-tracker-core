@@ -183,6 +183,12 @@ const val OFFER_WRITES_DISABLED = "refused: offer writes are disabled on this cl
  */
 const val STEAM_SESSION_MISSING_DROP_REASON = "not run: no usable Steam session on this client"
 
+/**
+ * Why a leased `create_offer` was not run while the host keeps offer creation paused ([TradeTrackerLoop.setCreatesPaused]).
+ * Unreported: nothing reached Steam, so its lease lapses and the backend re-leases it after the pause.
+ */
+const val CREATES_PAUSED_DROP_REASON = "not run: offer creation is paused on this client"
+
 /** `ETradeOfferState` 9, `CreatedNeedsConfirmation`: the state a create leaves its offer in until the seller confirms. */
 private const val STEAM_OFFER_NEEDS_CONFIRMATION = 9
 
@@ -504,6 +510,7 @@ class TradeTrackerLoop(
      * than [CreateOfferResult.Failed].
      */
     suspend fun awaitDirectiveOutcome(dealId: DealId, timeout: Duration, cycleScope: CoroutineScope): CreateOfferResult {
+        if (createsPaused) return CreateOfferResult.CreatesPaused
         val (waiter, owner) = createWaitersLock.withLock {
             // A completed waiter belongs to a run that is still finishing; a new call asks again rather than
             // being handed that run's answer.
@@ -542,6 +549,10 @@ class TradeTrackerLoop(
         }
         val retryDelays = config.createDirectiveRetryDelays.iterator()
         while (!waiter.isCompleted) {
+            if (createsPaused) {
+                waiter.complete(CreateOfferResult.CreatesPaused)
+                return
+            }
             // A failed call is repeated like an empty answer: it says nothing about the deal. A 401 has already been
             // refreshed and retried inside the client.
             val delivery = runCatching { marketplace.startDelivery(dealId) }.getOrNull()
@@ -956,6 +967,8 @@ class TradeTrackerLoop(
             outcome(DirectiveStatus.FAILED, error = DUPLICATE_WRITE_ERROR)
         // Unreachable: a throttled create is answered before any write, and a creator never throttles itself.
         is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
+        // Unreachable: a paused create is dropped before any write.
+        CreateOfferResult.CreatesPaused -> outcome(DirectiveStatus.FAILED, error = CREATES_PAUSED_DROP_REASON)
     }
 
     private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
@@ -1055,6 +1068,21 @@ class TradeTrackerLoop(
         if (parsed.isEmpty() && ids.isNotEmpty()) return false
         knownScamPartners = parsed
         return true
+    }
+
+    /** Whether the host paused offer creation ([setCreatesPaused]). */
+    internal var createsPaused: Boolean = false
+        private set
+
+    /**
+     * Pauses or resumes offer creation. While paused, a `create_offer` that would POST to Steam is not run and not
+     * reported (a [LifecycleEvent.DirectiveDropped] with [CREATES_PAUSED_DROP_REASON] says so), and
+     * [awaitDirectiveOutcome] answers [CreateOfferResult.CreatesPaused] without asking the backend. A create for a deal
+     * whose offer this device already made is still restated, and cancels, tracking reports and proofs run as before.
+     * Held in memory only, like [setKnownScamPartners].
+     */
+    fun setCreatesPaused(paused: Boolean) {
+        createsPaused = paused
     }
 
     private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> = ids.filter(::isIndividualSteamId64).mapTo(mutableSetOf(), ::SteamId)
@@ -2501,6 +2529,13 @@ class TradeTrackerLoop(
             },
             credential = credential,
         ) {
+            // Checked past the claim guard, so a create this device already made is still restated above. The claim
+            // is released: nothing was written, and the backend re-leases the create once the pause is lifted.
+            if (createsPaused) {
+                emitDropped(directive, CREATES_PAUSED_DROP_REASON)
+                resolveCreateWaiter(directive, CreateOfferResult.CreatesPaused)
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early

@@ -138,6 +138,8 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
  * - `{ ok:false, status:"throttled",          scope, retryAfterSeconds }` — deferred by this device's own
  *   back-pressure after an earlier refusal; nothing was sent to Steam.
  * - `{ ok:false, status:"account_mismatch",   linkedSteamId, tokenSteamId }` — blocked before any write.
+ * - `{ ok:false, status:"creates_paused" }` — the host paused offer creation ([setCreatesPaused]); nothing was asked
+ *   of the backend and nothing was sent to Steam.
  * - `{ ok:false, error }` — a blank deal id (nothing was asked of the backend).
  *
  * **`cause` is the field to branch on for a failure, never `error`.** `error` is free-form text kept for
@@ -179,6 +181,16 @@ fun linkedSteamIdMismatch(handle: TrackerHandle): Boolean = (handle as JsTracker
 @JsExport
 fun setKnownScamPartners(handle: TrackerHandle, ids: Array<String>): Boolean =
     (handle as JsTrackerHandle).loop.setKnownScamPartners(ids.asList())
+
+/**
+ * Pauses ([paused] `true`) or resumes offer creation, for a host that must stop new deals, during a forced update for
+ * one. While paused, no `create_offer` POSTs to Steam or is reported: its lease lapses and the backend leases it again
+ * after the pause. A create this device already made is still restated to the backend, and cancels, trade tracking and
+ * proofs carry on. Held in memory only: set it again after every start of the tracker.
+ */
+@Suppress("NON_EXPORTABLE_TYPE")
+@JsExport
+fun setCreatesPaused(handle: TrackerHandle, paused: Boolean) = (handle as JsTrackerHandle).loop.setCreatesPaused(paused)
 
 /**
  * The single highest-priority reason the tracker is blocked, as a stable enum name the host polls to

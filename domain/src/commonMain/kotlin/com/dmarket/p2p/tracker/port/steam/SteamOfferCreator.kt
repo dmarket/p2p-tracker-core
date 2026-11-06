@@ -81,4 +81,10 @@ sealed interface CreateOfferResult {
      * failure the user cannot act on. See [com.dmarket.p2p.tracker.policy.SteamWriteThrottle].
      */
     data class Throttled(val scope: ThrottleScope, val retryAfterSeconds: Int) : CreateOfferResult
+
+    /**
+     * Refused **before any Steam write**: the host paused offer creation (during a forced update, say). Nothing was
+     * sent and nothing was reported, so the backend leases the create again once the pause is lifted.
+     */
+    data object CreatesPaused : CreateOfferResult
 }

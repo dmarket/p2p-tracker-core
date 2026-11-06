@@ -14,6 +14,11 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Added
+
+- The host can pause offer creation while cancels and trade tracking keep running (DMA-482). New
+  `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"`.
+
 ### Fixed
 
 - Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) instead of
