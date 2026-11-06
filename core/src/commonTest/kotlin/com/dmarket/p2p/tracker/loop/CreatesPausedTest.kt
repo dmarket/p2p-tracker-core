@@ -22,9 +22,8 @@ import com.dmarket.p2p.tracker.support.FakeSteamOfferCreator
 import com.dmarket.p2p.tracker.support.FakeSteamReadClient
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
 import com.dmarket.p2p.tracker.support.RecordingEventObserver
+import com.dmarket.p2p.tracker.support.delivered
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
-import kotlinx.coroutines.async
-import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -148,25 +147,35 @@ class CreatesPausedTest {
     }
 
     @Test
-    fun the_page_create_answers_paused_without_asking_the_backend() = runTest {
+    fun a_page_create_for_a_new_deal_asks_the_backend_and_answers_paused() = runTest {
         val s = setup()
         s.loop.setCreatesPaused(true)
+        s.mp.deliveries = listOf(delivered(create("fe-1", deal = "deal-fe")))
 
-        val result = s.loop.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        val result = s.loop.awaitDirectiveOutcome(DealId("deal-fe"), 30.seconds, this)
+        testScheduler.advanceUntilIdle()
 
         assertSame(CreateOfferResult.CreatesPaused, result)
-        assertEquals(0, s.mp.startDeliveryCalls)
+        assertEquals(1, s.mp.startDeliveryCalls)
+        assertTrue(s.creator.created.isEmpty(), "nothing is POSTed to Steam")
+        assertTrue(s.mp.directiveOutcomes.none { it.directiveId == DirectiveId("fe-1") }, "nothing is reported")
     }
 
     @Test
-    fun a_page_create_waiting_when_the_pause_starts_is_answered_paused() = runTest {
-        // The first create-trade answer carries no directive, so the call waits 2 s before asking again.
-        val s = setup()
-        val pending = async { s.loop.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this@runTest) }
-        advanceTimeBy(1.seconds)
+    fun a_page_create_for_a_made_offer_answers_with_that_offer_under_the_pause() = runTest {
+        val s = setup(create("a-1"))
+        s.loop.runOnce()
         s.loop.setCreatesPaused(true)
+        s.reader.offers = mapOf(OfferId("offer-created") to 9)
+        s.mp.heartbeatResponse = HeartbeatResponse(ttlSeconds = 60)
+        s.mp.deliveries = listOf(delivered(create("a-2")))
 
-        assertSame(CreateOfferResult.CreatesPaused, pending.await())
-        assertEquals(1, s.mp.startDeliveryCalls, "not asked again once paused")
+        val result = s.loop.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(CreateOfferResult.AlreadyCreated(OfferId("offer-created")), result)
+        assertEquals(1, s.mp.startDeliveryCalls)
+        assertEquals(1, s.creator.created.size, "no second POST")
+        assertEquals(OfferId("offer-created"), s.mp.directiveOutcomes.single { it.directiveId == DirectiveId("a-2") }.steamOfferId)
     }
 }

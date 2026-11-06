@@ -510,7 +510,6 @@ class TradeTrackerLoop(
      * than [CreateOfferResult.Failed].
      */
     suspend fun awaitDirectiveOutcome(dealId: DealId, timeout: Duration, cycleScope: CoroutineScope): CreateOfferResult {
-        if (createsPaused) return CreateOfferResult.CreatesPaused
         val (waiter, owner) = createWaitersLock.withLock {
             // A completed waiter belongs to a run that is still finishing; a new call asks again rather than
             // being handed that run's answer.
@@ -549,10 +548,6 @@ class TradeTrackerLoop(
         }
         val retryDelays = config.createDirectiveRetryDelays.iterator()
         while (!waiter.isCompleted) {
-            if (createsPaused) {
-                waiter.complete(CreateOfferResult.CreatesPaused)
-                return
-            }
             // A failed call is repeated like an empty answer: it says nothing about the deal. A 401 has already been
             // refreshed and retried inside the client.
             val delivery = runCatching { marketplace.startDelivery(dealId) }.getOrNull()
@@ -1076,9 +1071,9 @@ class TradeTrackerLoop(
 
     /**
      * Pauses or resumes offer creation. While paused, a `create_offer` that would POST to Steam is not run and not
-     * reported (a [LifecycleEvent.DirectiveDropped] with [CREATES_PAUSED_DROP_REASON] says so), and
-     * [awaitDirectiveOutcome] answers [CreateOfferResult.CreatesPaused] without asking the backend. A create for a deal
-     * whose offer this device already made is still restated, and cancels, tracking reports and proofs run as before.
+     * reported (a [LifecycleEvent.DirectiveDropped] with [CREATES_PAUSED_DROP_REASON] says so), and an
+     * [awaitDirectiveOutcome] waiting on it gets [CreateOfferResult.CreatesPaused]. A create for a deal whose offer this
+     * device already made is still restated, and cancels, tracking reports and proofs run as before.
      * Held in memory only, like [setKnownScamPartners].
      */
     fun setCreatesPaused(paused: Boolean) {

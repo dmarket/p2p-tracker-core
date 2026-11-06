@@ -17,7 +17,8 @@ GitHub Release.
 ### Added
 
 - The host can pause offer creation while cancels and trade tracking keep running. New
-  `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` (DMA-482).
+  `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an
+  offer it would have created (DMA-482).
 
 ### Fixed
 
