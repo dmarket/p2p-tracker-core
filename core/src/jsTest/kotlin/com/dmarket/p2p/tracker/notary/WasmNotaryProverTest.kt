@@ -19,6 +19,7 @@ import kotlin.test.assertTrue
 
 /** Records calls and returns fixed presentation bytes; tracks peak concurrency. */
 private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {}) : WasmProverModule {
+    var initializedMode: String? = null
     var initCount = 0
     var proveCount = 0
     var inFlight = 0
@@ -27,6 +28,11 @@ private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {})
 
     override suspend fun initialize(threadCount: Int) {
         initCount++
+    }
+
+    override suspend fun initialize(threadCount: Int, mode: String) {
+        initializedMode = mode
+        initialize(threadCount)
     }
 
     override suspend fun prove(request: WasmProveRequest): ByteArray {
@@ -102,6 +108,28 @@ class WasmNotaryProverTest {
         prover(module, NotaryConfig()).proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
 
         assertEquals(NotaryConfig.PRODUCTION_NOTARY_URL, module.lastRequests.single().notaryUrl)
+    }
+
+    @Test
+    fun proxy_selects_the_protocol_before_init_and_keeps_the_plaintext_send_ceiling() = runTest {
+        val module = FakeWasmProverModule()
+        prover(module, config().copy(mode = "proxy", maxSentData = 4_096))
+            .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
+        assertEquals("proxy", module.initializedMode)
+        assertEquals("proxy", module.lastRequests.single().mode)
+        assertEquals(4_096, module.lastRequests.single().maxSentData)
+    }
+
+    @Test
+    fun a_legacy_injected_module_rejects_proxy_instead_of_issuing_mpc() = runTest {
+        val legacy = object : WasmProverModule {
+            override suspend fun initialize(threadCount: Int) = error("must not initialize")
+            override suspend fun prove(request: WasmProveRequest): ByteArray = error("must not prove")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            prover(legacy, config().copy(mode = "proxy"))
+                .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
+        }
     }
 
     @Test

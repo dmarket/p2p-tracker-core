@@ -48,6 +48,10 @@ let token = '';
 process.on('message', (raw) => {
   const msg = JSON.parse(raw);
   if (msg.type === 'prove') {
+    if (mode === 'require-proxy' && msg.settings.mode !== 'proxy') {
+      process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'other', detail: 'proxy mode was not forwarded' } }));
+      return;
+    }
     token = msg.steamAccessToken;
     console.log('proving deal ' + msg.request.dealId + ' with access_token=' + token + ' sessionid=' + msg.steamSessionId);
     if (mode === 'hang-before-connect') return;

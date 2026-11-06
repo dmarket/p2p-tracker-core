@@ -7,7 +7,7 @@ import kotlin.js.Promise
 import kotlin.math.roundToInt
 
 /**
- * One prove-and-present request handed to a [WasmProverModule]: everything needed to run a single MPC
+ * One prove-and-present request handed to a [WasmProverModule]: everything needed to run a single
  * issuance and build the selective-disclosure `Presentation`.
  *
  * [steamAccessToken] is the on-device Steam JWT that authenticates the proven `IEconService` read. It is
@@ -60,6 +60,7 @@ data class WasmProveRequest(
      * `SESSION_ID_PLACEHOLDER`.
      */
     val steamSessionId: String? = null,
+    val mode: String = "mpc",
 ) {
     /**
      * Redacted: this request carries the Steam access token, the notary bearer token, and — for a community
@@ -72,7 +73,7 @@ data class WasmProveRequest(
      * blob and pasting it into every log line of a failing proof helps nobody.
      */
     override fun toString(): String = "WasmProveRequest(notaryUrl=$notaryUrl, notaryToken=<redacted>, proxyBaseUrl=$proxyBaseUrl, " +
-        "spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
+        "mode=$mode, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
         "maxRecvDataOnline=$maxRecvDataOnline, maxRecvRecordsOnline=$maxRecvRecordsOnline, " +
         "rootStorePem=${rootStorePem?.let { "<${it.length} chars>" }}, " +
         "steamSessionCookie=${steamSessionCookie?.let { "<redacted>" }}, " +
@@ -94,20 +95,28 @@ interface WasmProverModule {
     /** Load + initialize the wasm module and its rayon pool once (idempotent). */
     suspend fun initialize(threadCount: Int)
 
+    /** Select the issuance protocol before starting workers; old injected modules retain their setup. */
+    suspend fun initialize(threadCount: Int, mode: String) {
+        require(mode == "mpc") { "this injected prover module does not support proxy issuance" }
+        initialize(threadCount)
+    }
+
     /** Run one issuance and return the raw `postcard` `Presentation` bytes. */
     suspend fun prove(request: WasmProveRequest): ByteArray
 }
 
 /**
  * Production [WasmProverModule], driving the prover this library **ships with** through
- * `client-wasm-transport`'s `createProver` façade. The façade owns module instantiation, the
+ * `client-wasm-transport`'s `createProver` or `createProxyProver` façade. The façade owns module instantiation, the
  * rayon-pool setup, the disposable `ProveOutput` handle, and the tsify wire conversions — this class
- * only supplies the two IO channels and translates a [ProvenReadSpec] into an issuance config +
+ * supplies the mode-specific IO channels and translates a [ProvenReadSpec] into an issuance config +
  * reveal policy.
  *
  * Flow: `createProver(wasm)` → `initialize()` → `connectNotary` + `connectProxy` → `prove()` →
  * `present(policy)`. By default the MPC target is reached through the `p2p-wss-proxy` worker because a
  * browser extension can't open a raw TCP socket; a host that can supplies its own connector ([host]).
+ * Proxy flow: `createProxyProver(wasm)` → `initialize()` → `connectNotary` → `proveProxy()` → `present(policy)`.
+ * Proxy capability is checked before compilation or worker startup; the target connector is never used.
  *
  * **Module resolution — deliberately not a literal specifier.** The assets are located at runtime,
  * against the extension root (or wherever [WasmProverHost.assetUrl] says), and `import()`ed lazily on the
@@ -143,12 +152,25 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     private var transport: dynamic = null
     private var prover: dynamic = null
 
-    override suspend fun initialize(threadCount: Int) {
+    private var mode: String? = null
+
+    override suspend fun initialize(threadCount: Int) = initialize(threadCount, "mpc")
+
+    override suspend fun initialize(threadCount: Int, mode: String) {
+        require(mode == "mpc" || mode == "proxy") { "notary.mode must be mpc or proxy" }
+        check(this.mode == null || this.mode == mode) { "a prover module cannot change issuance mode after initialization" }
         if (prover == null) {
             val wasm = importModule(assetUrl("pkg/client_wasm.js")).await()
             transport = importModule(assetUrl("transport/dist/index.js")).await()
+            if (mode == "proxy") {
+                check(jsTypeOf(transport.createProxyProver) == "function" && jsTypeOf(wasm.proveProxy) == "function") {
+                    "proxy issuance unsupported: requires a proxy-capable steam-provenance package (missing createProxyProver or proveProxy)"
+                }
+            }
             val compiled = host.wasmModule?.invoke()
-            prover = transport.createProver(if (compiled == null) wasm else withCompiledModule(wasm, compiled))
+            val bound = if (compiled == null) wasm else withCompiledModule(wasm, compiled)
+            prover = if (mode == "proxy") transport.createProxyProver(bound) else transport.createProver(bound)
+            this.mode = mode
         }
         // The façade memoizes instantiation + init and releases the memo on failure, so repeat calls are
         // free and a genuine retry (e.g. after fixing COOP/COEP) still re-runs.
@@ -156,6 +178,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     }
 
     override suspend fun prove(request: WasmProveRequest): ByteArray {
+        check(mode == request.mode) { "initialize the prover with the request issuance mode before proving" }
         val spec = request.spec
         // What this proof is ACTUALLY parameterised with, from the realm that parameterises it — emitted before
         // anything can fail, because the failures on this path are the ones where the config is the suspect.
@@ -185,26 +208,21 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             )
         }
         val out = try {
-            // LAZY on purpose — the socket is dialled by the prover's first write, not here.
-            //
-            // Eager was measured to be the bug. The prover opens the target leg, then spends the whole MPC
-            // pre-processing round with the notary before it touches it: 4.9 s on a healthy run, 23.5 s on a
-            // stalling one (both measured live on 2026-08-25). The proxy's upstream drops an idle connection
-            // at ~21 s — so on the slow run the channel was already gone (`code=1000 reason=upstream closed`,
-            // 0 B either way) by the time the prover sent its `ClientHello`, and writing to it did not fail
-            // cleanly: the wasm trapped `memory access out of bounds`. Dialling on first use makes the socket's
-            // age independent of how long the notary takes, which is the only half of that race we own.
-            val serverIo = lazyTargetChannel(onTrace = onProgress, connect = { connectTarget(request) })
-            try {
-                val issued = prover.prove(notaryIo, serverIo, issuanceConfig(request), httpRequest(request), progressCallback())
+            val issued = if (request.mode == "proxy") {
+                prover.proveProxy(notaryIo, proxyIssuanceConfig(request), httpRequest(request), progressCallback())
                     .unsafeCast<Promise<dynamic>>().await()
-                host.onTargetResponse?.let { inspect -> targetStatus(issued)?.let(inspect) }
-                issued
-            } finally {
-                // Whether `prove` closes its channels on every path is unconfirmed upstream; closing an
-                // already-closed WsIoChannel is a no-op, leaking two open sockets per failed proof is not.
-                closeQuietly(serverIo)
+            } else {
+                // MPC preprocessing can outlast a target socket's idle deadline. Dial only on first write.
+                val serverIo = lazyTargetChannel(onTrace = onProgress, connect = { connectTarget(request) })
+                try {
+                    prover.prove(notaryIo, serverIo, issuanceConfig(request), httpRequest(request), progressCallback())
+                        .unsafeCast<Promise<dynamic>>().await()
+                } finally {
+                    closeQuietly(serverIo)
+                }
             }
+            host.onTargetResponse?.let { inspect -> targetStatus(issued)?.let(inspect) }
+            issued
         } finally {
             closeQuietly(notaryIo)
         }
@@ -302,6 +320,22 @@ internal fun issuanceConfig(request: WasmProveRequest): dynamic {
         issuance.rootStore = store
     }
     return issuance
+}
+
+/** Proxy has nested plaintext limits and no MPC preprocessing knobs or client-selected route. */
+internal fun proxyIssuanceConfig(request: WasmProveRequest): dynamic {
+    val config: dynamic = js("({})")
+    config.serverName = request.spec.serverName
+    val limits: dynamic = js("({})")
+    limits.maxSentData = request.maxSentData
+    limits.maxRecvData = request.maxRecvData
+    config.limits = limits
+    request.rootStorePem?.let { pem ->
+        val store: dynamic = js("({})")
+        store.pem = pem
+        config.rootStore = store
+    }
+    return config
 }
 
 internal fun httpRequest(request: WasmProveRequest): dynamic {
@@ -483,14 +517,19 @@ internal fun lazyTargetChannel(connect: () -> Promise<dynamic>, onTrace: ((Strin
  */
 internal fun issuanceLine(request: WasmProveRequest, hostTarget: Boolean = false): String = buildString {
     append("issuance serverName=").append(request.spec.serverName)
-    if (hostTarget) append(" target=host") else append(" proxy=").append(request.proxyBaseUrl)
+    append(" mode=").append(request.mode)
+    when {
+        request.mode == "proxy" -> append(" target=notary")
+        hostTarget -> append(" target=host")
+        else -> append(" proxy=").append(request.proxyBaseUrl)
+    }
     append(" rootStore=").append(request.rootStorePem?.let { "pem(${it.length} chars)" } ?: "mozilla")
     append(" maxSent=").append(request.maxSentData)
     append(" maxRecv=").append(request.maxRecvData)
-    append(" maxRecvOnline=").append(request.maxRecvDataOnline)
+    if (request.mode == "mpc") append(" maxRecvOnline=").append(request.maxRecvDataOnline)
     // Spelled as the wasm sees it, like `rootStore` above: `default` is the honest word for an absent key,
     // because the number it resolves to lives in the artifact and not in any config this line could read.
-    append(" maxRecvRecordsOnline=").append(request.maxRecvRecordsOnline ?: "default")
+    if (request.mode == "mpc") append(" maxRecvRecordsOnline=").append(request.maxRecvRecordsOnline ?: "default")
     // Stated separately because a host log pipeline will redact the param VALUE — the extension's scrubber
     // rewrites every `access_token=…` it sees, and that eats the literal `{token}` too. So the path alone
     // cannot answer "does this template still have its credential slot?", which is the question that matters:

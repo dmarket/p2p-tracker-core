@@ -15,6 +15,13 @@ class TrackerConfigTest {
     private val defaults = TrackerConfig.defaults()
 
     @Test
+    fun issuance_mode_is_explicit_and_defaults_to_mpc() {
+        assertEquals("mpc", NotaryConfig().mode)
+        assertEquals("proxy", NotaryConfig(mode = "proxy").mode)
+        assertFails { NotaryConfig(mode = "automatic") }
+    }
+
+    @Test
     fun defaults_reproduce_the_in_code_baseline_verbatim() {
         // Cadence
         assertEquals(180_000, defaults.cadence.activeOfferIntervalMs)

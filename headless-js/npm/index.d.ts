@@ -19,6 +19,8 @@ export interface TrackerHandle {
 
 /** The `prover` option: with it the tracker proves, each proof in a prover process of its own. */
 export interface ProverOptions {
+    /** Issuance protocol. Proxy requires an enabled, routed notary and proxy-capable assets; no fallback. */
+    mode?: "mpc" | "proxy";
     /** The notary proofs go to, and the one each upgrade is signed for; the tracker's `notaryUrl` when unset. */
     notaryUrl?: string;
     /** Proofs at once, 1 or 2 (1 by default); each holds a process of up to ~700 MB. */

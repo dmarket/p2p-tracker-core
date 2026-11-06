@@ -157,6 +157,100 @@ class WasmProverHostTest {
         assertContains(issuanceLine(request()), "proxy=wss://proxy.test")
     }
 
+    @Test
+    fun proxy_uses_one_channel_and_the_same_presentation_and_response_hook() = runTest {
+        var status: Int? = null
+        val traces = mutableListOf<String>()
+        val module = BundledWasmProverModule(
+            onProgress = { traces += it },
+            host = WasmProverHost(
+                connectTarget = { _, _ -> error("proxy must never dial a client target") },
+                onTargetResponse = { status = it },
+            ),
+        )
+        module.initialize(2, "proxy")
+        val proof = module.prove(request().copy(mode = "proxy", rootStorePem = "fixture roots"))
+        assertContentEquals(byteArrayOf(9, 9), proof)
+        assertEquals(200, status)
+        assertEquals(
+            listOf(
+                "createProxyProver",
+                "init()",
+                "initialize(2)",
+                "connectNotary(wss://notary.test/provenance/v1/, notary-token, args=2)",
+                "proveProxy",
+                "notary.close",
+            ),
+            calls(),
+        )
+        assertEquals(request().maxSentData, seams().config.limits.maxSentData as Int)
+        assertEquals(request().maxRecvData, seams().config.limits.maxRecvData as Int)
+        assertEquals("fixture roots", seams().config.rootStore.pem as String)
+        assertEquals(serverName, seams().config.serverName as String)
+        assertEquals(undefined, seams().config.maxRecvDataOnline)
+        assertEquals(undefined, seams().config.limits.maxRecvRecordsOnline)
+        assertEquals(undefined, seams().config.proxyBaseUrl)
+        assertEquals(httpRequest(request()).uri as String, seams().request.uri as String)
+        assertTrue(traces.any { "mode=proxy target=notary" in it })
+        assertFalse(traces.any { "maxRecvOnline" in it || "proxy.test" in it })
+        assertTrue(traces.any { "proxy_setup" in it })
+    }
+
+    @Test
+    fun proxy_failure_closes_the_notary_without_target_or_fallback() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2, "proxy")
+        seams().failProof = true
+        val error = assertFailsWith<Throwable> { module.prove(request().copy(mode = "proxy")) }
+        assertContains(error.message.orEmpty(), "proxy rejected")
+        assertEquals("notary.close", calls().last())
+        assertFalse(calls().any { it.startsWith("connectProxy") })
+    }
+
+    @Test
+    fun proxy_status_rejection_also_closes_the_notary() = runTest {
+        val module = BundledWasmProverModule(host = WasmProverHost(onTargetResponse = { error("decline response") }))
+        module.initialize(2, "proxy")
+        assertFailsWith<IllegalStateException> { module.prove(request().copy(mode = "proxy")) }
+        assertEquals("notary.close", calls().last())
+    }
+
+    @Test
+    fun old_assets_fail_proxy_before_compilation_workers_or_network() = runTest {
+        for (missing in listOf("pkg/client_wasm.js", "transport/dist/index.js")) {
+            val module = BundledWasmProverModule(
+                host = WasmProverHost(
+                    assetUrl = { path ->
+                        if (path != missing) {
+                            assetUrls.getValue(path)
+                        } else {
+                            dataUrl(
+                                if (path.startsWith("pkg")) {
+                                    FAKE_PKG.replace("export function proveProxy", "function oldProveProxy")
+                                } else {
+                                    FAKE_TRANSPORT.replace("export function createProxyProver", "function oldCreateProxyProver")
+                                },
+                            )
+                        }
+                    },
+                    wasmModule = { error("must check capabilities before compiling") },
+                ),
+            )
+            val failure = assertFailsWith<IllegalStateException> { module.initialize(2, "proxy") }
+            assertContains(failure.message.orEmpty(), "proxy-capable")
+            assertEquals(emptyList(), calls())
+        }
+    }
+
+    @Test
+    fun an_initialized_module_cannot_silently_switch_protocols() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2)
+        assertFailsWith<IllegalStateException> { module.prove(request().copy(mode = "proxy")) }
+        assertFailsWith<IllegalStateException> { module.initialize(2, "proxy") }
+        assertFalse(calls().any { it.startsWith("connect") })
+    }
+
     private fun seams(): dynamic = js("globalThis.__proverSeams")
 
     private fun calls(): List<String> = (seams().calls as Array<String>).toList()
@@ -197,6 +291,7 @@ class WasmProverHostTest {
     private companion object {
         /** `pkg/client_wasm.js`: only the default-export init, which records what it was handed. */
         const val FAKE_PKG = """
+            export function proveProxy() {}
             export default function init(input) {
               const seams = globalThis.__proverSeams;
               seams.calls.push(input === undefined ? "init()" : "init(module_or_path)");
@@ -224,6 +319,20 @@ class WasmProverHostTest {
                   return { attestation: new Uint8Array([1]), secrets: new Uint8Array([2]) };
                 },
                 present() { return new Uint8Array([9, 9]); },
+              };
+            }
+            export function createProxyProver(wasm) {
+              seams().calls.push("createProxyProver");
+              return {
+                ...createProver(wasm),
+                async proveProxy(notaryIo, config, request, progress) {
+                  seams().calls.push("proveProxy");
+                  seams().config = config;
+                  seams().request = request;
+                  progress?.({step: "proxy_setup", progress: 0, message: "setup", source: "prover"});
+                  if (seams().failProof) throw new Error("proxy rejected");
+                  return {attestation: new Uint8Array([1]), secrets: new Uint8Array([2]), response: {status: 200}};
+                },
               };
             }
             export async function connectNotary(...args) {

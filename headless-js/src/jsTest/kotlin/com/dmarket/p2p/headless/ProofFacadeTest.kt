@@ -103,6 +103,16 @@ class ProofFacadeTest {
     }
 
     @Test
+    fun public_proxy_mode_reaches_the_forked_child() = runTest {
+        dealToProve()
+        val handle = tracker(fakeProverPackage("require-proxy"), proverOptions("mode" to "proxy"))
+        ready(handle)
+        cycle(handle).await()
+        assertNull(outcomes().single().failure)
+        assertNothingSecret()
+    }
+
+    @Test
     fun a_proof_made_in_a_prover_process_is_reported_without_a_failure_and_submitted() = runTest {
         dealToProve()
         val handle = tracker(fakeProverPackage("prove"))

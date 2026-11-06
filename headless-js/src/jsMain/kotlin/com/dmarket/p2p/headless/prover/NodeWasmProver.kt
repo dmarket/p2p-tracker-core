@@ -38,7 +38,6 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
         installBrowserWorker()
         val settings = proof.settings
         val record = ProverSessionRecord()
-        val targetConnector = nodeTcpConnector(settings.assetsDir)
         val host = WasmProverHost(
             assetUrl = { path -> fileUrl(nodePath.join(settings.assetsDir, path) as String) },
             wasmModule = { compileWasm(nodePath.join(settings.assetsDir, "pkg", "client_wasm_bg.wasm") as String) },
@@ -55,7 +54,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
                 headerWebSocket(signed.values, record)
             },
             connectTarget = { serverName, port ->
-                recordedTargetChannel(settings.targetAddress ?: "$serverName:$port", record, connect = targetConnector)
+                recordedTargetChannel(settings.targetAddress ?: "$serverName:$port", record, connect = nodeTcpConnector(settings.assetsDir))
             },
             onTargetResponse = { status ->
                 record.targetStatus = status
@@ -63,7 +62,12 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
             },
         )
         val config = TrackerConfig(
-            notary = NotaryConfig(notaryUrl = settings.notaryUrl, threadCount = settings.threadCount, rootStorePem = settings.rootStorePem),
+            notary = NotaryConfig(
+                notaryUrl = settings.notaryUrl,
+                threadCount = settings.threadCount,
+                rootStorePem = settings.rootStorePem,
+                mode = settings.mode,
+            ),
         )
         val started = nodeProcess.cpuUsage()
         // The wasm does not return when the notary ends the session on purpose (a close 1013 after the 101 left it

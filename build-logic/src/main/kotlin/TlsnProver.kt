@@ -5,6 +5,7 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -66,6 +67,12 @@ abstract class VerifyTlsnProver : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val installLock: RegularFileProperty
 
+    /** Optional local candidate. Its sha512 is explicit; the lock must resolve the same archive sha1. */
+    @get:InputFiles
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val packageArchive: RegularFileProperty
+
     @get:OutputFile abstract val stamp: RegularFileProperty
 
     @TaskAction
@@ -96,7 +103,18 @@ abstract class VerifyTlsnProver : DefaultTask() {
         val lockedVersion = fields.firstOrNull { it.startsWith("version ") }?.removePrefix("version ")?.trim('"')
         val lockedIntegrity = fields.firstOrNull { it.startsWith("integrity ") }?.removePrefix("integrity ")
         if (lockedVersion != version) fail("$lock resolved version $lockedVersion")
-        if (lockedIntegrity?.split(' ')?.contains(integrity) != true) {
+        if (packageArchive.isPresent) {
+            val archive = packageArchive.get().asFile
+            if (!archive.isFile) fail("candidate tarball does not exist")
+            val bytes = archive.readBytes()
+            val sri = "sha512-" + java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-512").digest(bytes))
+            if (sri != integrity) fail("candidate tarball integrity does not match tlsnProverIntegrity")
+            // Yarn's file: tarball entries use a resolved URL with a sha1, not a registry integrity field.
+            // Bind that install to the archive whose stronger sha512 we just checked.
+            val sha1 = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }
+            val resolved = fields.firstOrNull { it.startsWith("resolved ") }?.removePrefix("resolved ")?.trim('"')
+            if (resolved?.endsWith("#$sha1") != true) fail("lockfile does not resolve the verified candidate tarball")
+        } else if (lockedIntegrity?.split(' ')?.contains(integrity) != true) {
             fail("installed integrity $lockedIntegrity is not the pinned $integrity")
         }
 
