@@ -29,13 +29,15 @@ class WebExtStorageCredentialVault : CredentialVault {
     private val json = trackerJson { ignoreUnknownKeys = true }
 
     // Kicked off at construction (worker spawn), so an idle seller's on-disk token goes too, not only on first use.
-    // TODO(DMA-817): drop this removal (and its two tests) in the release after the one that first ships the
+    // TODO(DMA-817): drop this removal (and its tests) in the release after the one that first ships the
     //  session vault (1.2.1 or whatever 1.2.1-SNAPSHOT releases as). A device that skips it keeps an expired token.
     private val legacyRemoval: Promise<dynamic>? =
-        runCatching { webExtStorageRemoveStart(DeviceVaultKeys.STEAM_CREDENTIAL, STORAGE_LOCAL) }.getOrNull()
+        // The catch is attached here so a rejection never surfaces as an unhandled promise rejection.
+        runCatching { webExtStorageRemoveStart(DeviceVaultKeys.STEAM_CREDENTIAL, STORAGE_LOCAL).catch { null } }
+            .getOrNull()
 
     private suspend fun awaitLegacyRemoval() {
-        runCatching { legacyRemoval?.await() }
+        legacyRemoval?.await()
     }
 
     override suspend fun readSteamCredential(): SteamCredential? {

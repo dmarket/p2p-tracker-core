@@ -112,6 +112,17 @@ class WebExtStorageCredentialVaultTest {
     }
 
     @Test
+    fun a_rejected_legacy_removal_does_not_break_vault_operations() = runTest {
+        js("globalThis.chrome.storage.local.remove = function () { return Promise.reject(new Error('x')); }")
+        val vault = WebExtStorageCredentialVault()
+
+        assertNull(vault.readSteamCredential())
+        vault.writeSteamCredential(fakeSteamCredential(token = "test-token"))
+
+        assertEquals("test-token", vault.readSteamCredential()?.token)
+    }
+
+    @Test
     fun clear_leaves_session_storage_empty() = runTest {
         val vault = WebExtStorageCredentialVault()
         vault.writeSteamCredential(fakeSteamCredential())
