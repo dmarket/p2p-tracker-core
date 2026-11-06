@@ -85,20 +85,31 @@ internal const val MAX_NOT_OURS_SINCE = 200
 data class GuardDelta(val fresh: List<SuspiciousOffer>, val cleared: List<OfferId>)
 
 /**
- * A reported warning's level and whether it was made on the partner's name. Stored as the level name, with a list-made
- * impersonation written as [LIST_IMPERSONATION]: a bare `IMPERSONATION` (all records before the basis was kept) reads as
- * made on the name, which is the reading that never clears a warning on missing evidence.
+ * A reported warning's level and whether it was made on the partner's name. Stored as the level name, with an
+ * impersonation written as [LIST_IMPERSONATION] or [NAME_IMPERSONATION]. A bare `IMPERSONATION` (all records before the
+ * basis was kept) has an unknown basis (`null`): it is held like a name-made warning while the name is missing, which never
+ * clears a warning on missing evidence, and a scan that finds it at the same level records the basis without reporting
+ * it again.
  */
-private data class Notified(val level: SuspicionLevel, val byName: Boolean) {
-    fun encode(): String = if (level == SuspicionLevel.IMPERSONATION && !byName) LIST_IMPERSONATION else level.name
+private data class Notified(val level: SuspicionLevel, val byName: Boolean?) {
+    fun encode(): String = when {
+        level != SuspicionLevel.IMPERSONATION || byName == null -> level.name
+        byName -> NAME_IMPERSONATION
+        else -> LIST_IMPERSONATION
+    }
+
+    /** Whether [next] says nothing the host has not been told: same level, and same basis unless this one's is unknown. */
+    fun covers(next: Notified): Boolean = level == next.level && (byName == null || byName == next.byName)
 
     companion object {
         const val LIST_IMPERSONATION = "IMPERSONATION_BY_LIST"
+        const val NAME_IMPERSONATION = "IMPERSONATION_BY_NAME"
 
-        fun decode(value: String): Notified? {
-            if (value == LIST_IMPERSONATION) return Notified(SuspicionLevel.IMPERSONATION, byName = false)
-            val level = SuspicionLevel.entries.firstOrNull { it.name == value } ?: return null
-            return Notified(level, byName = level == SuspicionLevel.IMPERSONATION)
+        fun decode(value: String): Notified? = when (value) {
+            LIST_IMPERSONATION -> Notified(SuspicionLevel.IMPERSONATION, byName = false)
+            NAME_IMPERSONATION -> Notified(SuspicionLevel.IMPERSONATION, byName = true)
+            else -> SuspicionLevel.entries.firstOrNull { it.name == value }
+                ?.let { Notified(it, byName = if (it == SuspicionLevel.IMPERSONATION) null else false) }
         }
     }
 }
@@ -157,11 +168,11 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
     override suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>, nameless: Set<OfferId>): GuardDelta =
         mutex.withLock {
             restore()
-            val held = notified.filter { (id, record) -> id in nameless && record.byName }
+            val held = notified.filter { (id, record) -> id in nameless && record.byName != false }
             val judgedNow = judged - held.keys
             val kept = found.filter { it.offerId !in held }
             val current = kept.associate { it.offerId to Notified(it.level, it.byName) }
-            val fresh = kept.filter { notified[it.offerId] != current[it.offerId] }
+            val fresh = kept.filter { notified[it.offerId]?.covers(current.getValue(it.offerId)) != true }
             val cleared = notified.keys.filter { it in judgedNow && it !in current }
             // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
             // (paged out, or from a scan since turned off) would otherwise stay on record forever.

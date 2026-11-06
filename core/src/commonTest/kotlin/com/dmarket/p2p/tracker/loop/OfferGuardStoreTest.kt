@@ -126,6 +126,25 @@ class OfferGuardStoreTest {
         assertEquals(emptyList(), delta.cleared, "a record from before the basis was kept never clears on missing evidence")
     }
 
+    @Test
+    fun an_older_record_found_at_the_same_level_is_not_reported_again_and_gets_its_basis() = runTest {
+        val storage = InMemoryDeviceKeyValueStore()
+        storage.set(DeviceVaultKeys.GUARD_NOTIFIED, """{"list":"IMPERSONATION","name":"IMPERSONATION"}""")
+        val store = PersistedOfferGuardStore(storage)
+
+        assertEquals(GuardDelta(emptyList(), emptyList()), store.unreported(listOf(flagged("list"), byName("name")), ids("list", "name")))
+        assertEquals(
+            """{"list":"IMPERSONATION_BY_LIST","name":"IMPERSONATION_BY_NAME"}""",
+            storage.get(DeviceVaultKeys.GUARD_NOTIFIED),
+        )
+        assertEquals(
+            emptyList(),
+            PersistedOfferGuardStore(storage).unreported(listOf(byName("name")), ids("name")).fresh,
+            "after a respawn",
+        )
+        assertEquals(listOf(byName("list")), store.unreported(listOf(byName("list")), ids("list")).fresh, "a known basis that changes is")
+    }
+
     // ---- "not ours" stamps ----
 
     private val t0 = Instant.parse("2026-10-30T12:00:00Z")
