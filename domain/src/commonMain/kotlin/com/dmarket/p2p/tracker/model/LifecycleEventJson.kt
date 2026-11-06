@@ -142,6 +142,7 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
         is LifecycleEvent.RevertWatchRearmed -> {
             put("event", "RevertWatchRearmed")
             put("owed", event.owed)
+            event.retryAfterSeconds?.let { put("retryAfterSeconds", it) }
         }
         is LifecycleEvent.TradeStatusReported -> {
             put("event", "TradeStatusReported")

@@ -78,18 +78,35 @@ interface TrackerProgressStore {
      */
     suspend fun loadAcceptedProofs(): Map<ProofIntent, Instant> = emptyMap()
 
-    /** Record that the backend verified a proof for [intent] at [at]. */
+    /** Record that the backend verified a proof for [intent] at [at]. Re-recording a pinned row unpins it. */
     suspend fun recordAcceptedProof(intent: ProofIntent, at: Instant) {
         // no-op default
     }
 
     /**
-     * Drop the records for [intents] — their reports were accepted (nothing left to corroborate), a fresh
-     * proof for the same transition was refused, or their deal is no longer tracked.
+     * Drop the records for [intents] — their reports were accepted and persisted (nothing left to
+     * corroborate), a fresh proof for the same transition was refused, or their deal is no longer tracked.
+     * A pin goes with its row.
      */
     suspend fun clearAcceptedProofs(intents: Set<ProofIntent>) {
         // no-op default
     }
+
+    /**
+     * Pin the rows of [intents]: the backend accepted the report each one corroborates as well, and only the
+     * dedup baseline held the transition back — today, a history `12` whose rollback actor has not resolved,
+     * which is re-sent on every history read until it does. A pinned row does not expire
+     * (`NotaryConfig.acceptedProofTtlMs`), so that re-send does not buy a fresh MPC session each time. An
+     * intent with no row is skipped.
+     *
+     * Defaulted (no-op) like the rest of the ledger; a store without it keeps the expiring rows.
+     */
+    suspend fun pinAcceptedProofs(intents: Set<ProofIntent>) {
+        // no-op default
+    }
+
+    /** The rows of [loadAcceptedProofs] that [pinAcceptedProofs] pinned. */
+    suspend fun loadPinnedAcceptedProofs(): Set<ProofIntent> = emptySet()
 
     /**
      * Per-deal online-decryption budgets learned from a refused proof — see
@@ -156,6 +173,7 @@ class InMemoryTrackerProgressStore : TrackerProgressStore {
     private val handled = mutableSetOf<DirectiveId>()
     private val outcomes = mutableMapOf<DirectiveId, DirectiveOutcome>()
     private val acceptedProofs = mutableMapOf<ProofIntent, Instant>()
+    private val pinnedProofs = mutableSetOf<ProofIntent>()
     private val onlineBudgets = mutableMapOf<DealId, Int>()
     private val freshProofProgress = mutableMapOf<DealId, FreshProofProgress>()
 
@@ -184,12 +202,24 @@ class InMemoryTrackerProgressStore : TrackerProgressStore {
     override suspend fun loadAcceptedProofs(): Map<ProofIntent, Instant> = mutex.withLock { acceptedProofs.toMap() }
 
     override suspend fun recordAcceptedProof(intent: ProofIntent, at: Instant) {
-        mutex.withLock { acceptedProofs[intent] = at }
+        mutex.withLock {
+            acceptedProofs[intent] = at
+            pinnedProofs -= intent
+        }
     }
 
     override suspend fun clearAcceptedProofs(intents: Set<ProofIntent>) {
-        mutex.withLock { intents.forEach(acceptedProofs::remove) }
+        mutex.withLock {
+            intents.forEach(acceptedProofs::remove)
+            pinnedProofs -= intents
+        }
     }
+
+    override suspend fun pinAcceptedProofs(intents: Set<ProofIntent>) {
+        mutex.withLock { pinnedProofs += intents.filter { it in acceptedProofs } }
+    }
+
+    override suspend fun loadPinnedAcceptedProofs(): Set<ProofIntent> = mutex.withLock { pinnedProofs.toSet() }
 
     override suspend fun loadOnlineBudgets(): Map<DealId, Int> = mutex.withLock { onlineBudgets.toMap() }
 

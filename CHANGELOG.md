@@ -33,12 +33,19 @@ GitHub Release.
 - Android: the tracker runs the directives the backend leases, and creates and cancels Steam offers on the session in its vault when `AndroidTracker.install(steamWrites = true)`. `steamWrites` is off by default; `reportUnsentCreates` sets whether a create that never reached Steam is reported `failed` (DMA-662).
 - Android: a Steam offer create or cancel starts only inside its directive's lease (2 min unless the backend sends `leaseDuration`), counted on a clock that runs through sleep; with under 30 s left the tracker heartbeats first, and a lease that heartbeat does not renew gets no write. `MobileTrackerPlatform.elapsedClock` is that clock (DMA-662).
 - Android: before a sync's Steam offer creates the tracker reads the account's active sent offers once and, for each create, reports an offer to the same partner with the same assets that no other deal holds instead of creating a second one. `SteamReadClient.sentOffers(credential, historicalCutoff)` is the new read, and `SteamWriteConfig.bindLookbackMarginMs` (10 min) widens how far back it looks for an accepted offer (DMA-662).
+- New lifecycle event `RevertWatchRearmed` `{owed, retryAfterSeconds?}`: the history read was made due again for history transitions a cycle could not prove yet. `retryAfterSeconds` is set when the read waits for a parked prover.
+- `TrackerProgressStore.pinAcceptedProofs` and `loadPinnedAcceptedProofs`, both defaulted, so a host store that does not implement them keeps the old expiring rows. `PersistedTrackerProgressStore` keeps the pin on the accepted-proof row (`pinned`); rows written by earlier builds read as unpinned.
 
 ### Changed
 
 - The mobile tracker is assembled in common code: `MobileTracker` over a `MobileTrackerPlatform`, which `AndroidTrackerPlatform` now extends. `AndroidTrackerStores` is renamed `MobileTrackerStores`; `AndroidTracker.install` is unchanged (DMA-661).
 - Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
+
+### Fixed
+
+- One Steam click that rolls back several protected trades no longer gets one history proof per `revertWatchIntervalMs` (an hour by default). When a cycle skips a history `12` proof for its budget, a parked prover or a freshness demand on the same read, or fails to mint it, the next cycle reads history again, but only if the backend verified a proof in this cycle. Behind a parked prover the read is due when the park ends. A prover that only fails does not make the read more frequent.
+- A verified history `12` whose report the backend accepted while the rollback's actor is unresolved is no longer proved again on each sparse history read. Its accepted-proof row is pinned and does not expire (`acceptedProofTtlMs`) until the dedup baseline takes the `12` or the deal stops being tracked.
 
 ## [1.3.0-beta] - 2026-11-10
 

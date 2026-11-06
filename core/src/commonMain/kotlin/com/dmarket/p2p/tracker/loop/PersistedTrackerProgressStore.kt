@@ -46,9 +46,18 @@ private data class StoredReportedStatus(
  * A flat record rather than a map keyed by an encoded `dealId|source|code` string: a DMarket deal id is itself
  * a composite (`<opaque>:<uuid>`), so an encoded key needs a separator that is guaranteed absent from it and a
  * parser that agrees with the writer forever. Naming the three fields removes both.
+ *
+ * [pinned] defaults to `false` and is not written while false, so a row from an earlier build reads as an
+ * ordinary expiring one, and an earlier build reading a pinned row simply lets it expire again.
  */
 @Serializable
-private data class StoredAcceptedProof(val dealId: String, val source: String, val steamStatusCode: Int, val atMs: Long)
+private data class StoredAcceptedProof(
+    val dealId: String,
+    val source: String,
+    val steamStatusCode: Int,
+    val atMs: Long,
+    val pinned: Boolean = false,
+)
 
 /**
  * JSON surrogate for [FreshProofProgress] — the per-deal standing against DMA-280's freshness mark.
@@ -230,6 +239,22 @@ class PersistedTrackerProgressStore(private val storage: DeviceKeyValueStore = I
         val remaining = loadStoredAcceptedProofs().filterNot { stored -> intents.any { stored.identifies(it) } }
         storage.set(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, remaining))
     }
+
+    override suspend fun pinAcceptedProofs(intents: Set<ProofIntent>) = acceptedProofsMutex.withLock {
+        val stored = loadStoredAcceptedProofs()
+        val updated = stored.map { row -> if (!row.pinned && intents.any { row.identifies(it) }) row.copy(pinned = true) else row }
+        // Written only on a change: the loop pins the same rows on every history read until the actor resolves.
+        if (updated != stored) {
+            storage.set(DeviceVaultKeys.TRACKER_ACCEPTED_PROOFS, TrackerJson.encodeToString(acceptedProofsSerializer, updated))
+        }
+    }
+
+    override suspend fun loadPinnedAcceptedProofs(): Set<ProofIntent> =
+        loadStoredAcceptedProofs().filter { it.pinned }.mapNotNullTo(HashSet()) { stored ->
+            // Same drop-on-unknown-axis policy as [loadAcceptedProofs].
+            val source = TradeStatusSource.entries.firstOrNull { it.wireName == stored.source } ?: return@mapNotNullTo null
+            ProofIntent(DealId(stored.dealId), source, stored.steamStatusCode)
+        }
 
     override suspend fun loadOnlineBudgets(): Map<DealId, Int> = loadStoredOnlineBudgets().mapKeys { (dealId, _) -> DealId(dealId) }
 
