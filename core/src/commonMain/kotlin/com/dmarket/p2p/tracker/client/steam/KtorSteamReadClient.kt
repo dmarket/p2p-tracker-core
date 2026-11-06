@@ -113,11 +113,7 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
         return SteamReadResponses.transfers(responseText)
     }
 
-    /**
-     * `GetPlayerLinkDetails` in chunks of [LINK_DETAILS_CHUNK] ids with indexed `steamids[i]` parameters; blank names
-     * are dropped. Not `GetPlayerSummaries`: that endpoint answers 400 for an `access_token` and wants a Web API key
-     * (see [SteamEndpointsConfig.getPlayerLinkDetailsPath] for what the live check found).
-     */
+    /** `GetPlayerLinkDetails` in chunks of [LINK_DETAILS_CHUNK] ids; see [SteamEndpointsConfig.getPlayerLinkDetailsPath]. */
     override suspend fun personaNames(credential: SteamCredential, steamIds: Set<SteamId>): Map<SteamId, String> =
         steamIds.chunked(LINK_DETAILS_CHUNK).fold(emptyMap()) { names, chunk ->
             val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getPlayerLinkDetailsPath}") {
@@ -128,7 +124,6 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
         }
 
     private companion object {
-        /** Steam's cap: 101 ids answer an empty response, not an error. */
         const val LINK_DETAILS_CHUNK = 100
     }
 }

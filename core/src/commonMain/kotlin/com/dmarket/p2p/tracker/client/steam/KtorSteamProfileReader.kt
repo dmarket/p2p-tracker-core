@@ -34,9 +34,11 @@ import kotlin.random.Random
  * lives here. A 403 maps to [SteamProfileAuthException]; other non-2xx propagate as
  * [HttpStatusException].
  *
- * Not yet confirmed against live Steam that these endpoints accept the web-session `access_token`
- * (support varies per endpoint) or that they rate-limit with HTTP 429 + `Retry-After` — unit-tested
- * but pending real-world verification, matching the caveat on the other Steam clients.
+ * ⚠️ Does not work yet: `GetPlayerSummaries` answers 400 for the `access_token` and wants a Web API key
+ * (see [SteamEndpointsConfig.getPlayerSummariesPath]), so every [getUserProfiles] call fails. Nothing in
+ * production constructs this reader. Moving it to `IPlayerService/GetPlayerLinkDetails` needs the avatar
+ * URLs rebuilt from that endpoint's avatar hash. Still unchecked live: `GetSteamLevel` with the token,
+ * and 429 + `Retry-After`.
  *
  * @param random injectable so backoff jitter is deterministic under test; defaults to [Random.Default].
  */

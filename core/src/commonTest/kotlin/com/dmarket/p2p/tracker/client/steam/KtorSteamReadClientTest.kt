@@ -420,7 +420,6 @@ class KtorSteamReadClientTest {
         val endpoints = SteamEndpointsConfig()
         val asked = mutableListOf<List<String>>()
         val engine = MockEngine { request ->
-            // GetPlayerSummaries answers 400 for an access_token (DMA-857); a comma list matches nothing here.
             assertEquals(endpoints.getPlayerLinkDetailsPath, request.url.encodedPath)
             assertEquals(credential.token, request.url.parameters[endpoints.paramAccessToken])
             assertNull(request.url.parameters[endpoints.paramSteamIds], "ids must be indexed, never a comma list")

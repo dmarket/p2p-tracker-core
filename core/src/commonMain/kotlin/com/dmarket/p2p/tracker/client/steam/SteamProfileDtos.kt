@@ -44,7 +44,7 @@ data class PlayerLevelResponse(@SerialName("player_level") val playerLevel: Int?
 @Serializable
 data class GetPlayerLinkDetailsWrapper(@SerialName("response") val response: GetPlayerLinkDetailsResponse? = null)
 
-/** Empty (`{}`) for unknown ids, for a comma-joined id list, and for more than 100 ids. */
+/** Often empty (`{}`): see `SteamEndpointsConfig.getPlayerLinkDetailsPath`. */
 @Serializable
 data class GetPlayerLinkDetailsResponse(@SerialName("accounts") val accounts: List<PlayerLinkDetailsDto> = emptyList())
 

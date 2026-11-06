@@ -1016,8 +1016,8 @@ data class SteamEndpointsConfig(
     val targetedTradeReadsPerCycle: Int = 3,
     /**
      * Persona names for the impersonation check, `IPlayerService/GetPlayerLinkDetails`: answers
-     * `response.accounts[].public_data.persona_name` for the user `access_token` (checked live 2026-11-03,
-     * where [getPlayerSummariesPath] answers 400 asking for a key).
+     * `response.accounts[].public_data.persona_name` for the user `access_token` (checked live 2026-11-03;
+     * [getPlayerSummariesPath] does not take that token).
      *
      * Three facts from that check, each a silent empty `{"response":{}}` rather than an error: the ids must be
      * indexed (`steamids[0]=…`, a comma list matches nothing), more than 100 ids answer nothing at all, and an
