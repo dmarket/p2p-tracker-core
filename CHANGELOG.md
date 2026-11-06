@@ -20,7 +20,25 @@ GitHub Release.
   `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an
   offer it would have created (DMA-482).
 
+- New lifecycle event `RevertWatchRearmed` `{owed, retryAfterSeconds?}`: the history read was made due again for
+  history transitions a cycle could not prove yet. `retryAfterSeconds` is set when the read waits for a parked
+  prover.
+
+- `TrackerProgressStore.pinAcceptedProofs` and `loadPinnedAcceptedProofs`, both defaulted, so a host store that
+  does not implement them keeps the old expiring rows. `PersistedTrackerProgressStore` keeps the pin on the
+  accepted-proof row (`pinned`); rows written by earlier builds read as unpinned.
+
 ### Fixed
+
+- One Steam click that rolls back several protected trades no longer gets one history proof per
+  `revertWatchIntervalMs` (an hour by default). When a cycle skips a history `12` proof for its budget, a parked
+  prover or a freshness demand on the same read, or fails to mint it, the next cycle reads history again, but only
+  if the backend verified a proof in this cycle. Behind a parked prover the read is due when the park ends. A
+  prover that only fails does not make the read more frequent.
+
+- A verified history `12` whose report the backend accepted while the rollback's actor is unresolved is no longer
+  proved again on each sparse history read. Its accepted-proof row is pinned and does not expire
+  (`acceptedProofTtlMs`) until the dedup baseline takes the `12` or the deal stops being tracked.
 
 - Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) instead of
   copying the refresh cookie's (DMA-815).

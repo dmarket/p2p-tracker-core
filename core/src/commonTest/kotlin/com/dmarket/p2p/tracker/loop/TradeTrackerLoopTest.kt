@@ -3105,6 +3105,325 @@ class TradeTrackerLoopTest {
         assertEquals(3, reader.recentTransfersCalls, "a failed read must leave the axis due, not stamped")
     }
 
+    // ---- one click, many rollbacks: the history proofs one read could not afford -------------------
+    //
+    // ONE Steam click rolls back every protected trade of the clicker at one `time_mod`, and the history read
+    // is account-wide, so all of those rows flip to 12 on the same read. The cycle affords one proof; the
+    // rest are skipped as BUDGET_SPENT "for the next cycle" — but nothing made the next cycle READ history
+    // for them: their baseline still said 3, so the revert watch went straight back to sparse. Measured on
+    // dev-02 2026-11-05: four deals of one click proven at +16 s, +1 h, +1 h and +2 h.
+
+    private val clickAt = Instant.fromEpochSeconds(1_781_697_600)
+
+    /** [count] history-watched `proof_required` deals, each pinned to its own Steam trade by the backend. */
+    private fun clickDeals(count: Int) = (1..count).map { n ->
+        TrackedDeal(
+            dealId = DealId("deal-$n"),
+            watch = setOf(WatchTarget.GET_TRADE_HISTORY),
+            proofRequired = true,
+            steamTradeId = TradeId("trade-$n"),
+        )
+    }
+
+    /**
+     * The account's history for [count] deals: every trade delivered (3), or — [rolledBack] — all of them
+     * undone by ONE click, each as Steam writes a rollback: the original flips to 12 with the click's
+     * `time_mod`, and a compensating 3 appears carrying `rollback_trade`.
+     */
+    private fun clickHistory(count: Int, rolledBack: Boolean) = (1..count).flatMap { n ->
+        val original = SteamTransfer(
+            partnerSteamId = SteamId(PARTNER),
+            assetIds = setOf(AssetId("asset-$n")),
+            status = if (rolledBack) ROLLBACK_CODE else 3,
+            tradeId = TradeId("trade-$n"),
+            initiatedAt = Instant.fromEpochSeconds(1_781_600_000),
+            modifiedAt = clickAt.takeIf { rolledBack },
+        )
+        val compensating = SteamTransfer(
+            partnerSteamId = SteamId(PARTNER),
+            assetIds = setOf(AssetId("asset-$n")),
+            status = 3,
+            tradeId = TradeId("88trade-$n"),
+            initiatedAt = clickAt,
+            rollbackTradeId = TradeId("trade-$n"),
+        )
+        if (rolledBack) listOf(compensating, original) else listOf(original)
+    }
+
+    /** How many history proofs the backend received for `deal-[n]`. */
+    private fun FakeMarketplaceClient.historyProofsOf(n: Int) = proofsSubmitted.count { it.dealId == DealId("deal-$n") }
+
+    /**
+     * Brings [count] deals to the state a real account is in before a click: every trade delivered and its
+     * history 3 proven, the revert watch sparse. [initiator] is the reversal actor Steam's notifications name
+     * once the click happens; `null` leaves every rollback's attribution unresolved, so its 12 is reported but
+     * never enters the dedup baseline.
+     */
+    private suspend fun clickStand(
+        count: Int,
+        initiator: SteamId? = SteamId(PARTNER),
+        notaryThrottle: NotaryProofThrottleStore? = null,
+        loopState: LoopStateStore = InMemoryLoopStateStore(),
+    ): ClickStand {
+        val clock = FakeClock()
+        val notary = FakeNotaryProver()
+        val events = RecordingEventObserver()
+        val reader = FakeSteamReadClient(initialTransfers = clickHistory(count, rolledBack = false))
+        val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(activeTracking = clickDeals(count), ttlSeconds = 60))
+        val l = if (notaryThrottle == null) {
+            loop(
+                marketplace = mp,
+                reader = reader,
+                notary = notary,
+                clock = clock,
+                eventObserver = events,
+                notifications = FakeSteamNotificationReader(initiator),
+                loopState = loopState,
+            )
+        } else {
+            loop(
+                marketplace = mp,
+                reader = reader,
+                notary = notary,
+                clock = clock,
+                eventObserver = events,
+                notifications = FakeSteamNotificationReader(initiator),
+                loopState = loopState,
+                notaryThrottle = notaryThrottle,
+            )
+        }
+        l.runOnce()
+        assertEquals(count, mp.proofsSubmitted.size, "precondition: every delivered trade's history 3 is proven")
+        clock.advance(5.minutes)
+        l.runOnce()
+        assertEquals(1, reader.recentTransfersCalls, "precondition: every deal baselined, so the revert watch is sparse")
+        return ClickStand(l, clock, notary, events, reader, mp)
+    }
+
+    private inner class ClickStand(
+        val loop: TradeTrackerLoop,
+        val clock: FakeClock,
+        val notary: FakeNotaryProver,
+        val events: RecordingEventObserver,
+        val reader: FakeSteamReadClient,
+        val mp: FakeMarketplaceClient,
+    ) {
+        val rearms get() = events.events.filterIsInstance<LifecycleEvent.RevertWatchRearmed>()
+
+        /** The click: every row flips to 12 together, and the sparse interval since the last read elapses. */
+        suspend fun click(count: Int) {
+            reader.transfers = clickHistory(count, rolledBack = true)
+            clock.advance(56.minutes)
+            loop.runOnce()
+        }
+
+        suspend fun cycles(n: Int, every: Duration = 1.minutes) = repeat(n) {
+            clock.advance(every)
+            loop.runOnce()
+        }
+    }
+
+    @Test
+    fun every_deal_of_one_rollback_click_is_proven_on_consecutive_cycles() = runTest {
+        val s = clickStand(3)
+        // A proof costs a whole heartbeat, as an MPC session does on a real account, so each cycle affords one.
+        s.notary.onProve = { s.clock.advance(60.seconds) }
+        s.click(3)
+        assertEquals(2, s.reader.recentTransfersCalls)
+        assertEquals(4, s.mp.proofsSubmitted.size, "the read that saw the click affords one 12 proof")
+
+        s.cycles(2)
+
+        for (n in 1..3) {
+            assertEquals(2, s.mp.historyProofsOf(n), "deal-$n: its 12 must be proven within two more cycles, not one per sparse interval")
+        }
+        assertEquals(4, s.reader.recentTransfersCalls, "each owed proof costs exactly one more history read")
+        assertEquals(listOf(2, 1), s.rearms.map { it.owed })
+
+        // The actor resolved, so every 12 is in the baseline now: the click is done, and the axis is sparse again
+        // because of that — the next sparse read finds nothing to prove.
+        s.cycles(1)
+        assertEquals(4, s.reader.recentTransfersCalls, "once every proof is in, the revert watch must go back to sparse")
+        s.cycles(1, every = 60.minutes)
+        assertEquals(5, s.reader.recentTransfersCalls)
+        assertEquals(6, s.mp.proofsSubmitted.size, "a baselined click proves nothing again")
+    }
+
+    @Test
+    fun a_failed_mint_is_retried_on_the_next_cycle_when_another_deal_of_the_click_was_verified() = runTest {
+        // A stale proving context fails in milliseconds (the 7-15 ms case in `mintAndSubmit`), so the cycle still
+        // has budget and proves the next deal. That verified proof pays for the re-read, and the failed one is
+        // retried there instead of an hour later.
+        val s = clickStand(2)
+        s.notary.onProve = {
+            s.notary.proveThrows = IllegalStateException("simulated stale proving context").takeIf {
+                s.notary.provenKinds.last().first == DealId("deal-1")
+            }
+        }
+        s.click(2)
+        assertEquals(1, s.mp.historyProofsOf(1), "deal-1's 12 failed to mint")
+        assertEquals(2, s.mp.historyProofsOf(2), "deal-2's 12 verified in the same cycle")
+        assertEquals(listOf(1), s.rearms.map { it.owed })
+
+        s.notary.onProve = null
+        s.notary.proveThrows = null
+        s.cycles(1)
+
+        assertEquals(3, s.reader.recentTransfersCalls, "the failed proof's transition is re-read on the next cycle")
+        assertEquals(2, s.mp.historyProofsOf(1), "and proven there")
+    }
+
+    @Test
+    fun a_prover_that_keeps_failing_never_re_arms_the_history_read() = runTest {
+        // Review of the first version: a failure faster than `countedFailureMinMs` never reaches the breaker, so
+        // owing the deal on every failed mint re-read history on every cycle with no end (10 cycles, 10 reads),
+        // and even counted failures bought 6 reads in 10 cycles. A failure alone now earns nothing.
+        for ((label, cost) in listOf("fast" to 0.seconds, "counted" to 2.seconds)) {
+            val s = clickStand(1)
+            s.notary.proveThrows = IllegalStateException("simulated $label failure")
+            s.notary.onProve = { s.clock.advance(cost) }
+            s.click(1)
+            s.cycles(10)
+            assertEquals(2, s.reader.recentTransfersCalls, "$label failures: no history read beyond the sparse one")
+            assertTrue(s.rearms.isEmpty(), "$label failures: nothing was verified, so nothing is re-armed")
+        }
+    }
+
+    @Test
+    fun a_parked_prover_with_nothing_verified_does_not_re_arm() = runTest {
+        val throttle = PersistedNotaryProofThrottleStore(limits = NotaryBreakerConfig(breakerThreshold = 1), random = Random(7))
+        val s = clickStand(2, notaryThrottle = throttle)
+        throttle.onResult(generated = false, now = s.clock.now())
+        assertTrue(throttle.parkedUntil(s.clock.now()) != null, "precondition: the prover is parked")
+
+        s.click(2)
+        s.cycles(10)
+
+        assertEquals(2, s.reader.recentTransfersCalls, "a parked prover proved nothing, so the read stays sparse")
+        assertTrue(s.rearms.isEmpty())
+    }
+
+    @Test
+    fun a_prover_parked_mid_click_re_arms_the_read_for_when_the_park_ends() = runTest {
+        // deal-1 verifies, deal-2's counted failure parks the prover (threshold 1), deal-3 is skipped as
+        // PROVER_PARKED. A read during the park would skip both again, so the re-armed read is due at its end.
+        val throttle = PersistedNotaryProofThrottleStore(
+            limits = NotaryBreakerConfig(breakerThreshold = 1, cooldownBaseMs = 600_000, cooldownMaxMs = 600_000),
+            random = Random(7),
+        )
+        val s = clickStand(3, notaryThrottle = throttle)
+        s.notary.onProve = {
+            val failing = s.notary.provenKinds.last().first == DealId("deal-2")
+            if (failing) s.clock.advance(2.seconds)
+            s.notary.proveThrows = IllegalStateException("simulated MPC abort").takeIf { failing }
+        }
+        s.click(3)
+        val parkedUntil = assertNotNull(throttle.parkedUntil(s.clock.now()), "precondition: deal-2's failure parked the prover")
+        assertEquals(listOf(2), s.rearms.map { it.owed })
+        assertNotNull(s.rearms.single().retryAfterSeconds, "the re-arm says it waits for the park")
+
+        s.notary.onProve = null
+        s.notary.proveThrows = null
+        s.cycles(1)
+        assertEquals(2, s.reader.recentTransfersCalls, "no read while the prover is parked")
+
+        s.clock.advance(parkedUntil - s.clock.now() + 1.seconds)
+        s.loop.runOnce()
+        assertEquals(3, s.reader.recentTransfersCalls, "the read is due as soon as the park ends")
+        for (n in 2..3) assertEquals(2, s.mp.historyProofsOf(n), "deal-$n is proven once the prover is back")
+    }
+
+    @Test
+    fun a_freshness_demand_that_took_the_cycle_still_lets_the_click_be_read_again() = runTest {
+        // deal-1 also carries a DMA-280 mark. The demand half runs first and spends the cycle on it, so deal-1's
+        // own 12 is SUPERSEDED_BY_DEMAND and deal-2's is BUDGET_SPENT. The demand's verified proof pays for the
+        // re-read, and both 12s are proven on the following cycles.
+        val s = clickStand(2)
+        s.mp.heartbeatResponse = HeartbeatResponse(
+            activeTracking = clickDeals(2).map { if (it.dealId == DealId("deal-1")) it.copy(proveAfter = clickAt) else it },
+            ttlSeconds = 60,
+        )
+        s.notary.onProve = { s.clock.advance(60.seconds) }
+        s.click(2)
+        assertEquals(listOf(2), s.rearms.map { it.owed }, "deal-1 superseded by its demand, deal-2 out of budget")
+
+        s.cycles(2)
+
+        assertEquals(3, s.mp.historyProofsOf(1), "deal-1: its 3, the demand, and its own 12")
+        assertEquals(2, s.mp.historyProofsOf(2), "deal-2: its 3 and its 12")
+        assertEquals(4, s.reader.recentTransfersCalls)
+    }
+
+    @Test
+    fun a_verified_rollback_whose_actor_is_unresolved_is_not_re_proved_at_the_next_sparse_read() = runTest {
+        // Review of the first version: the kept accepted-proof row had the same 1 h window as the sparse read,
+        // so it had usually expired by the next read and the 12 was minted again — and with the re-arm, the
+        // whole click was re-proved every hour. Its report was accepted; only the baseline holds it back. Pinned.
+        val s = clickStand(3, initiator = null)
+        s.notary.onProve = { s.clock.advance(10.seconds) }
+        s.click(3)
+        s.cycles(3, every = 70.seconds)
+        for (n in 1..3) assertEquals(2, s.mp.historyProofsOf(n), "precondition: deal-$n's 12 is proven")
+        val readsAfterClick = s.reader.recentTransfersCalls
+
+        s.cycles(110, every = 70.seconds) // a little over two sparse intervals
+
+        for (n in 1..3) {
+            assertEquals(
+                2,
+                s.mp.historyProofsOf(n),
+                "deal-$n: an accepted 12 must not be re-proved while its actor is unresolved",
+            )
+        }
+        assertEquals(readsAfterClick + 2, s.reader.recentTransfersCalls, "one read per sparse interval, no re-armed chain")
+        assertTrue(
+            s.mp.tradeStatusReports.count { it.steamStatusCode == ROLLBACK_CODE && it.dealId == DealId("deal-1") } >= 3,
+            "the 12 is still re-sent on each read, for the actor",
+        )
+    }
+
+    @Test
+    fun a_failed_revert_watch_write_is_reported_instead_of_a_re_arm() = runTest {
+        // The event is what a repeat of the dev-02 case is read from, so it must not claim a re-arm that did not
+        // happen.
+        val store = FailingRevertWatchStore()
+        val s = clickStand(2, loopState = store)
+        s.notary.onProve = { s.clock.advance(60.seconds) }
+        store.failWrites = true
+        s.click(2)
+
+        assertTrue(s.rearms.isEmpty())
+        assertTrue(
+            s.events.events.filterIsInstance<LifecycleEvent.ProgressStoreFailed>().any { it.operation == "setRevertWatchAt" },
+            "a failed write is a ProgressStoreFailed",
+        )
+    }
+
+    private class FailingRevertWatchStore(private val inner: LoopStateStore = InMemoryLoopStateStore()) : LoopStateStore by inner {
+        var failWrites = false
+
+        override suspend fun setRevertWatchAt(at: Instant) {
+            if (failWrites) error("simulated storage quota")
+            inner.setRevertWatchAt(at)
+        }
+    }
+
+    @Test
+    fun a_refused_history_proof_does_not_keep_the_revert_watch_prompt() = runTest {
+        // A proof the backend REFUSED is terminal for its bytes (it is never re-sent) and verifies nothing, so it
+        // cannot pay for a re-read — re-arming for it would be the 47-reads-in-72-minutes regression.
+        val s = clickStand(1)
+        s.mp.proofVerified = false
+        s.click(1)
+        assertEquals(2, s.reader.recentTransfersCalls)
+        assertEquals(2, s.mp.historyProofsOf(1), "the 12 proof was delivered — and refused")
+
+        s.cycles(1)
+
+        assertEquals(2, s.reader.recentTransfersCalls, "a refused proof owes nothing, so the axis stays sparse")
+        assertTrue(s.rearms.isEmpty())
+    }
+
     // ---- the per-cycle proving budget ------------------------------------------------------------
     //
     // Proofs are minted one at a time, inline, under `cycleMutex`, so N due proofs serialize into N × the
