@@ -16,6 +16,11 @@ GitHub Release.
 
 ### Added
 
+- Opt-in Worker egress for proxy issuance through `NotaryConfig.transport` and headless/SDK
+  `prover.transport` (`"direct"` or `"egress"`, default direct). Egress uses `notaryUrl` for the Worker
+  frontend, preserves proxy proof/disclosure behavior, checks connector support before initialization,
+  and aborts sessions on completion/failure/cancellation. Requires capable assets and configured
+  Worker/notary services; MPC plus egress is rejected and no route fallback occurs.
 - Opt-in notary proxy issuance through `NotaryConfig.mode` and headless/SDK `prover.mode` (`"mpc"` or
   `"proxy"`, default MPC), propagated over child IPC. Proxy opens only the notary channel, preserves
   presentation redaction and response handling, and rejects old assets before initialization or network

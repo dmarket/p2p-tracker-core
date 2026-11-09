@@ -1,7 +1,10 @@
 package com.dmarket.p2p.tracker.notary
 
 import com.dmarket.p2p.tracker.adapter.webext.webExtApi
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.await
+import kotlinx.coroutines.withContext
 import kotlin.js.Date
 import kotlin.js.Promise
 import kotlin.math.roundToInt
@@ -61,6 +64,7 @@ data class WasmProveRequest(
      */
     val steamSessionId: String? = null,
     val mode: String = "mpc",
+    val transport: String = "direct",
 ) {
     /**
      * Redacted: this request carries the Steam access token, the notary bearer token, and — for a community
@@ -73,7 +77,7 @@ data class WasmProveRequest(
      * blob and pasting it into every log line of a failing proof helps nobody.
      */
     override fun toString(): String = "WasmProveRequest(notaryUrl=$notaryUrl, notaryToken=<redacted>, proxyBaseUrl=$proxyBaseUrl, " +
-        "mode=$mode, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
+        "mode=$mode, transport=$transport, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
         "maxRecvDataOnline=$maxRecvDataOnline, maxRecvRecordsOnline=$maxRecvRecordsOnline, " +
         "rootStorePem=${rootStorePem?.let { "<${it.length} chars>" }}, " +
         "steamSessionCookie=${steamSessionCookie?.let { "<redacted>" }}, " +
@@ -101,6 +105,12 @@ interface WasmProverModule {
         initialize(threadCount)
     }
 
+    /** Old injected modules must opt into egress explicitly, never silently use a direct route. */
+    suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+        require(transport == "direct") { "this injected prover module does not support egress transport" }
+        initialize(threadCount, mode)
+    }
+
     /** Run one issuance and return the raw `postcard` `Presentation` bytes. */
     suspend fun prove(request: WasmProveRequest): ByteArray
 }
@@ -116,6 +126,7 @@ interface WasmProverModule {
  * `present(policy)`. By default the MPC target is reached through the `p2p-wss-proxy` worker because a
  * browser extension can't open a raw TCP socket; a host that can supplies its own connector ([host]).
  * Proxy flow: `createProxyProver(wasm)` → `initialize()` → `connectNotary` → `proveProxy()` → `present(policy)`.
+ * Egress substitutes `connectEgressNotary` for `connectNotary`; issuance and disclosure stay identical.
  * Proxy capability is checked before compilation or worker startup; the target connector is never used.
  *
  * **Module resolution — deliberately not a literal specifier.** The assets are located at runtime,
@@ -153,24 +164,36 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     private var prover: dynamic = null
 
     private var mode: String? = null
+    private var notaryTransport: String? = null
 
     override suspend fun initialize(threadCount: Int) = initialize(threadCount, "mpc")
 
-    override suspend fun initialize(threadCount: Int, mode: String) {
+    override suspend fun initialize(threadCount: Int, mode: String) = initialize(threadCount, mode, "direct")
+
+    override suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+        require(transport == "direct" || transport == "egress") { "notary.transport must be direct or egress" }
+        require(transport != "egress" || mode == "proxy") { "notary.transport egress requires mode proxy" }
+        check(notaryTransport == null || notaryTransport == transport) { "a prover module cannot change transport after initialization" }
         require(mode == "mpc" || mode == "proxy") { "notary.mode must be mpc or proxy" }
         check(this.mode == null || this.mode == mode) { "a prover module cannot change issuance mode after initialization" }
         if (prover == null) {
             val wasm = importModule(assetUrl("pkg/client_wasm.js")).await()
-            transport = importModule(assetUrl("transport/dist/index.js")).await()
+            this.transport = importModule(assetUrl("transport/dist/index.js")).await()
             if (mode == "proxy") {
-                check(jsTypeOf(transport.createProxyProver) == "function" && jsTypeOf(wasm.proveProxy) == "function") {
+                check(jsTypeOf(this.transport.createProxyProver) == "function" && jsTypeOf(wasm.proveProxy) == "function") {
                     "proxy issuance unsupported: requires a proxy-capable steam-provenance package (missing createProxyProver or proveProxy)"
+                }
+            }
+            if (transport == "egress") {
+                check(jsTypeOf(this.transport.connectEgressNotary) == "function") {
+                    "egress transport unsupported: requires an egress-capable steam-provenance package (missing connectEgressNotary)"
                 }
             }
             val compiled = host.wasmModule?.invoke()
             val bound = if (compiled == null) wasm else withCompiledModule(wasm, compiled)
-            prover = if (mode == "proxy") transport.createProxyProver(bound) else transport.createProver(bound)
+            prover = if (mode == "proxy") this.transport.createProxyProver(bound) else this.transport.createProver(bound)
             this.mode = mode
+            notaryTransport = transport
         }
         // The façade memoizes instantiation + init and releases the memo on failure, so repeat calls are
         // free and a genuine retry (e.g. after fixing COOP/COEP) still re-runs.
@@ -178,6 +201,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     }
 
     override suspend fun prove(request: WasmProveRequest): ByteArray {
+        check(notaryTransport == request.transport) { "initialize the prover with the request transport before proving" }
         check(mode == request.mode) { "initialize the prover with the request issuance mode before proving" }
         val spec = request.spec
         // What this proof is ACTUALLY parameterised with, from the realm that parameterises it — emitted before
@@ -198,7 +222,9 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
         // credential is the same DMarket token every marketplace call carries, so a genuinely dead token
         // is caught by the existing HTTP-401 refresh and surfaces through `needsMarketplaceReLogin`.
         val notaryIo = try {
-            connectNotary(request).await()
+            connectNotary(request)
+        } catch (cause: CancellationException) {
+            throw cause
         } catch (cause: Throwable) {
             // The cause carries the transport's own message and the URL, never the credential.
             throw IllegalStateException(
@@ -224,7 +250,12 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             host.onTargetResponse?.let { inspect -> targetStatus(issued)?.let(inspect) }
             issued
         } finally {
-            closeQuietly(notaryIo)
+            if (request.transport == "egress") {
+                // FIN alone can wait for credits forever after failure. Abort also closes the socket and clears the session timer.
+                withContext(NonCancellable) { runCatching { notaryIo.abort().unsafeCast<Promise<dynamic>>().await() } }
+            } else {
+                closeQuietly(notaryIo)
+            }
         }
 
         return asByteArray(prover.present(out.attestation, out.secrets, revealPolicy(spec)))
@@ -233,15 +264,33 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     private fun assetUrl(path: String): String = host.assetUrl?.invoke(path) ?: extensionAssetUrl(path)
 
     /**
-     * Two arguments without a host socket, on purpose: that is the call the extension has always made, so its
+     * Direct transport uses two arguments without a host socket, on purpose: that is the call the extension has always made, so its
      * path stays the transport's own default (the global `WebSocket`) rather than an explicit equivalent.
      */
-    private suspend fun connectNotary(request: WasmProveRequest): Promise<dynamic> {
+    private suspend fun connectNotary(request: WasmProveRequest): dynamic {
         val webSocket = host.notaryWebSocket?.invoke()
-            ?: return transport.connectNotary(request.notaryUrl, request.notaryToken).unsafeCast<Promise<dynamic>>()
+        if (request.transport == "egress") {
+            // The connector resolves only after HELLO. Own the socket during that wait too, so cancellation
+            // can close it before a channel is returned (including a resolve/cancel race).
+            val owner: dynamic = js("({})")
+            val wrap: dynamic =
+                js("(function (WS, owner) { return function (url, protocols) { return owner.socket = new WS(url, protocols); }; })")
+            val options: dynamic = js("({})")
+            options.WebSocketImpl = wrap(webSocket ?: js("globalThis.WebSocket"), owner)
+            try {
+                return transport.connectEgressNotary(request.notaryUrl, request.notaryToken, options)
+                    .unsafeCast<Promise<dynamic>>().await()
+            } catch (cause: Throwable) {
+                runCatching { owner.socket?.close() }
+                throw cause
+            }
+        }
+        if (webSocket == null) {
+            return transport.connectNotary(request.notaryUrl, request.notaryToken).unsafeCast<Promise<dynamic>>().await()
+        }
         val options: dynamic = js("({})")
         options.WebSocketImpl = webSocket
-        return transport.connectNotary(request.notaryUrl, request.notaryToken, options).unsafeCast<Promise<dynamic>>()
+        return transport.connectNotary(request.notaryUrl, request.notaryToken, options).unsafeCast<Promise<dynamic>>().await()
     }
 
     private fun connectTarget(request: WasmProveRequest): Promise<dynamic> {
@@ -519,6 +568,7 @@ internal fun issuanceLine(request: WasmProveRequest, hostTarget: Boolean = false
     append("issuance serverName=").append(request.spec.serverName)
     append(" mode=").append(request.mode)
     when {
+        request.transport == "egress" -> append(" transport=egress target=worker")
         request.mode == "proxy" -> append(" target=notary")
         hostTarget -> append(" target=host")
         else -> append(" proxy=").append(request.proxyBaseUrl)

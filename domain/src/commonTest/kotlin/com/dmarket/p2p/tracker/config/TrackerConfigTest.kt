@@ -19,6 +19,11 @@ class TrackerConfigTest {
         assertEquals("mpc", NotaryConfig().mode)
         assertEquals("proxy", NotaryConfig(mode = "proxy").mode)
         assertFails { NotaryConfig(mode = "automatic") }
+        assertEquals("direct", NotaryConfig().transport)
+        assertEquals("direct", NotaryConfig(mode = "proxy").transport)
+        assertEquals("egress", NotaryConfig(mode = "proxy", transport = "egress").transport)
+        assertFails { NotaryConfig(transport = "egress") }
+        assertFails { NotaryConfig(mode = "proxy", transport = "auto") }
     }
 
     @Test

@@ -18,9 +18,15 @@ class ProverPiecesTest {
         val old = ToChild.Prove(1, request, "token", "session", settings)
         val oldJson = ProverIpc.encode(old)
         assertFalse("\"mode\"" in oldJson)
+        assertFalse("\"transport\"" in oldJson)
+        assertEquals("direct", (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.transport)
         assertEquals("mpc", (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.mode)
         val proxy = old.copy(settings = settings.copy(mode = "proxy"))
         assertEquals(proxy, ProverIpc.toChild(ProverIpc.encode(proxy)))
+        val egress = proxy.copy(settings = proxy.settings.copy(transport = "egress"))
+        assertEquals(egress, ProverIpc.toChild(ProverIpc.encode(egress)))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(transport = "egress") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(transport = "auto") }
         kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "unknown") }
         kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "proxy", targetAddress = "localhost:443") }
     }

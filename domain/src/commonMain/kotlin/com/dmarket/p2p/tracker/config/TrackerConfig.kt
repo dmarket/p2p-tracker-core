@@ -709,13 +709,21 @@ data class NotaryConfig(
     val sentBudgetMarginPercent: Int = 15,
     /**
      * Issuance protocol: `mpc` (default) or `proxy`. Proxy needs a proxy-capable prover and an enabled,
-     * routed notary. The notary opens the target connection; [proxyBaseUrl] and MPC online budgets are
+     * routed notary. Target routing belongs to the notary; [proxyBaseUrl] and MPC online budgets are
      * unused. There is no automatic fallback. Appended to preserve existing JS constructor positions.
      */
     val mode: String = "mpc",
+    /**
+     * Notary transport: `direct` (default) or `egress` (proxy only). Egress connects [notaryUrl] to the
+     * Worker frontend using a capable prover package; the Worker opens the notary-authorized target.
+     * [proxyBaseUrl] remains MPC-only. No route fallback. Appended for JS constructor compatibility.
+     */
+    val transport: String = "direct",
 ) {
     init {
         require(mode == "mpc" || mode == "proxy") { "notary.mode must be mpc or proxy" }
+        require(transport == "direct" || transport == "egress") { "notary.transport must be direct or egress" }
+        require(transport != "egress" || mode == "proxy") { "notary.transport egress requires mode proxy" }
         require(acceptedProofTtlMs >= 0) { "acceptedProofTtlMs must be >= 0, was $acceptedProofTtlMs" }
         require(sentBudgetMarginPercent >= 0) {
             "sentBudgetMarginPercent must be >= 0, was $sentBudgetMarginPercent"

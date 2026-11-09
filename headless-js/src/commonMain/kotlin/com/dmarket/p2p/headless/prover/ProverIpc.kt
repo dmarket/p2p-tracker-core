@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
  *   stand's fixture CA; never set in production.
  * @property targetAddress `host:port` the child dials for the target leg in place of `serverName:443`, the TLS
  *   server name staying the target's. MPC-only; proxy routing belongs to the notary. Never set in production.
+ * @property transport `direct` (default) or `egress` (proxy only); egress uses the Worker frontend at `notaryUrl`.
  * @property mode `mpc` (default, including old IPC) or `proxy`.
  */
 @Serializable
@@ -25,9 +26,12 @@ data class ProverSettings(
     @SerialName("rootStorePem") val rootStorePem: String? = null,
     @SerialName("targetAddress") val targetAddress: String? = null,
     @SerialName("mode") val mode: String = "mpc",
+    @SerialName("transport") val transport: String = "direct",
 ) {
     init {
         require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
+        require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
+        require(transport != "egress" || mode == "proxy") { "prover.transport egress requires mode proxy" }
         require(mode != "proxy" || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
     }
 

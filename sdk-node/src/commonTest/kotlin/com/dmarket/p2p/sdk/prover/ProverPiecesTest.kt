@@ -10,10 +10,14 @@ class ProverPiecesTest {
     @Test
     fun proxy_mode_is_opt_in_and_survives_sdk_config_parsing() {
         assertEquals("mpc", ProverConfig().mode)
+        assertEquals("direct", ProverConfig().transport)
         val config = com.dmarket.p2p.sdk.SdkConfig.parse(
-            """{"managementSecret":"${"s".repeat(32)}","dataDir":"/data","prover":{"mode":"proxy"}}""",
+            """{"managementSecret":"${"s".repeat(32)}","dataDir":"/data","prover":{"mode":"proxy","transport":"egress"}}""",
         )
         assertEquals("proxy", config.prover.mode)
+        assertEquals("egress", config.prover.transport)
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(transport = "egress") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(transport = "auto") }
         kotlin.test.assertFailsWith<IllegalArgumentException> { ProverConfig(mode = "unknown") }
     }
 

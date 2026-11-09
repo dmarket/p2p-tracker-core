@@ -48,6 +48,10 @@ let token = '';
 process.on('message', (raw) => {
   const msg = JSON.parse(raw);
   if (msg.type === 'prove') {
+    if (mode === 'require-egress' && (msg.settings.transport !== 'egress' || msg.settings.mode !== 'proxy')) {
+      process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'other', detail: 'egress selection was not forwarded' } }));
+      return;
+    }
     if (mode === 'require-proxy' && msg.settings.mode !== 'proxy') {
       process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'other', detail: 'proxy mode was not forwarded' } }));
       return;

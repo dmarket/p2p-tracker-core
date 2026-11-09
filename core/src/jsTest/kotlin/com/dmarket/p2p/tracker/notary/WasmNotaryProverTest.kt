@@ -20,6 +20,7 @@ import kotlin.test.assertTrue
 /** Records calls and returns fixed presentation bytes; tracks peak concurrency. */
 private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {}) : WasmProverModule {
     var initializedMode: String? = null
+    var initializedTransport: String? = null
     var initCount = 0
     var proveCount = 0
     var inFlight = 0
@@ -33,6 +34,11 @@ private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {})
     override suspend fun initialize(threadCount: Int, mode: String) {
         initializedMode = mode
         initialize(threadCount)
+    }
+
+    override suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+        initializedTransport = transport
+        initialize(threadCount, mode)
     }
 
     override suspend fun prove(request: WasmProveRequest): ByteArray {
@@ -118,6 +124,25 @@ class WasmNotaryProverTest {
         assertEquals("proxy", module.initializedMode)
         assertEquals("proxy", module.lastRequests.single().mode)
         assertEquals(4_096, module.lastRequests.single().maxSentData)
+    }
+
+    @Test
+    fun egress_selection_reaches_initialization_and_the_request() = runTest {
+        val module = FakeWasmProverModule()
+        prover(module, config().copy(mode = "proxy", transport = "egress"))
+            .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
+        assertEquals("proxy", module.initializedMode)
+        assertEquals("egress", module.initializedTransport)
+        assertEquals("egress", module.lastRequests.single().transport)
+        val directOnly = object : WasmProverModule {
+            override suspend fun initialize(threadCount: Int) = error("must not initialize")
+            override suspend fun initialize(threadCount: Int, mode: String) = error("must not initialize")
+            override suspend fun prove(request: WasmProveRequest): ByteArray = error("must not prove")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            prover(directOnly, config().copy(mode = "proxy", transport = "egress"))
+                .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
+        }
     }
 
     @Test

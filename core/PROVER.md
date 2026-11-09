@@ -35,6 +35,47 @@ Injected `WasmProverModule` implementations retain their one-argument `initializ
 To support proxy they must also implement `initialize(threadCount, mode)` and honor the request's mode;
 the default overload rejects proxy so old modules cannot silently issue MPC instead.
 
+### Worker egress for proxy issuance
+
+Select `NotaryConfig(mode = "proxy", transport = "egress", notaryUrl = workerUrl)` on the browser/hosted
+path. Headless and SDK configuration use the same two choices under `prover`:
+
+```json
+{
+  "prover": {
+    "mode": "proxy",
+    "transport": "egress",
+    "notaryUrl": "wss://worker.example/notary/egress/v1",
+    "assetsDir": "/absolute/path/to/egress-capable/package"
+  }
+}
+```
+
+`transport` defaults to `"direct"`, including old IPC. Egress requires proxy mode; invalid combinations
+fail configuration. The Worker frontend goes in `notaryUrl`, not `proxyBaseUrl`. It must be enabled and
+paired with a Worker-transport notary pool whose target policy allows the proven read. The client never
+selects a target address or upstream notary, and never falls back to a direct route or MPC.
+
+The package must export `connectEgressNotary` as well as `createProxyProver` / `proveProxy`. A package
+that supports only direct proxy fails before WASM compilation, worker initialization or signing an
+upgrade. Use a matching egress-capable candidate through `assetsDir` or the verified build override;
+the unchanged default 1.0.1 pin cannot provide proxy or egress. Do not infer egress capability from
+`1.1.0` alone: earlier local candidates with that version provided only direct proxy.
+
+Egress uses `tlsn.notary.egress.v1` and the existing proxy proof/disclosure API. Browser bearer tokens
+and injected `WebSocketImpl` authentication work as before. A signed gateway must sign the actual
+Worker-facing URL and mint the user Authorization credential before forwarding to the Worker. The
+Worker service credential belongs only in Worker/notary configuration, never in tracker options.
+WSS is required except loopback WS fixtures; credentials, query strings and fragments in the URL are
+rejected by the connector. Its 240-second total session deadline may be shortened by the server;
+existing host/child deadlines still apply and can end the operation earlier.
+
+Traces identify `mode=proxy transport=egress target=worker`. The tracker aborts the channel on success,
+failure or cancellation; a directional FIN alone would not release a session blocked on credits. It
+also closes the owned WebSocket if cancelled before the egress HELLO arrives. The host target connector
+is unused. Injected prover modules must implement `initialize(threadCount, mode, transport)` to opt in;
+the default overload rejects egress so older modules cannot silently use direct routing.
+
 ### Building with an unpublished candidate
 
 The registry pin is unchanged. A local candidate build requires all three Gradle properties together:

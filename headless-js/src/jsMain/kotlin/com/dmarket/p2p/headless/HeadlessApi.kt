@@ -191,6 +191,7 @@ private fun proofHost(options: HeadlessOptions, prover: ProverOptions, files: Pr
             threadCount = prover.threadCount,
             assetsDir = files.assetsDir,
             mode = prover.mode,
+            transport = prover.transport,
         ),
         clock = clock,
         limits = ProverLimits(prover.connectDeadline, prover.sessionDeadline, prover.proofsPerChild),

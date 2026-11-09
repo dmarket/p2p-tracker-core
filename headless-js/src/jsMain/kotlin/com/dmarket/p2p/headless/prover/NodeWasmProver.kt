@@ -67,6 +67,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
                 threadCount = settings.threadCount,
                 rootStorePem = settings.rootStorePem,
                 mode = settings.mode,
+                transport = settings.transport,
             ),
         )
         val started = nodeProcess.cpuUsage()

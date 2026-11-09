@@ -95,6 +95,7 @@ private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): Node
             threadCount = config.prover.threadCount,
             assetsDir = assets,
             mode = config.prover.mode,
+            transport = config.prover.transport,
         )
     val script = NodeModules.process.argv[1] as String
     val limits = ProverLimits(proofsPerChild = config.prover.proofsPerChild)

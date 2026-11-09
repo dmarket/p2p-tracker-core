@@ -12,6 +12,7 @@ import kotlin.time.Duration.Companion.milliseconds
  *
  * Like every option, a refusal names the field and never its value.
  *
+ * @property transport `direct` (default) or `egress` (proxy only); use the Worker frontend as `notaryUrl`.
  * @property mode `mpc` (default) or `proxy`; proxy needs capable assets and an enabled, routed notary. No fallback.
  * @property notaryUrl the notary proofs go to, and the one each upgrade is signed for; the tracker's `notaryUrl`
  *   when unset.
@@ -31,11 +32,13 @@ internal class ProverOptions(
     val connectDeadline: Duration,
     val sessionDeadline: Duration,
     val mode: String,
+    val transport: String,
 ) {
     companion object {
         private val KNOWN = setOf(
             "notaryUrl",
             "mode",
+            "transport",
             "maxConcurrency",
             "proofsPerChild",
             "threadCount",
@@ -56,8 +59,12 @@ internal class ProverOptions(
             require(assetsDir == null || assetsDir.isNotBlank()) { "prover.assetsDir must be a non-empty string" }
             val mode = HeadlessOptions.optional<String>(prover.mode, "prover.mode", "string") ?: "mpc"
             require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
+            val transport = HeadlessOptions.optional<String>(prover.transport, "prover.transport", "string") ?: "direct"
+            require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
+            require(transport != "egress" || mode == "proxy") { "prover.transport egress requires mode proxy" }
             return ProverOptions(
                 mode = mode,
+                transport = transport,
                 notaryUrl = notaryUrl,
                 maxConcurrency = whole(prover.maxConcurrency, "prover.maxConcurrency", 1..HostedNotaryProver.MAX_CONCURRENCY) ?: 1,
                 proofsPerChild = whole(prover.proofsPerChild, "prover.proofsPerChild", 1..ProverSettings.MAX_PROOFS_PER_CHILD) ?: 1,

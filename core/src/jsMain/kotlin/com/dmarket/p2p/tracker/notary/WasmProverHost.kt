@@ -18,7 +18,7 @@ import kotlin.js.Promise
  *   wasm init as `module_or_path`. Called once, by the first [BundledWasmProverModule.initialize] that loads the
  *   modules. `null`: the init fetches the `.wasm` next to `client_wasm.js` itself.
  * @property notaryWebSocket supplies the `WebSocket` constructor for **one** notary connect, passed to the
- *   transport's `connectNotary` as its `WebSocketImpl`. Called right before every connect, so a constructor that
+ *   transport's `connectNotary` or `connectEgressNotary` as its `WebSocketImpl`. Called right before every connect, so a constructor that
  *   carries signed upgrade headers carries fresh ones. The transport still offers `bearer.<token>` in the
  *   subprotocol list; a constructor that authenticates by headers drops that entry. `null`: the global
  *   `WebSocket`, i.e. the bearer subprotocol.

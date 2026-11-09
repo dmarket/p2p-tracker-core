@@ -103,6 +103,16 @@ class ProofFacadeTest {
     }
 
     @Test
+    fun public_egress_transport_reaches_the_forked_child() = runTest {
+        dealToProve()
+        val handle = tracker(fakeProverPackage("require-egress"), proverOptions("mode" to "proxy", "transport" to "egress"))
+        ready(handle)
+        cycle(handle).await()
+        assertNull(outcomes().single().failure)
+        assertNothingSecret()
+    }
+
+    @Test
     fun public_proxy_mode_reaches_the_forked_child() = runTest {
         dealToProve()
         val handle = tracker(fakeProverPackage("require-proxy"), proverOptions("mode" to "proxy"))
