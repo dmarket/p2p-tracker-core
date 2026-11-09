@@ -2,6 +2,7 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.STEAM_ID
 import com.dmarket.p2p.headless.steamToken
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.notary.NotaryProofRequest
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import kotlin.test.Test
@@ -20,15 +21,17 @@ class ProverPiecesTest {
         assertFalse("\"mode\"" in oldJson)
         assertFalse("\"transport\"" in oldJson)
         assertEquals("direct", (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.transport)
-        assertEquals("mpc", (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.mode)
-        val proxy = old.copy(settings = settings.copy(mode = "proxy"))
+        assertEquals(IssuanceMode.MPC, (ProverIpc.toChild(oldJson) as ToChild.Prove).settings.mode)
+        val proxy = old.copy(settings = settings.copy(mode = IssuanceMode.PROXY))
         assertEquals(proxy, ProverIpc.toChild(ProverIpc.encode(proxy)))
         val egress = proxy.copy(settings = proxy.settings.copy(transport = "egress"))
         assertEquals(egress, ProverIpc.toChild(ProverIpc.encode(egress)))
         kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(transport = "egress") }
         kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(transport = "auto") }
-        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "unknown") }
-        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = "proxy", targetAddress = "localhost:443") }
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            ProverIpc.toChild(oldJson.replace("\"settings\":{", "\"settings\":{\"mode\":\"unknown\","))
+        }
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = IssuanceMode.PROXY, targetAddress = "localhost:443") }
     }
 
     @Test

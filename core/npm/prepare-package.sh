@@ -58,6 +58,11 @@ if [[ ! -f "$GENERATED" ]]; then
   exit 1
 fi
 
+if [[ -f "$DIST_DIR/TLSN_TEST_ONLY" ]]; then
+  echo "ERROR: local prover tarball builds are testing-only; publish and pin an upstream snapshot before shipping." >&2
+  exit 1
+fi
+
 VERSION_NAME="$(grep -E '^VERSION_NAME=' "$REPO_ROOT/gradle.properties" | head -n1 | cut -d= -f2 | tr -d '[:space:]')"
 if [[ -z "${VERSION_NAME:-}" ]]; then
   echo "ERROR: VERSION_NAME not found in gradle.properties." >&2

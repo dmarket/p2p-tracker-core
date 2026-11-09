@@ -66,7 +66,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
                 notaryUrl = settings.notaryUrl,
                 threadCount = settings.threadCount,
                 rootStorePem = settings.rootStorePem,
-                mode = settings.mode,
+                mode = settings.mode.wireName,
                 transport = settings.transport,
             ),
         )

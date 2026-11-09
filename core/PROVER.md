@@ -26,14 +26,18 @@ Tracing identifies `mode=proxy target=notary`. Worker lifecycle, cross-origin is
 and concurrency limits still apply.
 
 **Assets:** the default pinned 1.0.1 package supports MPC only. Selecting proxy with old assets fails
-before WASM compilation, worker initialization or the notary upgrade. Supply a proxy-capable package
-(such as the 1.1.0 candidate from the matching steam-provenance branch) using headless/SDK `assetsDir`,
-or build both distributions with the verified candidate override below. Proxy support is additive;
-these changes do not imply that a new prover release or a proxy-enabled production notary is deployed.
+before WASM compilation, worker initialization or the notary upgrade. Headless checks the actual JS
+exports when creating the tracker; the SDK checks once at startup and disables proving with a logged
+reason on incompatible assets. The bounded startup probe imports JS only and never initializes WASM.
+Supply a proxy-capable package (such as the 1.1.0 candidate from the matching steam-provenance branch)
+using headless/SDK `assetsDir`, or build both distributions for local testing with the verified candidate
+override below. Proxy support is additive; these changes do not imply that a new prover release or a
+proxy-enabled production notary is deployed.
 
 Injected `WasmProverModule` implementations retain their one-argument `initialize` entry point.
-To support proxy they must also implement `initialize(threadCount, mode)` and honor the request's mode;
-the default overload rejects proxy so old modules cannot silently issue MPC instead.
+To support proxy they must also implement `initialize(threadCount, mode: IssuanceMode)` and retain that
+mode for subsequent proofs; the default overload rejects proxy so old modules cannot silently issue
+MPC instead.
 
 ### Worker egress for proxy issuance
 
@@ -78,11 +82,14 @@ the default overload rejects egress so older modules cannot silently use direct 
 
 ### Building with an unpublished candidate
 
-The registry pin is unchanged. A local candidate build requires all three Gradle properties together:
+The registry pin is unchanged. Local candidate builds are **testing-only**: both distributions carry
+`private: true` and a `TLSN_TEST_ONLY` marker, and release packaging refuses them. To ship a candidate,
+publish it from steam-provenance as a release or branch snapshot (`-SNAPSHOT-<label>`) and pin its exact
+registry version and integrity using the normal procedure below.
 
 Kotlin/JS caches transitive npm metadata in compiled libraries. When switching between the registry
 pin and a candidate (or between candidates), run `./gradlew clean` first, then refresh the untracked
-Yarn lock with the same three properties used for the build:
+Yarn lock with all three required properties used for the build:
 
 ```bash
 ./gradlew clean

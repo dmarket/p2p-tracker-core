@@ -3,6 +3,7 @@ package com.dmarket.p2p.headless
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -31,7 +32,7 @@ internal class ProverOptions(
     val assetsDir: String?,
     val connectDeadline: Duration,
     val sessionDeadline: Duration,
-    val mode: String,
+    val mode: IssuanceMode,
     val transport: String,
 ) {
     companion object {
@@ -57,11 +58,10 @@ internal class ProverOptions(
             }
             val assetsDir = HeadlessOptions.optional<String>(prover.assetsDir, "prover.assetsDir", "string")
             require(assetsDir == null || assetsDir.isNotBlank()) { "prover.assetsDir must be a non-empty string" }
-            val mode = HeadlessOptions.optional<String>(prover.mode, "prover.mode", "string") ?: "mpc"
-            require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
+            val mode = IssuanceMode.fromWire(HeadlessOptions.optional<String>(prover.mode, "prover.mode", "string") ?: "mpc")
             val transport = HeadlessOptions.optional<String>(prover.transport, "prover.transport", "string") ?: "direct"
             require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
-            require(transport != "egress" || mode == "proxy") { "prover.transport egress requires mode proxy" }
+            require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
             return ProverOptions(
                 mode = mode,
                 transport = transport,

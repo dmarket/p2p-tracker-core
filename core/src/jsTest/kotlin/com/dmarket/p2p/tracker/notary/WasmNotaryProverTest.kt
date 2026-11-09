@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 
 /** Records calls and returns fixed presentation bytes; tracks peak concurrency. */
 private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {}) : WasmProverModule {
-    var initializedMode: String? = null
+    var initializedMode: IssuanceMode? = null
     var initializedTransport: String? = null
     var initCount = 0
     var proveCount = 0
@@ -31,12 +31,12 @@ private class FakeWasmProverModule(private val onEnter: suspend () -> Unit = {})
         initCount++
     }
 
-    override suspend fun initialize(threadCount: Int, mode: String) {
+    override suspend fun initialize(threadCount: Int, mode: IssuanceMode) {
         initializedMode = mode
         initialize(threadCount)
     }
 
-    override suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+    override suspend fun initialize(threadCount: Int, mode: IssuanceMode, transport: String) {
         initializedTransport = transport
         initialize(threadCount, mode)
     }
@@ -121,8 +121,7 @@ class WasmNotaryProverTest {
         val module = FakeWasmProverModule()
         prover(module, config().copy(mode = "proxy", maxSentData = 4_096))
             .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
-        assertEquals("proxy", module.initializedMode)
-        assertEquals("proxy", module.lastRequests.single().mode)
+        assertEquals(IssuanceMode.PROXY, module.initializedMode)
         assertEquals(4_096, module.lastRequests.single().maxSentData)
     }
 
@@ -131,12 +130,12 @@ class WasmNotaryProverTest {
         val module = FakeWasmProverModule()
         prover(module, config().copy(mode = "proxy", transport = "egress"))
             .proveTransition(binding(), TradeStatusSource.OFFER, fakeSteamCredential())
-        assertEquals("proxy", module.initializedMode)
+        assertEquals(IssuanceMode.PROXY, module.initializedMode)
         assertEquals("egress", module.initializedTransport)
         assertEquals("egress", module.lastRequests.single().transport)
         val directOnly = object : WasmProverModule {
             override suspend fun initialize(threadCount: Int) = error("must not initialize")
-            override suspend fun initialize(threadCount: Int, mode: String) = error("must not initialize")
+            override suspend fun initialize(threadCount: Int, mode: IssuanceMode) = error("must not initialize")
             override suspend fun prove(request: WasmProveRequest): ByteArray = error("must not prove")
         }
         assertFailsWith<IllegalArgumentException> {

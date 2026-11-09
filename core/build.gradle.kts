@@ -6,8 +6,8 @@ plugins {
     id("dmarket.kmp.library")
 }
 
-// An unpublished candidate may be tested/shipped from a local tarball, but only with an explicit
-// version and integrity anchor. The normal registry pin remains the default.
+// A local tarball is for testing only, with an explicit version and integrity anchor.
+// Distributions are marked private and release packaging refuses them; shipping uses the registry pin.
 val proverTarball = providers.gradleProperty("tlsnProverTarball").orNull?.let { file(it) }
 val proverVersion = providers.gradleProperty("tlsnProverVersion").orNull
 val proverIntegrity = providers.gradleProperty("tlsnProverIntegrity").orNull
@@ -190,6 +190,7 @@ val copyTlsnProver by tasks.registering(Copy::class) {
     group = "build"
     description = "Copies the verified TLSN prover's pkg/ + transport/ + VERSION into the JS library distribution."
     dependsOn(verifyTlsnProver)
+    markProverCandidate(proverTarball != null)
     from(verifyTlsnProver.flatMap { it.packageDir }) {
         include(TlsnProverPin.SHIPPED)
     }

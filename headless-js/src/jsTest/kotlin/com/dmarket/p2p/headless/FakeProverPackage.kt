@@ -22,6 +22,12 @@ suspend fun fakeProverPackage(mode: String, report: String = "", assets: Boolean
     if (assets) {
         mkdirs(join(root, "pkg"))
         mkdirs(join(join(root, "transport"), "dist"))
+        write(join(root, "package.json"), """{"type":"module"}""")
+        write(join(join(root, "pkg"), "client_wasm.js"), "export function proveProxy() { throw new Error('must not prove'); }")
+        write(
+            join(join(join(root, "transport"), "dist"), "index.js"),
+            "export function createProxyProver() { throw new Error('must not initialize'); } export function connectEgressNotary() {}",
+        )
         write(join(join(root, "pkg"), "client_wasm_bg.wasm"), "")
         write(join(join(join(root, "transport"), "dist"), "node.js"), "")
     }

@@ -175,8 +175,8 @@ class WasmProverHostTest {
                 onTargetResponse = { status = it },
             ),
         )
-        module.initialize(2, "proxy")
-        val proof = module.prove(request().copy(mode = "proxy", rootStorePem = "fixture roots"))
+        module.initialize(2, IssuanceMode.PROXY)
+        val proof = module.prove(request().copy(rootStorePem = "fixture roots"))
         assertContentEquals(byteArrayOf(9, 9), proof)
         assertEquals(200, status)
         assertEquals(
@@ -206,9 +206,9 @@ class WasmProverHostTest {
     @Test
     fun proxy_failure_closes_the_notary_without_target_or_fallback() = runTest {
         val module = BundledWasmProverModule()
-        module.initialize(2, "proxy")
+        module.initialize(2, IssuanceMode.PROXY)
         seams().failProof = true
-        val error = assertFailsWith<Throwable> { module.prove(request().copy(mode = "proxy")) }
+        val error = assertFailsWith<Throwable> { module.prove(request()) }
         assertContains(error.message.orEmpty(), "proxy rejected")
         assertEquals("notary.close", calls().last())
         assertFalse(calls().any { it.startsWith("connectProxy") })
@@ -217,8 +217,8 @@ class WasmProverHostTest {
     @Test
     fun proxy_status_rejection_also_closes_the_notary() = runTest {
         val module = BundledWasmProverModule(host = WasmProverHost(onTargetResponse = { error("decline response") }))
-        module.initialize(2, "proxy")
-        assertFailsWith<IllegalStateException> { module.prove(request().copy(mode = "proxy")) }
+        module.initialize(2, IssuanceMode.PROXY)
+        assertFailsWith<IllegalStateException> { module.prove(request()) }
         assertEquals("notary.close", calls().last())
     }
 
@@ -243,7 +243,7 @@ class WasmProverHostTest {
                     wasmModule = { error("must check capabilities before compiling") },
                 ),
             )
-            val failure = assertFailsWith<IllegalStateException> { module.initialize(2, "proxy") }
+            val failure = assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY) }
             assertContains(failure.message.orEmpty(), "proxy-capable")
             assertEquals(emptyList(), calls())
         }
@@ -253,8 +253,7 @@ class WasmProverHostTest {
     fun an_initialized_module_cannot_silently_switch_protocols() = runTest {
         val module = BundledWasmProverModule()
         module.initialize(2)
-        assertFailsWith<IllegalStateException> { module.prove(request().copy(mode = "proxy")) }
-        assertFailsWith<IllegalStateException> { module.initialize(2, "proxy") }
+        assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY) }
         assertFalse(calls().any { it.startsWith("connect") })
     }
 
@@ -267,7 +266,7 @@ class WasmProverHostTest {
                 connectTarget = { _, _ -> error("egress must never dial the target") },
             ),
         )
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         seams().openSocket = true
         assertContentEquals(byteArrayOf(9, 9), module.prove(egressRequest()))
         assertEquals(listOf("createProxyProver", "init()", "initialize(2)", "connectEgressNotary", "proveProxy", "egress.abort"), calls())
@@ -290,7 +289,7 @@ class WasmProverHostTest {
                 js("(function (url, protocols) { globalThis.__proverSeams.socketArgs = [url, protocols]; })")
             }),
         )
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         seams().openSocket = true
         repeat(2) { module.prove(egressRequest()) }
         assertEquals(2, sockets)
@@ -302,7 +301,7 @@ class WasmProverHostTest {
     @Test
     fun egress_refusals_never_fall_back_and_failures_abort_without_waiting_for_fin() = runTest {
         val module = BundledWasmProverModule()
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         seams().failConnect = true
         assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
         assertEquals("connectEgressNotary", calls().last())
@@ -318,7 +317,7 @@ class WasmProverHostTest {
     @Test
     fun egress_response_hook_failure_aborts() = runTest {
         val module = BundledWasmProverModule(host = WasmProverHost(onTargetResponse = { error("decline response") }))
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
         assertEquals("egress.abort", calls().last())
     }
@@ -326,7 +325,7 @@ class WasmProverHostTest {
     @Test
     fun egress_cancellation_aborts_an_active_proof() = runTest {
         val module = BundledWasmProverModule()
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         val entered = CompletableDeferred<Unit>()
         seams().onProve = {
             entered.complete(Unit)
@@ -355,7 +354,7 @@ class WasmProverHostTest {
                 js("(function () { this.close = function () { globalThis.__proverSeams.calls.push('socket.close'); }; })")
             }),
         )
-        module.initialize(2, "proxy", "egress")
+        module.initialize(2, IssuanceMode.PROXY, "egress")
         val proof = async { module.prove(egressRequest()) }
         connected.await()
         proof.cancel()
@@ -381,7 +380,7 @@ class WasmProverHostTest {
         )
         assertContains(
             assertFailsWith<IllegalStateException> {
-                module.initialize(2, "proxy", "egress")
+                module.initialize(2, IssuanceMode.PROXY, "egress")
             }.message.orEmpty(),
             "egress-capable",
         )
@@ -391,15 +390,15 @@ class WasmProverHostTest {
     @Test
     fun invalid_or_mismatched_transports_fail_before_network() = runTest {
         val module = BundledWasmProverModule()
-        assertFailsWith<IllegalArgumentException> { module.initialize(2, "mpc", "egress") }
-        assertFailsWith<IllegalArgumentException> { module.initialize(2, "proxy", "auto") }
-        module.initialize(2, "proxy")
-        assertFailsWith<IllegalStateException> { module.initialize(2, "proxy", "egress") }
+        assertFailsWith<IllegalArgumentException> { module.initialize(2, IssuanceMode.MPC, "egress") }
+        assertFailsWith<IllegalArgumentException> { module.initialize(2, IssuanceMode.PROXY, "auto") }
+        module.initialize(2, IssuanceMode.PROXY)
+        assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY, "egress") }
         assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
         assertFalse(calls().any { it.startsWith("connect") })
     }
 
-    private fun egressRequest() = request().copy(mode = "proxy", transport = "egress", notaryUrl = "wss://worker.test/notary/egress/v1")
+    private fun egressRequest() = request().copy(transport = "egress", notaryUrl = "wss://worker.test/notary/egress/v1")
 
     private fun seams(): dynamic = js("globalThis.__proverSeams")
 

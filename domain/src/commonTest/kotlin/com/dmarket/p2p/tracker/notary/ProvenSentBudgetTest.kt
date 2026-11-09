@@ -54,6 +54,21 @@ class ProvenSentBudgetTest {
     /** The path bytes the prover really sends, i.e. with the placeholder replaced by a token of [tokenLength]. */
     private fun ProvenReadSpec.sentPathLength(tokenLength: Int) = path.length - TOKEN_PLACEHOLDER.length + tokenLength
 
+    @Test
+    fun proxy_keeps_the_configured_ceiling_and_per_read_overrides_for_every_catalog_kind() {
+        val proxy = communityConfig.copy(mode = "proxy", maxSentData = 4_096)
+        for (kind in ProvenReadKind.entries) {
+            val spec = specFor(kind)
+            for (tokenLength in listOf(0, 522, 10_000)) {
+                assertEquals(
+                    spec.maxSentDataOverride ?: proxy.maxSentData,
+                    ProvenSentBudget.sentBudget(spec, proxy, tokenLength),
+                    "$kind with token length $tokenLength",
+                )
+            }
+        }
+    }
+
     // ---- the derivation ----------------------------------------------------------------------------
 
     @Test

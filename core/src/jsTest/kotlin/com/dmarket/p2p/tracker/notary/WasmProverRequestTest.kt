@@ -44,7 +44,7 @@ class WasmProverRequestTest {
 
     @Test
     fun proxy_configuration_keeps_library_capture_defaults_and_omits_mpc_fields() {
-        val config = proxyIssuanceConfig(request().copy(mode = "proxy", maxRecvRecordsOnline = 7))
+        val config = proxyIssuanceConfig(request().copy(maxRecvRecordsOnline = 7))
         assertEquals(undefined, config.rootStore)
         assertEquals(undefined, config.maxSentData)
         assertEquals(undefined, config.maxRecvRecordsOnline)

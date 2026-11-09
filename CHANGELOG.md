@@ -25,8 +25,10 @@ GitHub Release.
   `"proxy"`, default MPC), propagated over child IPC. Proxy opens only the notary channel, preserves
   presentation redaction and response handling, and rejects old assets before initialization or network
   use. Requires proxy-capable assets and an enabled, routed notary; there is no automatic fallback.
-- Verified local prover-tarball build override for testing and bundling unpublished candidates. The
-  default 1.0.1 pin remains MPC-only; see `core/PROVER.md` for setup and integrity checks.
+- Verified local prover-tarball build override for testing unpublished candidates only. Candidate
+  distributions are private and release packaging refuses them; shipping requires a published, pinned
+  upstream release or snapshot. The default 1.0.1 pin remains MPC-only; see `core/PROVER.md` for setup
+  and integrity checks.
 
 ## [1.2.0-beta] - 2026-11-03
 

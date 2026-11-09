@@ -110,11 +110,10 @@ class WasmNotaryProver(
                 null
             }
 
-            module.initialize(config.threadCount, config.mode, config.transport)
+            module.initialize(config.threadCount, config.issuanceMode, config.transport)
             val bytes = module.prove(
                 WasmProveRequest(
                     notaryUrl = config.notaryUrl,
-                    mode = config.mode,
                     transport = config.transport,
                     notaryToken = notaryToken,
                     proxyBaseUrl = config.proxyBaseUrl,
@@ -126,11 +125,7 @@ class WasmNotaryProver(
                     // the one input it needs is the token length and the spec is credential-free by
                     // construction. That is not the drift risk the mapper comment warns about: the rule is a
                     // pure tested object, so a second platform's prover calls it rather than re-deriving it.
-                    maxSentData = if (config.mode == "proxy") {
-                        spec.maxSentDataOverride ?: config.maxSentData
-                    } else {
-                        ProvenSentBudget.sentBudget(spec, config, steamAccessToken.length)
-                    },
+                    maxSentData = ProvenSentBudget.sentBudget(spec, config, steamAccessToken.length),
                     maxRecvData = spec.maxRecvDataOverride ?: config.maxRecvData,
                     // No `?: config` fallback, unlike the two above: the mapper already resolved this one
                     // against the config, because it is a learned *minimum* rather than a per-read override.

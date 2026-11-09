@@ -7,6 +7,7 @@ import com.dmarket.p2p.headless.prover.NodeWasmProver
 import com.dmarket.p2p.headless.prover.PROVER_CHILD_ARG
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
+import com.dmarket.p2p.headless.prover.checkProverAssets
 import com.dmarket.p2p.headless.prover.proverAssetsDir
 import com.dmarket.p2p.headless.prover.runProverChild
 import com.dmarket.p2p.sdk.api.ManagementApi
@@ -84,9 +85,16 @@ fun main() {
  * The host that forks this same script as a prover process per proof, or `null` (and a logged reason) when the
  * prover's files cannot be found.
  */
-private fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): NodeProofHostFactory? {
+internal fun proofHostFactory(config: SdkConfig, log: SdkLog, clock: Clock): NodeProofHostFactory? {
+    if (!config.prover.enabled) return null
     val assets = proverAssetsDir(config.prover.assetsDir) ?: run {
         log.error("prover files not found: no proofs will be made", "assetsDir" to config.prover.assetsDir)
+        return null
+    }
+    try {
+        checkProverAssets(assets, config.prover.mode, config.prover.transport)
+    } catch (error: IllegalStateException) {
+        log.error("prover assets unsupported: no proofs will be made", "reason" to error.message)
         return null
     }
     val settings =

@@ -60,6 +60,7 @@ val headlessPackageFiles = tasks.register<Copy>("headlessPackageFiles") {
     group = "build"
     description = "Copies the TLSN prover, the prover child script and the package types into the JS library distribution."
     dependsOn(":core:verifyTlsnProver")
+    markProverCandidate(providers.gradleProperty("tlsnProverTarball").isPresent)
     val npm = kotlin.js().compilations.getByName("main").npmProject
     from(npm.nodeModulesDir.map { it.dir(TlsnProverPin.PACKAGE) }) {
         include(TlsnProverPin.SHIPPED)

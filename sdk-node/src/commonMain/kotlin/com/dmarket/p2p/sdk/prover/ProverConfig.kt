@@ -3,6 +3,7 @@ package com.dmarket.p2p.sdk.prover
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -29,13 +30,12 @@ data class ProverConfig(
     @SerialName("threadCount") val threadCount: Int = DEFAULT_THREADS,
     @SerialName("peakMemoryMb") val peakMemoryMb: Int = DEFAULT_PEAK_MB,
     @SerialName("assetsDir") val assetsDir: String? = null,
-    @SerialName("mode") val mode: String = "mpc",
+    @SerialName("mode") val mode: IssuanceMode = IssuanceMode.MPC,
     @SerialName("transport") val transport: String = "direct",
 ) {
     init {
-        require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
         require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
-        require(transport != "egress" || mode == "proxy") { "prover.transport egress requires mode proxy" }
+        require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
         require(notaryUrl.startsWith("wss://") || notaryUrl.startsWith("ws://")) { "prover.notaryUrl must be a ws:// or wss:// URL" }
         require(maxConcurrency in 1..HostedNotaryProver.MAX_CONCURRENCY) {
             "prover.maxConcurrency must be 1..${HostedNotaryProver.MAX_CONCURRENCY}"

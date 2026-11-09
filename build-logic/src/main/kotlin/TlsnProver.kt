@@ -3,6 +3,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Optional
@@ -160,5 +161,30 @@ abstract class VerifyTlsnProver : DefaultTask() {
             "GIT_SHA=$gitSha WASM_SHA256=$wasmSha TRANSPORT_VERSION=${provenance["TRANSPORT_VERSION"]}"
         stamp.get().asFile.writeText(verdict + "\n")
         logger.lifecycle(verdict)
+    }
+}
+
+/** Keep locally overridden distributions usable for tests but refused by npm and release packaging. */
+fun Copy.markProverCandidate(testOnly: Boolean) {
+    inputs.property("testOnlyProver", testOnly)
+    // The distribution task can regenerate package.json without changing the copied prover files.
+    outputs.upToDateWhen { !testOnly }
+    doLast {
+        val dir = (this as Copy).destinationDir
+        val marker = dir.resolve("TLSN_TEST_ONLY")
+        val manifest = dir.resolve("package.json")
+        if (testOnly || marker.exists()) {
+            if (manifest.isFile) {
+                @Suppress("UNCHECKED_CAST")
+                val fields = groovy.json.JsonSlurper().parse(manifest) as MutableMap<String, Any?>
+                if (testOnly) fields["private"] = true else fields.remove("private")
+                manifest.writeText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(fields)) + "\n")
+            }
+            if (testOnly) {
+                marker.writeText("Local prover tarball: testing only. Publish and pin an upstream snapshot before shipping.\n")
+            } else {
+                marker.delete()
+            }
+        }
     }
 }

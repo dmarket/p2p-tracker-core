@@ -1,5 +1,6 @@
 package com.dmarket.p2p.headless.prover
 
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.notary.NotaryProofRequest
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import kotlinx.serialization.SerialName
@@ -25,14 +26,13 @@ data class ProverSettings(
     @SerialName("assetsDir") val assetsDir: String,
     @SerialName("rootStorePem") val rootStorePem: String? = null,
     @SerialName("targetAddress") val targetAddress: String? = null,
-    @SerialName("mode") val mode: String = "mpc",
+    @SerialName("mode") val mode: IssuanceMode = IssuanceMode.MPC,
     @SerialName("transport") val transport: String = "direct",
 ) {
     init {
-        require(mode == "mpc" || mode == "proxy") { "prover.mode must be mpc or proxy" }
         require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
-        require(transport != "egress" || mode == "proxy") { "prover.transport egress requires mode proxy" }
-        require(mode != "proxy" || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
+        require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
+        require(mode != IssuanceMode.PROXY || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
     }
 
     companion object {

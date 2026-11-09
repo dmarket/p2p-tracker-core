@@ -63,7 +63,6 @@ data class WasmProveRequest(
      * `SESSION_ID_PLACEHOLDER`.
      */
     val steamSessionId: String? = null,
-    val mode: String = "mpc",
     val transport: String = "direct",
 ) {
     /**
@@ -77,7 +76,7 @@ data class WasmProveRequest(
      * blob and pasting it into every log line of a failing proof helps nobody.
      */
     override fun toString(): String = "WasmProveRequest(notaryUrl=$notaryUrl, notaryToken=<redacted>, proxyBaseUrl=$proxyBaseUrl, " +
-        "mode=$mode, transport=$transport, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
+        "transport=$transport, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
         "maxRecvDataOnline=$maxRecvDataOnline, maxRecvRecordsOnline=$maxRecvRecordsOnline, " +
         "rootStorePem=${rootStorePem?.let { "<${it.length} chars>" }}, " +
         "steamSessionCookie=${steamSessionCookie?.let { "<redacted>" }}, " +
@@ -100,13 +99,13 @@ interface WasmProverModule {
     suspend fun initialize(threadCount: Int)
 
     /** Select the issuance protocol before starting workers; old injected modules retain their setup. */
-    suspend fun initialize(threadCount: Int, mode: String) {
-        require(mode == "mpc") { "this injected prover module does not support proxy issuance" }
+    suspend fun initialize(threadCount: Int, mode: IssuanceMode) {
+        require(mode == IssuanceMode.MPC) { "this injected prover module does not support proxy issuance" }
         initialize(threadCount)
     }
 
     /** Old injected modules must opt into egress explicitly, never silently use a direct route. */
-    suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+    suspend fun initialize(threadCount: Int, mode: IssuanceMode, transport: String) {
         require(transport == "direct") { "this injected prover module does not support egress transport" }
         initialize(threadCount, mode)
     }
@@ -163,35 +162,28 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
     private var transport: dynamic = null
     private var prover: dynamic = null
 
-    private var mode: String? = null
+    private var mode: IssuanceMode? = null
     private var notaryTransport: String? = null
 
-    override suspend fun initialize(threadCount: Int) = initialize(threadCount, "mpc")
+    override suspend fun initialize(threadCount: Int) = initialize(threadCount, IssuanceMode.MPC)
 
-    override suspend fun initialize(threadCount: Int, mode: String) = initialize(threadCount, mode, "direct")
+    override suspend fun initialize(threadCount: Int, mode: IssuanceMode) = initialize(threadCount, mode, "direct")
 
-    override suspend fun initialize(threadCount: Int, mode: String, transport: String) {
+    override suspend fun initialize(threadCount: Int, mode: IssuanceMode, transport: String) {
         require(transport == "direct" || transport == "egress") { "notary.transport must be direct or egress" }
-        require(transport != "egress" || mode == "proxy") { "notary.transport egress requires mode proxy" }
+        require(transport != "egress" || mode == IssuanceMode.PROXY) { "notary.transport egress requires mode proxy" }
         check(notaryTransport == null || notaryTransport == transport) { "a prover module cannot change transport after initialization" }
-        require(mode == "mpc" || mode == "proxy") { "notary.mode must be mpc or proxy" }
         check(this.mode == null || this.mode == mode) { "a prover module cannot change issuance mode after initialization" }
         if (prover == null) {
             val wasm = importModule(assetUrl("pkg/client_wasm.js")).await()
             this.transport = importModule(assetUrl("transport/dist/index.js")).await()
-            if (mode == "proxy") {
-                check(jsTypeOf(this.transport.createProxyProver) == "function" && jsTypeOf(wasm.proveProxy) == "function") {
-                    "proxy issuance unsupported: requires a proxy-capable steam-provenance package (missing createProxyProver or proveProxy)"
-                }
-            }
-            if (transport == "egress") {
-                check(jsTypeOf(this.transport.connectEgressNotary) == "function") {
-                    "egress transport unsupported: requires an egress-capable steam-provenance package (missing connectEgressNotary)"
-                }
-            }
+            ProverCapabilities(
+                proxy = jsTypeOf(this.transport.createProxyProver) == "function" && jsTypeOf(wasm.proveProxy) == "function",
+                egress = jsTypeOf(this.transport.connectEgressNotary) == "function",
+            ).requireSupport(mode, transport)
             val compiled = host.wasmModule?.invoke()
             val bound = if (compiled == null) wasm else withCompiledModule(wasm, compiled)
-            prover = if (mode == "proxy") this.transport.createProxyProver(bound) else this.transport.createProver(bound)
+            prover = if (mode == IssuanceMode.PROXY) this.transport.createProxyProver(bound) else this.transport.createProver(bound)
             this.mode = mode
             notaryTransport = transport
         }
@@ -202,7 +194,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
 
     override suspend fun prove(request: WasmProveRequest): ByteArray {
         check(notaryTransport == request.transport) { "initialize the prover with the request transport before proving" }
-        check(mode == request.mode) { "initialize the prover with the request issuance mode before proving" }
+        val mode = checkNotNull(mode) { "initialize the prover before proving" }
         val spec = request.spec
         // What this proof is ACTUALLY parameterised with, from the realm that parameterises it — emitted before
         // anything can fail, because the failures on this path are the ones where the config is the suspect.
@@ -213,7 +205,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
         // the byte pipe had dialled, which is the other half of the same verdict (a fixture root REPLACES the
         // Mozilla set, so a fixture PEM aimed at the real `api.steampowered.com` fails identically to no PEM
         // aimed at a fixture). The host-side log can say what it SENT; only this line says what arrived.
-        onProgress?.let { runCatching { it(issuanceLine(request, hostTarget = host.connectTarget != null)) } }
+        onProgress?.let { runCatching { it(issuanceLine(request, mode, hostTarget = host.connectTarget != null)) } }
 
         // A browser cannot read why the upgrade failed. The notary answers 400 / 401 / 503 with real
         // meaning behind the split, but JS is handed none of it: all three, and a bare TCP close, arrive
@@ -234,7 +226,7 @@ class BundledWasmProverModule(private val onProgress: ((String) -> Unit)? = null
             )
         }
         val out = try {
-            val issued = if (request.mode == "proxy") {
+            val issued = if (mode == IssuanceMode.PROXY) {
                 prover.proveProxy(notaryIo, proxyIssuanceConfig(request), httpRequest(request), progressCallback())
                     .unsafeCast<Promise<dynamic>>().await()
             } else {
@@ -564,42 +556,43 @@ internal fun lazyTargetChannel(connect: () -> Promise<dynamic>, onTrace: ((Strin
  * [hostTarget] says the target leg is the host's own connector ([WasmProverHost.connectTarget]), so the line
  * reports `target=host` instead of a proxy URL that nothing dials.
  */
-internal fun issuanceLine(request: WasmProveRequest, hostTarget: Boolean = false): String = buildString {
-    append("issuance serverName=").append(request.spec.serverName)
-    append(" mode=").append(request.mode)
-    when {
-        request.transport == "egress" -> append(" transport=egress target=worker")
-        request.mode == "proxy" -> append(" target=notary")
-        hostTarget -> append(" target=host")
-        else -> append(" proxy=").append(request.proxyBaseUrl)
+internal fun issuanceLine(request: WasmProveRequest, mode: IssuanceMode = IssuanceMode.MPC, hostTarget: Boolean = false): String =
+    buildString {
+        append("issuance serverName=").append(request.spec.serverName)
+        append(" mode=").append(mode.wireName)
+        when {
+            request.transport == "egress" -> append(" transport=egress target=worker")
+            mode == IssuanceMode.PROXY -> append(" target=notary")
+            hostTarget -> append(" target=host")
+            else -> append(" proxy=").append(request.proxyBaseUrl)
+        }
+        append(" rootStore=").append(request.rootStorePem?.let { "pem(${it.length} chars)" } ?: "mozilla")
+        append(" maxSent=").append(request.maxSentData)
+        append(" maxRecv=").append(request.maxRecvData)
+        if (mode == IssuanceMode.MPC) append(" maxRecvOnline=").append(request.maxRecvDataOnline)
+        // Spelled as the wasm sees it, like `rootStore` above: `default` is the honest word for an absent key,
+        // because the number it resolves to lives in the artifact and not in any config this line could read.
+        if (mode == IssuanceMode.MPC) append(" maxRecvRecordsOnline=").append(request.maxRecvRecordsOnline ?: "default")
+        // Stated separately because a host log pipeline will redact the param VALUE — the extension's scrubber
+        // rewrites every `access_token=…` it sees, and that eats the literal `{token}` too. So the path alone
+        // cannot answer "does this template still have its credential slot?", which is the question that matters:
+        // a template with no slot is a read that would go out UNAUTHENTICATED, and the core's own guard rejects
+        // it. This flag survives redaction.
+        append(" tokenSlot=").append(if (request.spec.needsAccessToken) "present" else "MISSING")
+        // Same reasoning as `tokenSlot`, for the credentials a community request adds: a host scrubber rewrites
+        // cookie-shaped values, so the filled header cannot answer "did this request carry a session at all?" —
+        // and for a cookie-authed read that is the difference between a proof and an attested 401 page.
+        if (request.spec.needsSessionCookie) {
+            append(" cookieSlot=").append(if (request.steamSessionCookie != null) "filled" else "MISSING")
+        }
+        if (request.spec.needsSessionId) {
+            append(" sessionIdSlot=").append(if (request.steamSessionId != null) "filled" else "MISSING")
+        }
+        // Byte count, never content: a write body is disclosed by the proof but that is no reason to put a CSRF
+        // token in a log. The size is what diagnoses an exceeded `maxSentData`, which fails every proof for a read.
+        request.spec.body?.let { append(" bodyBytes=").append(it.length) }
+        append(" ").append(request.spec.method).append(" ").append(request.spec.path)
     }
-    append(" rootStore=").append(request.rootStorePem?.let { "pem(${it.length} chars)" } ?: "mozilla")
-    append(" maxSent=").append(request.maxSentData)
-    append(" maxRecv=").append(request.maxRecvData)
-    if (request.mode == "mpc") append(" maxRecvOnline=").append(request.maxRecvDataOnline)
-    // Spelled as the wasm sees it, like `rootStore` above: `default` is the honest word for an absent key,
-    // because the number it resolves to lives in the artifact and not in any config this line could read.
-    if (request.mode == "mpc") append(" maxRecvRecordsOnline=").append(request.maxRecvRecordsOnline ?: "default")
-    // Stated separately because a host log pipeline will redact the param VALUE — the extension's scrubber
-    // rewrites every `access_token=…` it sees, and that eats the literal `{token}` too. So the path alone
-    // cannot answer "does this template still have its credential slot?", which is the question that matters:
-    // a template with no slot is a read that would go out UNAUTHENTICATED, and the core's own guard rejects
-    // it. This flag survives redaction.
-    append(" tokenSlot=").append(if (request.spec.needsAccessToken) "present" else "MISSING")
-    // Same reasoning as `tokenSlot`, for the credentials a community request adds: a host scrubber rewrites
-    // cookie-shaped values, so the filled header cannot answer "did this request carry a session at all?" —
-    // and for a cookie-authed read that is the difference between a proof and an attested 401 page.
-    if (request.spec.needsSessionCookie) {
-        append(" cookieSlot=").append(if (request.steamSessionCookie != null) "filled" else "MISSING")
-    }
-    if (request.spec.needsSessionId) {
-        append(" sessionIdSlot=").append(if (request.steamSessionId != null) "filled" else "MISSING")
-    }
-    // Byte count, never content: a write body is disclosed by the proof but that is no reason to put a CSRF
-    // token in a log. The size is what diagnoses an exceeded `maxSentData`, which fails every proof for a read.
-    request.spec.body?.let { append(" bodyBytes=").append(it.length) }
-    append(" ").append(request.spec.method).append(" ").append(request.spec.path)
-}
 
 /**
  * Render one wasm `ProveProgress` — `{ step, progress, message, source }` — as a single trace line.
