@@ -151,7 +151,8 @@ tasks.withType<org.jetbrains.kotlin.gradle.targets.js.ir.KotlinJsIrLink>()
 //   2. the installed package.json is TlsnProverPin.VERSION, and its gitHead equals VERSION's GIT_SHA;
 //   3. the files we ship are exactly the pkg/, transport/ and VERSION entries of the package's SHA256SUMS,
 //      and each matches it — an unlisted file fails, and so does a listed one that is missing;
-//   4. VERSION's WASM_SHA256 is the digest of the .wasm actually installed.
+//   4. VERSION's WASM_SHA256 is the digest of the .wasm actually installed;
+//   5. a stable VERSION_NAME (no -SNAPSHOT) does not pin a SNAPSHOT prover.
 // 2-4 check the package against itself and catch a damaged or half-replaced install; only 1 checks it
 // against this repository.
 val verifyTlsnProver by tasks.registering(VerifyTlsnProver::class) {
@@ -165,6 +166,7 @@ val verifyTlsnProver by tasks.registering(VerifyTlsnProver::class) {
     packageName.set(name)
     packageVersion.set(TlsnProverPin.VERSION)
     packageIntegrity.set(TlsnProverPin.INTEGRITY)
+    releaseVersion.set(providers.gradleProperty("VERSION_NAME"))
     packageDir.set(npm.nodeModulesDir.map { it.dir(name) })
     installLock.set(npm.nodeJsRoot.rootPackageDirectory.map { it.file("yarn.lock") })
     stamp.set(layout.buildDirectory.file("tlsn-prover/verified.txt"))
