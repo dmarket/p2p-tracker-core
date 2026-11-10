@@ -3,6 +3,7 @@ package com.dmarket.p2p.sdk.prover
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -10,6 +11,8 @@ import kotlinx.serialization.Serializable
  * How the SDK proves: the notary, and the prover processes' limits. Part of the config file (`"prover"`).
  *
  * @property enabled `false` makes no proof at all: a deal that requires one is reported unproven.
+ * @property transport `direct` (default) or `egress` (proxy only); egress uses the Worker frontend at `notaryUrl`.
+ * @property mode `mpc` (default) or `proxy`; proxy needs capable assets and an enabled, routed notary. No fallback.
  * @property notaryUrl the notary's WebSocket URL; its path is what each upgrade signs.
  * @property maxConcurrency proofs at once, 1 or 2; each holds a process of up to ~700 MB.
  * @property proofsPerChild proofs one prover process serves before it is ended, 1 to 5.
@@ -27,8 +30,12 @@ data class ProverConfig(
     @SerialName("threadCount") val threadCount: Int = DEFAULT_THREADS,
     @SerialName("peakMemoryMb") val peakMemoryMb: Int = DEFAULT_PEAK_MB,
     @SerialName("assetsDir") val assetsDir: String? = null,
+    @SerialName("mode") val mode: IssuanceMode = IssuanceMode.MPC,
+    @SerialName("transport") val transport: String = "direct",
 ) {
     init {
+        require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
+        require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
         require(notaryUrl.startsWith("wss://") || notaryUrl.startsWith("ws://")) { "prover.notaryUrl must be a ws:// or wss:// URL" }
         require(maxConcurrency in 1..HostedNotaryProver.MAX_CONCURRENCY) {
             "prover.maxConcurrency must be 1..${HostedNotaryProver.MAX_CONCURRENCY}"

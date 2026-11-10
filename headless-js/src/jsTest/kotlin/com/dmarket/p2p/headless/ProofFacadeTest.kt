@@ -1,6 +1,7 @@
 package com.dmarket.p2p.headless
 
 import com.dmarket.p2p.headless.node.join
+import com.dmarket.p2p.headless.node.nodeFs
 import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.headless.node.readFile
 import com.dmarket.p2p.headless.node.tempDir
@@ -100,6 +101,43 @@ class ProofFacadeTest {
             check(started.elapsedNow() < timeout) { "timed out: $seen" }
             delay(20.milliseconds)
         }
+    }
+
+    @Test
+    fun unsupported_proxy_or_egress_assets_fail_when_the_tracker_is_built() = runTest {
+        for ((file, replacement, transport, expected) in listOf(
+            listOf("pkg/client_wasm.js", "export const proveProxy = false;", "direct", "proxy-capable"),
+            listOf("transport/dist/index.js", "export const createProxyProver = false;", "direct", "proxy-capable"),
+            listOf("transport/dist/index.js", "export function createProxyProver() {}", "egress", "egress-capable"),
+        )) {
+            val root = fakeProverPackage("prove")
+            nodeFs.writeFileSync(join(root, file), replacement)
+            val error = assertFailsWith<IllegalStateException> {
+                tracker(root, proverOptions("mode" to "proxy", "transport" to transport))
+            }
+            assertTrue(expected in error.message.orEmpty(), error.message)
+            assertTrue(seen.isEmpty(), "no proof child or tracker activity before refusal")
+        }
+    }
+
+    @Test
+    fun public_egress_transport_reaches_the_forked_child() = runTest {
+        dealToProve()
+        val handle = tracker(fakeProverPackage("require-egress"), proverOptions("mode" to "proxy", "transport" to "egress"))
+        ready(handle)
+        cycle(handle).await()
+        assertNull(outcomes().single().failure)
+        assertNothingSecret()
+    }
+
+    @Test
+    fun public_proxy_mode_reaches_the_forked_child() = runTest {
+        dealToProve()
+        val handle = tracker(fakeProverPackage("require-proxy"), proverOptions("mode" to "proxy"))
+        ready(handle)
+        cycle(handle).await()
+        assertNull(outcomes().single().failure)
+        assertNothingSecret()
     }
 
     @Test

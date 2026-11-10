@@ -110,10 +110,11 @@ class WasmNotaryProver(
                 null
             }
 
-            module.initialize(config.threadCount)
+            module.initialize(config.threadCount, config.issuanceMode, config.transport)
             val bytes = module.prove(
                 WasmProveRequest(
                     notaryUrl = config.notaryUrl,
+                    transport = config.transport,
                     notaryToken = notaryToken,
                     proxyBaseUrl = config.proxyBaseUrl,
                     spec = spec,

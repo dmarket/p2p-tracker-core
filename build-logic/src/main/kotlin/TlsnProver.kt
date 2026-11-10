@@ -24,7 +24,7 @@ object TlsnProverPin {
     const val PACKAGE = "@dmarket/steam-provenance"
 
     // EXACT, never a range or a dist-tag: `^1.0.1` would also match every later release.
-    const val VERSION = "1.0.1"
+    const val VERSION = "1.1.0-SNAPSHOT.2"
 
     // The registry's `dist.integrity` for that version (`npm view <package>@<version> dist.integrity`): the
     // committed anchor for every byte the prover puts into our tarballs, checked by verifyTlsnProver against the
@@ -32,7 +32,7 @@ object TlsnProverPin {
     // kotlin-js-store/ is not tracked, and tracking it would freeze every transitive npm dependency of the
     // Kotlin/JS toolchain too — this pins the one npm input that ships, and nothing else.
     const val INTEGRITY =
-        "sha512-aXybXjvXMukEqpFTqnQtSS2SHQVwb9Wnvr/kb7IH/3hU8EtCc5fdloErRhbSMHsVyJO+jPnxGg3CCzP81NxhLQ=="
+        "sha512-hwbtqM7EaCpmUuROFuh1GRP8l97dGtGm1MQ5SNB+xPMidFJOJ6OQqEraXpR6gG8jPavs3nJK7NKTwEIuGyGWZg=="
 
     /** The paths a distribution takes from the installed package: the prover, its transport, and its provenance. */
     val SHIPPED = listOf("pkg/**", "transport/**", "VERSION")

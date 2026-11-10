@@ -43,6 +43,18 @@ class WasmProverRequestTest {
     )
 
     @Test
+    fun proxy_configuration_keeps_library_capture_defaults_and_omits_mpc_fields() {
+        val config = proxyIssuanceConfig(request().copy(maxRecvRecordsOnline = 7))
+        assertEquals(undefined, config.rootStore)
+        assertEquals(undefined, config.maxSentData)
+        assertEquals(undefined, config.maxRecvRecordsOnline)
+        assertEquals(undefined, config.limits.maxCiphertext)
+        assertEquals(undefined, config.limits.maxRecvRecords)
+        assertEquals(4_096, config.limits.maxSentData as Int)
+        assertEquals(16_384, config.limits.maxRecvData as Int)
+    }
+
+    @Test
     fun the_production_path_leaves_the_root_store_untouched() {
         // The most important assertion of the three: `rootStorePem` defaults to null, and an ABSENT
         // `rootStore` key is what keeps the prover on its bundled Mozilla web-PKI set. Writing the key at all

@@ -32,7 +32,7 @@ import com.dmarket.p2p.tracker.config.NotaryConfig
  * **Narrow by construction.** [sentBudget] returns the configured value untouched for anything that is not a
  * token-authed read whose only credential is the JWT in its path — a request with headers, a body, or a
  * per-read `maxSentDataOverride` keeps today's behaviour byte for byte. That is every cookie-authed community
- * read and both writes.
+ * read and both writes. Proxy always keeps the configured ceiling; MPC preprocessing sizing does not apply.
  *
  * **It can only ever spend less.** The result is clamped at the configured value, so the operator's knob keeps
  * the exact meaning (and the exact safety) it has today and no config becomes more dangerous by upgrading. The
@@ -80,7 +80,7 @@ object ProvenSentBudget {
         // The read's own override wins outright: it exists precisely to say the global sizing does not apply
         // (`ProvenReadCatalog` sets 8 KiB for the create POST), so it is both the answer and the ceiling.
         val configured = spec.maxSentDataOverride ?: config.maxSentData
-        if (!spec.hasDerivableRequestSize()) return configured
+        if (config.issuanceMode == IssuanceMode.PROXY || !spec.hasDerivableRequestSize()) return configured
         val required = HEADER_FRAMING_BYTES + spec.path.length - TOKEN_PLACEHOLDER.length + steamAccessTokenLength
         // `Long` throughout, like `OnlineBudgetLesson.learn`, and note the `100L`: `sentBudgetMarginPercent` is
         // host-supplied and only validated `>= 0`, so `100 + margin` in `Int` wraps NEGATIVE before the

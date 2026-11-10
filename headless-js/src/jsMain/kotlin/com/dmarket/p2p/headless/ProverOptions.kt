@@ -3,6 +3,7 @@ package com.dmarket.p2p.headless
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -12,6 +13,8 @@ import kotlin.time.Duration.Companion.milliseconds
  *
  * Like every option, a refusal names the field and never its value.
  *
+ * @property transport `direct` (default) or `egress` (proxy only); use the Worker frontend as `notaryUrl`.
+ * @property mode `mpc` (default) or `proxy`; proxy needs capable assets and an enabled, routed notary. No fallback.
  * @property notaryUrl the notary proofs go to, and the one each upgrade is signed for; the tracker's `notaryUrl`
  *   when unset.
  * @property maxConcurrency proofs at once, 1 or 2; each holds a process of up to ~700 MB.
@@ -29,10 +32,14 @@ internal class ProverOptions(
     val assetsDir: String?,
     val connectDeadline: Duration,
     val sessionDeadline: Duration,
+    val mode: IssuanceMode,
+    val transport: String,
 ) {
     companion object {
         private val KNOWN = setOf(
             "notaryUrl",
+            "mode",
+            "transport",
             "maxConcurrency",
             "proofsPerChild",
             "threadCount",
@@ -51,7 +58,13 @@ internal class ProverOptions(
             }
             val assetsDir = HeadlessOptions.optional<String>(prover.assetsDir, "prover.assetsDir", "string")
             require(assetsDir == null || assetsDir.isNotBlank()) { "prover.assetsDir must be a non-empty string" }
+            val mode = IssuanceMode.fromWire(HeadlessOptions.optional<String>(prover.mode, "prover.mode", "string") ?: "mpc")
+            val transport = HeadlessOptions.optional<String>(prover.transport, "prover.transport", "string") ?: "direct"
+            require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
+            require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
             return ProverOptions(
+                mode = mode,
+                transport = transport,
                 notaryUrl = notaryUrl,
                 maxConcurrency = whole(prover.maxConcurrency, "prover.maxConcurrency", 1..HostedNotaryProver.MAX_CONCURRENCY) ?: 1,
                 proofsPerChild = whole(prover.proofsPerChild, "prover.proofsPerChild", 1..ProverSettings.MAX_PROOFS_PER_CHILD) ?: 1,

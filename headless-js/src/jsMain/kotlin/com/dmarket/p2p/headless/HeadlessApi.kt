@@ -9,6 +9,7 @@ import com.dmarket.p2p.headless.prover.NodeWasmProver
 import com.dmarket.p2p.headless.prover.ProofOutcomeJson
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
+import com.dmarket.p2p.headless.prover.checkProverAssets
 import com.dmarket.p2p.headless.prover.runProverChild
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
@@ -181,12 +182,19 @@ private fun create(options: HeadlessOptions, httpEngine: HttpClientEngine?, back
  * host's callbacks. A callback that throws is ignored: it is called from the processes' own event handlers.
  */
 private fun proofHost(options: HeadlessOptions, prover: ProverOptions, files: ProverFiles, clock: Clock): NodeProofHost {
+    checkProverAssets(files.assetsDir, prover.mode, prover.transport)
     val onLine = options.onProverLine
     val onOutcome = options.onProofOutcome
     return ForkedProofHost(
         script = files.script,
         args = emptyList(),
-        settings = ProverSettings(notaryUrl = options.notaryUrl, threadCount = prover.threadCount, assetsDir = files.assetsDir),
+        settings = ProverSettings(
+            notaryUrl = options.notaryUrl,
+            threadCount = prover.threadCount,
+            assetsDir = files.assetsDir,
+            mode = prover.mode,
+            transport = prover.transport,
+        ),
         clock = clock,
         limits = ProverLimits(prover.connectDeadline, prover.sessionDeadline, prover.proofsPerChild),
         onLine = { _, stream, line -> onLine?.let { runCatching { it(stream, line) } } },

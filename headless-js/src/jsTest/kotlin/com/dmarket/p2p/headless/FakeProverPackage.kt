@@ -22,6 +22,12 @@ suspend fun fakeProverPackage(mode: String, report: String = "", assets: Boolean
     if (assets) {
         mkdirs(join(root, "pkg"))
         mkdirs(join(join(root, "transport"), "dist"))
+        write(join(root, "package.json"), """{"type":"module"}""")
+        write(join(join(root, "pkg"), "client_wasm.js"), "export function proveProxy() { throw new Error('must not prove'); }")
+        write(
+            join(join(join(root, "transport"), "dist"), "index.js"),
+            "export function createProxyProver() { throw new Error('must not initialize'); } export function connectEgressNotary() {}",
+        )
         write(join(join(root, "pkg"), "client_wasm_bg.wasm"), "")
         write(join(join(join(root, "transport"), "dist"), "node.js"), "")
     }
@@ -48,6 +54,14 @@ let token = '';
 process.on('message', (raw) => {
   const msg = JSON.parse(raw);
   if (msg.type === 'prove') {
+    if (mode === 'require-egress' && (msg.settings.transport !== 'egress' || msg.settings.mode !== 'proxy')) {
+      process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'other', detail: 'egress selection was not forwarded' } }));
+      return;
+    }
+    if (mode === 'require-proxy' && msg.settings.mode !== 'proxy') {
+      process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'other', detail: 'proxy mode was not forwarded' } }));
+      return;
+    }
     token = msg.steamAccessToken;
     console.log('proving deal ' + msg.request.dealId + ' with access_token=' + token + ' sessionid=' + msg.steamSessionId);
     if (mode === 'hang-before-connect') return;

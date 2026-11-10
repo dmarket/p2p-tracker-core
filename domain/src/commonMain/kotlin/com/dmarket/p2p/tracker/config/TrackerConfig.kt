@@ -5,6 +5,7 @@ package com.dmarket.p2p.tracker.config
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.net.SteamHosts
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.notary.OFFER_ID
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
@@ -707,8 +708,23 @@ data class NotaryConfig(
      * Appended last, per the rule on [acceptedProofTtlMs].
      */
     val sentBudgetMarginPercent: Int = 15,
+    /**
+     * Issuance protocol: `mpc` (default) or `proxy`. Proxy needs a proxy-capable prover and an enabled,
+     * routed notary. Target routing belongs to the notary; [proxyBaseUrl] and MPC online budgets are
+     * unused. There is no automatic fallback. Appended to preserve existing JS constructor positions.
+     */
+    val mode: String = "mpc",
+    /**
+     * Notary transport: `direct` (default) or `egress` (proxy only). Egress connects [notaryUrl] to the
+     * Worker frontend using a capable prover package; the Worker opens the notary-authorized target.
+     * [proxyBaseUrl] remains MPC-only. No route fallback. Appended for JS constructor compatibility.
+     */
+    val transport: String = "direct",
 ) {
     init {
+        IssuanceMode.fromWire(mode)
+        require(transport == "direct" || transport == "egress") { "notary.transport must be direct or egress" }
+        require(transport != "egress" || issuanceMode == IssuanceMode.PROXY) { "notary.transport egress requires mode proxy" }
         require(acceptedProofTtlMs >= 0) { "acceptedProofTtlMs must be >= 0, was $acceptedProofTtlMs" }
         require(sentBudgetMarginPercent >= 0) {
             "sentBudgetMarginPercent must be >= 0, was $sentBudgetMarginPercent"
@@ -736,6 +752,9 @@ data class NotaryConfig(
         //    not the lines: an auditor tracing the write gate would have to prove three checks equivalent
         //    instead of reading the one that is load-bearing.
     }
+
+    @JsExport.Ignore
+    val issuanceMode: IssuanceMode get() = IssuanceMode.fromWire(mode)
 
     /** Which reads may be spent on. Delegated so callers read one name rather than reaching through [reads]. */
     @JsExport.Ignore

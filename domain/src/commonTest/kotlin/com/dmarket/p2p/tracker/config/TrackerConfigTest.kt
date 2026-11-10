@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.config
 
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.policy.CadencePolicy
 import com.dmarket.p2p.tracker.policy.PollClass
 import kotlin.test.Test
@@ -13,6 +14,20 @@ import kotlin.time.Duration.Companion.seconds
 
 class TrackerConfigTest {
     private val defaults = TrackerConfig.defaults()
+
+    @Test
+    fun issuance_mode_is_explicit_and_defaults_to_mpc() {
+        assertEquals("mpc", NotaryConfig().mode)
+        assertEquals(IssuanceMode.MPC, NotaryConfig().issuanceMode)
+        assertEquals(IssuanceMode.PROXY, NotaryConfig(mode = "proxy").issuanceMode)
+        assertEquals("proxy", NotaryConfig(mode = "proxy").mode)
+        assertFails { NotaryConfig(mode = "automatic") }
+        assertEquals("direct", NotaryConfig().transport)
+        assertEquals("direct", NotaryConfig(mode = "proxy").transport)
+        assertEquals("egress", NotaryConfig(mode = "proxy", transport = "egress").transport)
+        assertFails { NotaryConfig(transport = "egress") }
+        assertFails { NotaryConfig(mode = "proxy", transport = "auto") }
+    }
 
     @Test
     fun defaults_reproduce_the_in_code_baseline_verbatim() {

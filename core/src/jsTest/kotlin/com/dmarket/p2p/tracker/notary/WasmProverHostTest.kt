@@ -6,6 +6,9 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlin.js.Promise
 import kotlin.test.AfterTest
@@ -31,12 +34,15 @@ private external fun encodeURIComponent(value: String): String
  */
 class WasmProverHostTest {
     private var savedChrome: dynamic = null
+    private var savedWebSocket: dynamic = null
     private val extensionAssets = mutableListOf<String>()
 
     @BeforeTest
     fun stubExtensionRoot() {
         js("globalThis.__proverSeams = { calls: [] }")
         savedChrome = js("globalThis.chrome")
+        savedWebSocket = js("globalThis.WebSocket")
+        js("globalThis").WebSocket = js("(function (url, protocols) { globalThis.__proverSeams.socketArgs = [url, protocols]; })")
         val runtime: dynamic = js("({})")
         runtime.getURL = { path: String ->
             extensionAssets += path
@@ -50,6 +56,7 @@ class WasmProverHostTest {
     @AfterTest
     fun restoreExtensionRoot() {
         js("globalThis").chrome = savedChrome
+        js("globalThis").WebSocket = savedWebSocket
         js("delete globalThis.__proverSeams")
     }
 
@@ -157,6 +164,242 @@ class WasmProverHostTest {
         assertContains(issuanceLine(request()), "proxy=wss://proxy.test")
     }
 
+    @Test
+    fun proxy_uses_one_channel_and_the_same_presentation_and_response_hook() = runTest {
+        var status: Int? = null
+        val traces = mutableListOf<String>()
+        val module = BundledWasmProverModule(
+            onProgress = { traces += it },
+            host = WasmProverHost(
+                connectTarget = { _, _ -> error("proxy must never dial a client target") },
+                onTargetResponse = { status = it },
+            ),
+        )
+        module.initialize(2, IssuanceMode.PROXY)
+        val proof = module.prove(request().copy(rootStorePem = "fixture roots"))
+        assertContentEquals(byteArrayOf(9, 9), proof)
+        assertEquals(200, status)
+        assertEquals(
+            listOf(
+                "createProxyProver",
+                "init()",
+                "initialize(2)",
+                "connectNotary(wss://notary.test/provenance/v1/, notary-token, args=2)",
+                "proveProxy",
+                "notary.close",
+            ),
+            calls(),
+        )
+        assertEquals(request().maxSentData, seams().config.limits.maxSentData as Int)
+        assertEquals(request().maxRecvData, seams().config.limits.maxRecvData as Int)
+        assertEquals("fixture roots", seams().config.rootStore.pem as String)
+        assertEquals(serverName, seams().config.serverName as String)
+        assertEquals(undefined, seams().config.maxRecvDataOnline)
+        assertEquals(undefined, seams().config.limits.maxRecvRecordsOnline)
+        assertEquals(undefined, seams().config.proxyBaseUrl)
+        assertEquals(httpRequest(request()).uri as String, seams().request.uri as String)
+        assertTrue(traces.any { "mode=proxy target=notary" in it })
+        assertFalse(traces.any { "maxRecvOnline" in it || "proxy.test" in it })
+        assertTrue(traces.any { "proxy_setup" in it })
+    }
+
+    @Test
+    fun proxy_failure_closes_the_notary_without_target_or_fallback() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2, IssuanceMode.PROXY)
+        seams().failProof = true
+        val error = assertFailsWith<Throwable> { module.prove(request()) }
+        assertContains(error.message.orEmpty(), "proxy rejected")
+        assertEquals("notary.close", calls().last())
+        assertFalse(calls().any { it.startsWith("connectProxy") })
+    }
+
+    @Test
+    fun proxy_status_rejection_also_closes_the_notary() = runTest {
+        val module = BundledWasmProverModule(host = WasmProverHost(onTargetResponse = { error("decline response") }))
+        module.initialize(2, IssuanceMode.PROXY)
+        assertFailsWith<IllegalStateException> { module.prove(request()) }
+        assertEquals("notary.close", calls().last())
+    }
+
+    @Test
+    fun old_assets_fail_proxy_before_compilation_workers_or_network() = runTest {
+        for (missing in listOf("pkg/client_wasm.js", "transport/dist/index.js")) {
+            val module = BundledWasmProverModule(
+                host = WasmProverHost(
+                    assetUrl = { path ->
+                        if (path != missing) {
+                            assetUrls.getValue(path)
+                        } else {
+                            dataUrl(
+                                if (path.startsWith("pkg")) {
+                                    FAKE_PKG.replace("export function proveProxy", "function oldProveProxy")
+                                } else {
+                                    FAKE_TRANSPORT.replace("export function createProxyProver", "function oldCreateProxyProver")
+                                },
+                            )
+                        }
+                    },
+                    wasmModule = { error("must check capabilities before compiling") },
+                ),
+            )
+            val failure = assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY) }
+            assertContains(failure.message.orEmpty(), "proxy-capable")
+            assertEquals(emptyList(), calls())
+        }
+    }
+
+    @Test
+    fun an_initialized_module_cannot_silently_switch_protocols() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2)
+        assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY) }
+        assertFalse(calls().any { it.startsWith("connect") })
+    }
+
+    @Test
+    fun egress_uses_the_worker_connector_and_aborts_after_presentation_input_is_received() = runTest {
+        val traces = mutableListOf<String>()
+        val module = BundledWasmProverModule(
+            onProgress = { traces += it },
+            host = WasmProverHost(
+                connectTarget = { _, _ -> error("egress must never dial the target") },
+            ),
+        )
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        seams().openSocket = true
+        assertContentEquals(byteArrayOf(9, 9), module.prove(egressRequest()))
+        assertEquals(listOf("createProxyProver", "init()", "initialize(2)", "connectEgressNotary", "proveProxy", "egress.abort"), calls())
+        assertEquals(egressRequest().notaryUrl, seams().egressUrl as String)
+        assertEquals("notary-token", seams().egressToken as String)
+        assertEquals(egressRequest().notaryUrl, seams().socketArgs[0] as String)
+        assertEquals("tlsn.notary.egress.v1", seams().socketArgs[1][0] as String)
+        assertEquals("bearer.notary-token", seams().socketArgs[1][1] as String)
+        assertEquals(request().maxRecvData, seams().config.limits.maxRecvData as Int)
+        assertTrue(traces.any { "mode=proxy transport=egress target=worker" in it })
+        assertFalse(traces.any { "notary-token" in it || "steam-jwt" in it || "proxy.test" in it })
+    }
+
+    @Test
+    fun egress_injects_fresh_host_sockets_and_preserves_the_frontend_protocol() = runTest {
+        var sockets = 0
+        val module = BundledWasmProverModule(
+            host = WasmProverHost(notaryWebSocket = {
+                sockets++
+                js("(function (url, protocols) { globalThis.__proverSeams.socketArgs = [url, protocols]; })")
+            }),
+        )
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        seams().openSocket = true
+        repeat(2) { module.prove(egressRequest()) }
+        assertEquals(2, sockets)
+        assertEquals(egressRequest().notaryUrl, seams().socketArgs[0] as String)
+        assertEquals("tlsn.notary.egress.v1", seams().socketArgs[1][0] as String)
+        assertEquals(2, calls().count { it == "egress.abort" })
+    }
+
+    @Test
+    fun egress_refusals_never_fall_back_and_failures_abort_without_waiting_for_fin() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        seams().failConnect = true
+        assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
+        assertEquals("connectEgressNotary", calls().last())
+        seams().failConnect = false
+        seams().failProof = true
+        assertFailsWith<Throwable> { module.prove(egressRequest()) }
+        assertEquals("egress.abort", calls().last())
+        seams().failProof = false
+        module.prove(egressRequest())
+        assertFalse(calls().any { it.startsWith("connectNotary") || it.startsWith("connectProxy") || it.endsWith(".close") })
+    }
+
+    @Test
+    fun egress_response_hook_failure_aborts() = runTest {
+        val module = BundledWasmProverModule(host = WasmProverHost(onTargetResponse = { error("decline response") }))
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
+        assertEquals("egress.abort", calls().last())
+    }
+
+    @Test
+    fun egress_cancellation_aborts_an_active_proof() = runTest {
+        val module = BundledWasmProverModule()
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        val entered = CompletableDeferred<Unit>()
+        seams().onProve = {
+            entered.complete(Unit)
+            Unit
+        }
+        seams().pendingProof = Promise<dynamic> { _, _ -> }
+        val proof = async { module.prove(egressRequest()) }
+        entered.await()
+        proof.cancel()
+        assertFailsWith<CancellationException> { proof.await() }
+        proof.join()
+        assertEquals("egress.abort", calls().last())
+    }
+
+    @Test
+    fun egress_cancellation_closes_the_socket_even_before_hello() = runTest {
+        val connected = CompletableDeferred<Unit>()
+        seams().onConnect = {
+            connected.complete(Unit)
+            Unit
+        }
+        seams().pendingConnect = Promise<dynamic> { _, _ -> }
+        seams().openSocket = true
+        val module = BundledWasmProverModule(
+            host = WasmProverHost(notaryWebSocket = {
+                js("(function () { this.close = function () { globalThis.__proverSeams.calls.push('socket.close'); }; })")
+            }),
+        )
+        module.initialize(2, IssuanceMode.PROXY, "egress")
+        val proof = async { module.prove(egressRequest()) }
+        connected.await()
+        proof.cancel()
+        assertFailsWith<CancellationException> { proof.await() }
+        proof.join()
+        assertEquals("socket.close", calls().last())
+        assertFalse("proveProxy" in calls())
+    }
+
+    @Test
+    fun direct_proxy_assets_reject_egress_before_compilation_workers_or_network() = runTest {
+        val module = BundledWasmProverModule(
+            host = WasmProverHost(
+                assetUrl = { path ->
+                    if (path.startsWith("pkg")) {
+                        assetUrls.getValue(path)
+                    } else {
+                        dataUrl(FAKE_TRANSPORT.replace("export async function connectEgressNotary", "async function oldEgressConnector"))
+                    }
+                },
+                wasmModule = { error("must check egress capability before compiling") },
+            ),
+        )
+        assertContains(
+            assertFailsWith<IllegalStateException> {
+                module.initialize(2, IssuanceMode.PROXY, "egress")
+            }.message.orEmpty(),
+            "egress-capable",
+        )
+        assertEquals(emptyList(), calls())
+    }
+
+    @Test
+    fun invalid_or_mismatched_transports_fail_before_network() = runTest {
+        val module = BundledWasmProverModule()
+        assertFailsWith<IllegalArgumentException> { module.initialize(2, IssuanceMode.MPC, "egress") }
+        assertFailsWith<IllegalArgumentException> { module.initialize(2, IssuanceMode.PROXY, "auto") }
+        module.initialize(2, IssuanceMode.PROXY)
+        assertFailsWith<IllegalStateException> { module.initialize(2, IssuanceMode.PROXY, "egress") }
+        assertFailsWith<IllegalStateException> { module.prove(egressRequest()) }
+        assertFalse(calls().any { it.startsWith("connect") })
+    }
+
+    private fun egressRequest() = request().copy(transport = "egress", notaryUrl = "wss://worker.test/notary/egress/v1")
+
     private fun seams(): dynamic = js("globalThis.__proverSeams")
 
     private fun calls(): List<String> = (seams().calls as Array<String>).toList()
@@ -197,6 +440,7 @@ class WasmProverHostTest {
     private companion object {
         /** `pkg/client_wasm.js`: only the default-export init, which records what it was handed. */
         const val FAKE_PKG = """
+            export function proveProxy() {}
             export default function init(input) {
               const seams = globalThis.__proverSeams;
               seams.calls.push(input === undefined ? "init()" : "init(module_or_path)");
@@ -226,10 +470,36 @@ class WasmProverHostTest {
                 present() { return new Uint8Array([9, 9]); },
               };
             }
+            export function createProxyProver(wasm) {
+              seams().calls.push("createProxyProver");
+              return {
+                ...createProver(wasm),
+                async proveProxy(notaryIo, config, request, progress) {
+                  seams().calls.push("proveProxy");
+                  seams().config = config;
+                  seams().request = request;
+                  progress?.({step: "proxy_setup", progress: 0, message: "setup", source: "prover"});
+                  seams().onProve?.();
+                  if (seams().pendingProof) await seams().pendingProof;
+                  if (seams().failProof) throw new Error("proxy rejected");
+                  return {attestation: new Uint8Array([1]), secrets: new Uint8Array([2]), response: {status: 200}};
+                },
+              };
+            }
             export async function connectNotary(...args) {
               seams().calls.push("connectNotary(" + args[0] + ", " + args[1] + ", args=" + args.length + ")");
               seams().webSocketImpl = args[2]?.WebSocketImpl;
               return channel("notary");
+            }
+            export async function connectEgressNotary(url, token, options) {
+              seams().calls.push("connectEgressNotary");
+              seams().egressUrl = url;
+              seams().egressToken = token;
+              if (seams().openSocket) new options.WebSocketImpl(url, ["tlsn.notary.egress.v1", "bearer." + token]);
+              seams().onConnect?.();
+              if (seams().pendingConnect) await seams().pendingConnect;
+              if (seams().failConnect) throw new Error("worker unavailable");
+              return { ...channel("egress"), abort: async () => { seams().calls.push("egress.abort"); } };
             }
             export async function connectProxy(base, host, port) {
               seams().calls.push("connectProxy(" + base + ", " + host + ", " + port + ")");
