@@ -31,6 +31,25 @@ GitHub Release.
   `"proxy"`, default MPC), propagated over child IPC. Proxy opens only the notary channel, preserves
   presentation redaction and response handling, and rejects old assets before initialization or network
   use. Requires proxy-capable assets and an enabled, routed notary; there is no automatic fallback.
+- The host can pause offer creation while cancels and trade tracking keep running. New
+  `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an
+  offer it would have created (DMA-482).
+
+### Fixed
+
+- Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) instead of
+  copying the refresh cookie's (DMA-815).
+
+- The web vault keeps the Steam credential in `storage.session` instead of `storage.local` and removes the old
+  copy. A host that opens `storage.session` to content scripts with `setAccessLevel` must close it first (DMA-817).
+
+- Partner persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails`, so an
+  offer to a renamed account is now flagged. New config field `SteamEndpointsConfig.getPlayerLinkDetailsPath`
+  (DMA-857).
+
+- A warning on an active offer is cleared while the persona-name read fails, unless the warning was made on the
+  name. `SuspiciousOffer.byName` now also marks a sent offer flagged on the name (DMA-818).
+
 ## [1.2.0-beta] - 2026-11-03
 
 ### Added

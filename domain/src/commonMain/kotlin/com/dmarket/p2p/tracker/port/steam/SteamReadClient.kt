@@ -67,7 +67,7 @@ interface SteamReadClient {
     suspend fun offers(credential: SteamCredential): List<SteamSentOffer> = sentOffers(credential)
 
     /**
-     * The Steam persona names of [steamIds] (`ISteamUser/GetPlayerSummaries`), for the impersonation check on sent
+     * The Steam persona names of [steamIds] (`IPlayerService/GetPlayerLinkDetails`), for the impersonation check on sent
      * offers. Steam omits unknown ids, so a missing key is not an error. Throws on a failed read. A client that does
      * not implement it answers with no names, and only the known-scam list then marks impersonation.
      */

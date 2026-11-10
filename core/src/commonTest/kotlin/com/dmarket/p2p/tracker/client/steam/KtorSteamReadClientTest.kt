@@ -416,16 +416,27 @@ class KtorSteamReadClientTest {
     }
 
     @Test
-    fun persona_names_are_read_in_chunks_of_a_hundred_and_blank_names_dropped() = runTest {
+    fun persona_names_are_read_from_link_details_in_indexed_chunks_of_a_hundred() = runTest {
         val endpoints = SteamEndpointsConfig()
         val asked = mutableListOf<List<String>>()
         val engine = MockEngine { request ->
-            assertEquals(endpoints.getPlayerSummariesPath, request.url.encodedPath)
-            val ids = request.url.parameters[endpoints.paramSteamIds].orEmpty().split(",")
+            // GetPlayerSummaries answers 400 for an access_token (DMA-857); a comma list matches nothing here.
+            assertEquals(endpoints.getPlayerLinkDetailsPath, request.url.encodedPath)
+            assertEquals(credential.token, request.url.parameters[endpoints.paramAccessToken])
+            assertNull(request.url.parameters[endpoints.paramSteamIds], "ids must be indexed, never a comma list")
+            val ids = generateSequence(0) { it + 1 }
+                .map { request.url.parameters["${endpoints.paramSteamIds}[$it]"] }
+                .takeWhile { it != null }
+                .filterNotNull()
+                .toList()
             asked += ids
-            val players = ids.joinToString(",") { """{"steamid":"$it","personaname":"${if (it.endsWith("002")) "" else "n-$it"}"}""" }
+            // Steam's order, not the request's; an account without public_data and a blank name are both skipped.
+            val accounts = ids.reversed().joinToString(",") {
+                val name = if (it.endsWith("002")) "" else "n-$it"
+                """{"public_data":{"steamid":"$it","visibility_state":3,"persona_name":"$name"},"private_data":{}}"""
+            } + """,{"private_data":{"time_created":1}}"""
             respond(
-                """{"response":{"players":[$players]}}""",
+                """{"response":{"accounts":[$accounts]}}""",
                 headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()),
             )
         }
@@ -436,8 +447,14 @@ class KtorSteamReadClientTest {
 
         assertEquals(listOf(100, 50), asked.map { it.size })
         assertEquals("n-76561198000000001", names[SteamId("76561198000000001")])
+        assertEquals("n-76561198000000150", names[SteamId("76561198000000150")])
         assertEquals(149, names.size, "the blank name is dropped")
         assertTrue(client.personaNames(credential, emptySet()).isEmpty())
         assertEquals(2, asked.size, "no ids, no request")
+    }
+
+    @Test
+    fun persona_names_tolerate_the_empty_response_steam_gives_for_unknown_ids() = runTest {
+        assertTrue(steamClient("""{"response":{}}""").personaNames(credential, setOf(SteamId("76561190000000001"))).isEmpty())
     }
 }

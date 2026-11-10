@@ -40,13 +40,18 @@ interface OfferGuardStore {
 
     /**
      * Records [found] as the offers currently flagged among [judged], the ids the Steam read listed and the check could
-     * judge this scan (the caller leaves out offers whose name or DMarket answer is missing), and returns what changed
-     * since the last report: the offers not yet reported at their level, and the reported ones in [judged] that are no
-     * longer in [found]. A reported offer not in [judged] is not cleared: the read did not list it (the account-wide list
-     * is not proven complete) or its verdict could not be re-derived, so this scan says nothing about it. It stays on
-     * record, up to [MAX_UNLISTED_NOTIFIED].
+     * judge this scan (the caller leaves out offers whose DMarket answer is missing), and returns what changed since the
+     * last report: the offers not yet reported at their level and basis ([SuspiciousOffer.byName]), and the reported ones
+     * in [judged] that are no longer in [found]. A reported offer not in [judged] is not cleared: the read did not list
+     * it (the account-wide list is not proven complete) or its verdict could not be re-derived, so this scan says
+     * nothing about it. It stays on record, up to [MAX_UNLISTED_NOTIFIED].
+     *
+     * [nameless] are the offers in [judged] whose partner's name this scan could not read. A warning made on the name
+     * cannot be re-derived for them, so it is kept as it was, neither cleared nor re-levelled; any other warning on them
+     * (the known-scam list, an unlinked give-only) is judged as usual, which is how a retracted list entry comes down
+     * while the names read fails.
      */
-    suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>): GuardDelta
+    suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>, nameless: Set<OfferId> = emptySet()): GuardDelta
 
     /** The offers currently on record as reported, at any level. */
     suspend fun reported(): Set<OfferId>
@@ -79,6 +84,25 @@ internal const val MAX_NOT_OURS_SINCE = 200
 /** What [OfferGuardStore.unreported] has to tell the host: offers to warn about now, and earlier warnings to take down. */
 data class GuardDelta(val fresh: List<SuspiciousOffer>, val cleared: List<OfferId>)
 
+/**
+ * A reported warning's level and whether it was made on the partner's name. Stored as the level name, with a list-made
+ * impersonation written as [LIST_IMPERSONATION]: a bare `IMPERSONATION` (all records before the basis was kept) reads as
+ * made on the name, which is the reading that never clears a warning on missing evidence.
+ */
+private data class Notified(val level: SuspicionLevel, val byName: Boolean) {
+    fun encode(): String = if (level == SuspicionLevel.IMPERSONATION && !byName) LIST_IMPERSONATION else level.name
+
+    companion object {
+        const val LIST_IMPERSONATION = "IMPERSONATION_BY_LIST"
+
+        fun decode(value: String): Notified? {
+            if (value == LIST_IMPERSONATION) return Notified(SuspicionLevel.IMPERSONATION, byName = false)
+            val level = SuspicionLevel.entries.firstOrNull { it.name == value } ?: return null
+            return Notified(level, byName = level == SuspicionLevel.IMPERSONATION)
+        }
+    }
+}
+
 @Serializable
 private data class StoredLease(val dealId: String, val partner: String, val assetIds: List<String>, val createdAtMs: Long) {
     fun toDomain(): CreateLease? = runCatching {
@@ -101,7 +125,7 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
     private val mutex = Mutex()
     private val leases = mutableListOf<CreateLease>()
     private val trusted = mutableSetOf<SteamId>()
-    private val notified = mutableMapOf<OfferId, SuspicionLevel>()
+    private val notified = mutableMapOf<OfferId, Notified>()
     private val notOurs = mutableMapOf<OfferId, Instant>()
     private var scannedAt: Instant? = null
     private var restored = false
@@ -130,23 +154,26 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         }
     }
 
-    override suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>): GuardDelta = mutex.withLock {
-        restore()
-        val fresh = found.filter { notified[it.offerId] != it.level }
-        val current = found.associate { it.offerId to it.level }
-        val cleared = notified.keys.filter { it in judged && it !in current }
-        // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
-        // (paged out, or from a scan since turned off) would otherwise stay on record forever.
-        val unlisted = notified.entries.filter { it.key !in judged }.takeLast(MAX_UNLISTED_NOTIFIED)
-        val next = unlisted.associate { it.key to it.value } + current
-        if (next != notified) {
-            notified.clear()
-            notified += next
-            val stored = notified.entries.associate { (id, level) -> id.value to level.name }
-            write(DeviceVaultKeys.GUARD_NOTIFIED, TrackerJson.encodeToString(notifiedSerializer, stored))
+    override suspend fun unreported(found: List<SuspiciousOffer>, judged: Set<OfferId>, nameless: Set<OfferId>): GuardDelta =
+        mutex.withLock {
+            restore()
+            val held = notified.filter { (id, record) -> id in nameless && record.byName }
+            val judgedNow = judged - held.keys
+            val current = found.filter { it.offerId !in held }.associate { it.offerId to Notified(it.level, it.byName) }
+            val fresh = found.filter { it.offerId in current && notified[it.offerId] != current[it.offerId] }
+            val cleared = notified.keys.filter { it in judgedNow && it !in current }
+            // Kept so a later listing can still clear them, but only the most recently seen: an offer no read lists again
+            // (paged out, or from a scan since turned off) would otherwise stay on record forever.
+            val unlisted = notified.entries.filter { it.key !in judgedNow }.takeLast(MAX_UNLISTED_NOTIFIED)
+            val next = unlisted.associate { it.key to it.value } + current
+            if (next != notified) {
+                notified.clear()
+                notified += next
+                val stored = notified.entries.associate { (id, record) -> id.value to record.encode() }
+                write(DeviceVaultKeys.GUARD_NOTIFIED, TrackerJson.encodeToString(notifiedSerializer, stored))
+            }
+            GuardDelta(fresh, cleared)
         }
-        GuardDelta(fresh, cleared)
-    }
 
     override suspend fun reported(): Set<OfferId> = mutex.withLock {
         restore()
@@ -190,8 +217,8 @@ class PersistedOfferGuardStore(private val storage: DeviceKeyValueStore = InMemo
         if (restored) return
         restored = true
         leases += read(DeviceVaultKeys.CREATE_LEASES, leaseSerializer).orEmpty().mapNotNull { it.toDomain() }
-        read(DeviceVaultKeys.GUARD_NOTIFIED, notifiedSerializer)?.forEach { (id, level) ->
-            val parsed = SuspicionLevel.entries.firstOrNull { it.name == level } ?: return@forEach
+        read(DeviceVaultKeys.GUARD_NOTIFIED, notifiedSerializer)?.forEach { (id, value) ->
+            val parsed = Notified.decode(value) ?: return@forEach
             if (id.isNotBlank()) notified[OfferId(id)] = parsed
         }
         read(DeviceVaultKeys.GUARD_NOT_OURS_SINCE, notOursSerializer)?.forEach { (id, ms) ->

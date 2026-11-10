@@ -14,19 +14,20 @@ import kotlin.test.assertEquals
  */
 class FetchMarketplaceCookieTokenStoreTest {
 
-    private fun stubCookies(httpOnly: Boolean?) {
+    /** `null` leaves that cookie out of the jar. */
+    private fun stubCookies(httpOnly: Boolean?, refreshHttpOnly: Boolean? = httpOnly) {
         val g: dynamic = js("globalThis")
-        g["_seedHttpOnly"] = httpOnly
+        g["_seedHttpOnly"] = arrayOf(httpOnly, refreshHttpOnly)
         js(
             """
             globalThis._setCalls = [];
             globalThis._jar = {};
-            var seed = globalThis._seedHttpOnly;
-            if (seed !== null && seed !== undefined) {
-                ['dm-trade-token', 'dm-trade-refresh-token'].forEach(function (n) {
+            ['dm-trade-token', 'dm-trade-refresh-token'].forEach(function (n, i) {
+                var seed = globalThis._seedHttpOnly[i];
+                if (seed !== null && seed !== undefined) {
                     globalThis._jar[n] = { value: 'old', hostOnly: true, path: '/', secure: true, httpOnly: seed };
-                });
-            }
+                }
+            });
             globalThis.chrome = { cookies: {
                 get: function (d) { return Promise.resolve(globalThis._jar[d.name] || null); },
                 set: function (d) { globalThis._setCalls.push(d); globalThis._jar[d.name] = d; return Promise.resolve(d); }
@@ -43,6 +44,11 @@ class FetchMarketplaceCookieTokenStoreTest {
     private fun setCallFlags(): List<Boolean?> {
         val calls: dynamic = js("globalThis._setCalls")
         return (0 until (calls.length as Int)).map { calls[it].httpOnly as? Boolean }
+    }
+
+    private fun setCallNames(): List<String?> {
+        val calls: dynamic = js("globalThis._setCalls")
+        return (0 until (calls.length as Int)).map { calls[it].name as? String }
     }
 
     private val tokens = MarketplaceTokenPair("access", "refresh", null)
@@ -70,5 +76,25 @@ class FetchMarketplaceCookieTokenStoreTest {
         stubCookies(httpOnly = null)
         FetchMarketplaceCookieTokenStore().write(tokens)
         assertEquals(listOf<Boolean?>(false, false), setCallFlags())
+    }
+
+    @Test
+    fun each_cookie_is_rewritten_with_its_own_httpOnly() = runTest {
+        stubCookies(httpOnly = true, refreshHttpOnly = false)
+        val store = FetchMarketplaceCookieTokenStore()
+        store.read()
+        store.write(tokens)
+        // Refresh first, then access; each keeps the flag it was read with.
+        assertEquals(listOf<String?>("dm-trade-refresh-token", "dm-trade-token"), setCallNames())
+        assertEquals(listOf<Boolean?>(false, true), setCallFlags())
+    }
+
+    @Test
+    fun a_missing_cookie_borrows_the_other_cookies_attributes() = runTest {
+        stubCookies(httpOnly = true, refreshHttpOnly = null)
+        val store = FetchMarketplaceCookieTokenStore()
+        store.read()
+        store.write(tokens)
+        assertEquals(listOf<Boolean?>(true, true), setCallFlags())
     }
 }

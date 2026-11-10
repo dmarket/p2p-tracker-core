@@ -136,7 +136,8 @@ object SuspiciousOfferCheck {
         if (level == SuspicionLevel.NONE) {
             null
         } else {
-            val byName = offer.direction == OfferDirection.RECEIVED && offer.partner !in knownScamPartners
+            // Off the list, an impersonation can only have come from the partner's persona name, in either direction.
+            val byName = level == SuspicionLevel.IMPERSONATION && offer.partner !in knownScamPartners
             SuspiciousOffer(offer.offerId, offer.partner, offer.assetIdsGiven, level, personaNames[offer.partner], offer.direction, byName)
         }
     }

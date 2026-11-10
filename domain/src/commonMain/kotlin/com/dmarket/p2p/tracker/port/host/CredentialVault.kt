@@ -4,15 +4,15 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 
 /**
  * Device-local secure storage for the Steam credential. The platform `actual`s are Keychain (iOS),
- * Android Keystore-backed storage (Android) and `chrome.storage.local` (web), selected internally by
+ * Android Keystore-backed storage (Android) and `chrome.storage.session` (web), selected internally by
  * `platformCredentialVault()` — the host never supplies a vault and so never sees the plaintext
  * credential. The Steam credential never leaves the device, so it lives only behind this port.
  *
  * **Security contract (the lib cannot enforce this — implementations must honour it):**
  * - Every production `actual` **MUST** persist the credential **encrypted at rest** using OS-backed
  *   key material (Keychain / Android Keystore), where the key lives in hardware and never enters
- *   library memory. (`chrome.storage.local` is the one exception — origin-isolated but not encrypted
- *   at rest; a documented platform limitation of MV3 extensions.)
+ *   library memory. (`chrome.storage.session` is the one exception — not encrypted, but memory-only:
+ *   never written to disk and cleared when the browser closes.)
  * - The stored value is **device-only** and is **never transmitted to DMarket** (see the audit
  *   boundary on [com.dmarket.p2p.tracker.model.steam.SteamCredential]).
  * - `InMemoryCredentialVault` is **test/JVM-only** — it stores plaintext in memory and must never be

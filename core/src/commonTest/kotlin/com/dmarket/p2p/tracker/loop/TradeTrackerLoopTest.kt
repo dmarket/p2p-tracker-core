@@ -6854,6 +6854,29 @@ class TradeTrackerLoopTest {
         assertTrue(events.all { it.cleared.isEmpty() }, "no names is no evidence the warning stopped applying")
     }
 
+    @Test
+    fun a_retracted_known_scam_entry_clears_its_warning_while_the_names_read_fails() = runTest {
+        val clock = FakeClock()
+        val observer = RecordingEventObserver()
+        // Trusted, so once off the list nothing else flags it: only the list made it a warning.
+        val guard = PersistedOfferGuardStore().apply { trustPartner(SteamId("76561198000000777")) }
+        val reader = FakeSteamReadClient().apply {
+            sentOffers = listOf(giveOnly("offer-x"))
+            personaNamesThrows = true
+        }
+        val l = loop(marketplace = createLease(), reader = reader, clock = clock, eventObserver = observer, offerGuard = guard)
+        l.setKnownScamPartners(listOf("76561198000000777"))
+        l.runOnce()
+        l.setKnownScamPartners(listOf("76561198781084366"))
+        clock.advance(180.seconds)
+        l.forceHeartbeatNow()
+        l.runOnce()
+
+        val events = observer.events.filterIsInstance<LifecycleEvent.SuspiciousOutgoingOffers>()
+        assertEquals(listOf(SuspicionLevel.IMPERSONATION), events.flatMap { e -> e.offers.map { it.level } })
+        assertEquals(listOf(OfferId("offer-x")), events.flatMap { it.cleared }, "publishing a corrected list takes the warning down")
+    }
+
     // ---- received offers named like DMarket: DMarket's own verdict (is-trade-our) ----
 
     private val namedLikeBot = SteamId("76561198000000777")

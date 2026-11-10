@@ -183,6 +183,12 @@ const val OFFER_WRITES_DISABLED = "refused: offer writes are disabled on this cl
  */
 const val STEAM_SESSION_MISSING_DROP_REASON = "not run: no usable Steam session on this client"
 
+/**
+ * Why a leased `create_offer` was not run while the host keeps offer creation paused ([TradeTrackerLoop.setCreatesPaused]).
+ * Unreported: nothing reached Steam, so its lease lapses and the backend re-leases it after the pause.
+ */
+const val CREATES_PAUSED_DROP_REASON = "not run: offer creation is paused on this client"
+
 /** `ETradeOfferState` 9, `CreatedNeedsConfirmation`: the state a create leaves its offer in until the seller confirms. */
 private const val STEAM_OFFER_NEEDS_CONFIRMATION = 9
 
@@ -956,6 +962,8 @@ class TradeTrackerLoop(
             outcome(DirectiveStatus.FAILED, error = DUPLICATE_WRITE_ERROR)
         // Unreachable: a throttled create is answered before any write, and a creator never throttles itself.
         is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
+        // Unreachable: a paused create is dropped before any write.
+        CreateOfferResult.CreatesPaused -> outcome(DirectiveStatus.FAILED, error = CREATES_PAUSED_DROP_REASON)
     }
 
     private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
@@ -1055,6 +1063,21 @@ class TradeTrackerLoop(
         if (parsed.isEmpty() && ids.isNotEmpty()) return false
         knownScamPartners = parsed
         return true
+    }
+
+    /** Whether the host paused offer creation ([setCreatesPaused]). */
+    internal var createsPaused: Boolean = false
+        private set
+
+    /**
+     * Pauses or resumes offer creation. While paused, a `create_offer` that would POST to Steam is not run and not
+     * reported (a [LifecycleEvent.DirectiveDropped] with [CREATES_PAUSED_DROP_REASON] says so), and an
+     * [awaitDirectiveOutcome] waiting on it gets [CreateOfferResult.CreatesPaused]. A create for a deal whose offer this
+     * device already made is still restated, and cancels, tracking reports and proofs run as before.
+     * Held in memory only, like [setKnownScamPartners].
+     */
+    fun setCreatesPaused(paused: Boolean) {
+        createsPaused = paused
     }
 
     private fun scamPartnersOf(ids: Collection<String>): Set<SteamId> = ids.filter(::isIndividualSteamId64).mapTo(mutableSetOf(), ::SteamId)
@@ -2142,10 +2165,12 @@ class TradeTrackerLoop(
             isTradeOurGrace = config.tunables.isTradeOurGrace,
             notOursFor = notOursFor,
         )
-        // Without the partner's name (a failed read, or a profile the read left out) or DMarket's answer a name-based
-        // warning cannot be re-derived, so those offers count as unlisted: never cleared.
-        val unjudged = held + nameCandidates.filter { it.partner !in personaNames }.mapTo(mutableSetOf()) { it.offerId }
-        val delta = offerGuard.unreported(found, sent.filter { it.offerId !in unjudged }.mapTo(mutableSetOf()) { it.offerId })
+        // Without DMarket's answer a received warning cannot be re-derived, so those offers count as unlisted: never
+        // cleared. Without the partner's name (a failed read, or a profile the read left out) only a warning made on the
+        // name is kept; one made on the known-scam list or on the offer itself is still judged.
+        val judged = sent.filter { it.offerId !in held }.mapTo(mutableSetOf()) { it.offerId }
+        val nameless = nameCandidates.filter { it.partner !in personaNames }.mapTo(mutableSetOf()) { it.offerId }
+        val delta = offerGuard.unreported(found, judged, nameless)
         if (delta.fresh.isNotEmpty() || delta.cleared.isNotEmpty()) {
             emit(LifecycleEvent.SuspiciousOutgoingOffers(delta.fresh, delta.cleared))
         }
@@ -2499,6 +2524,13 @@ class TradeTrackerLoop(
             },
             credential = credential,
         ) {
+            // Checked past the claim guard, so a create this device already made is still restated above. The claim
+            // is released: nothing was written, and the backend re-leases the create once the pause is lifted.
+            if (createsPaused) {
+                emitDropped(directive, CREATES_PAUSED_DROP_REASON)
+                resolveCreateWaiter(directive, CreateOfferResult.CreatesPaused)
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early

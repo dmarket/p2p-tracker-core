@@ -4,8 +4,8 @@ import com.dmarket.p2p.tracker.adapter.webext.WebExtStorageCredentialVault
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 
 /**
- * Web resolves to [WebExtStorageCredentialVault] (`chrome.storage.local` / `browser.storage.local`),
- * which survives MV3 service-worker teardown. It is origin-isolated but **not** encrypted at rest —
- * a documented MV3 platform limitation (see [WebExtStorageCredentialVault]).
+ * Web resolves to [WebExtStorageCredentialVault] (`chrome.storage.session` / `browser.storage.session`),
+ * which survives MV3 service-worker teardown but never reaches disk and is gone when the browser closes
+ * (see [WebExtStorageCredentialVault]).
  */
 actual fun platformCredentialVault(): CredentialVault = WebExtStorageCredentialVault()

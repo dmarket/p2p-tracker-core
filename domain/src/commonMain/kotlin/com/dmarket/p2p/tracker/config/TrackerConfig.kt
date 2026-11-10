@@ -908,7 +908,13 @@ data class SteamEndpointsConfig(
      */
     val getTradeOffersPath: String = "/IEconService/GetTradeOffers/v1/",
     val getTradeHistoryPath: String = "/IEconService/GetTradeHistory/v1/",
-    /** Public-profile summaries (nickname + avatars); up to 100 comma-separated [paramSteamIds] per call. */
+    /**
+     * Public-profile summaries (nickname + avatars); up to 100 comma-separated [paramSteamIds] per call.
+     *
+     * ⚠️ Rejects the user `access_token` every client here holds: Steam answers `400 Required parameter 'key'
+     * is missing` (checked live 2026-11-03), so this endpoint needs a Web API key. Persona names are read
+     * from [getPlayerLinkDetailsPath] instead.
+     */
     val getPlayerSummariesPath: String = "/ISteamUser/GetPlayerSummaries/v2/",
     /** Steam account level for a single [paramSteamId]; empty response for a private profile. */
     val getSteamLevelPath: String = "/IPlayerService/GetSteamLevel/v1/",
@@ -930,7 +936,10 @@ data class SteamEndpointsConfig(
     val paramActiveOnly: String = "active_only",
     val paramGetDescriptions: String = "get_descriptions",
     val paramMaxTrades: String = "max_trades",
-    /** Comma-separated steamID64 list for `GetPlayerSummaries` (≤100 ids). */
+    /**
+     * The steamID64 list parameter: comma-separated for `GetPlayerSummaries`, indexed (`steamids[0]=…`) for
+     * [getPlayerLinkDetailsPath]. Both take at most 100 ids.
+     */
     val paramSteamIds: String = "steamids",
     /** Single steamID64 for `GetSteamLevel`. */
     val paramSteamId: String = "steamid",
@@ -1005,6 +1014,18 @@ data class SteamEndpointsConfig(
      * where they already were.
      */
     val targetedTradeReadsPerCycle: Int = 3,
+    /**
+     * Persona names for the impersonation check, `IPlayerService/GetPlayerLinkDetails`: answers
+     * `response.accounts[].public_data.persona_name` for the user `access_token` (checked live 2026-11-03,
+     * where [getPlayerSummariesPath] answers 400 asking for a key).
+     *
+     * Three facts from that check, each a silent empty `{"response":{}}` rather than an error: the ids must be
+     * indexed (`steamids[0]=…`, a comma list matches nothing), more than 100 ids answer nothing at all, and an
+     * unknown id is just left out. Accounts come back in Steam's order, not the request's.
+     *
+     * Appended last, like its siblings, because the generated `copy()` a JS host calls is positional.
+     */
+    val getPlayerLinkDetailsPath: String = "/IPlayerService/GetPlayerLinkDetails/v1/",
 ) {
     init {
         SteamHosts.requireAllowed(steamApiBaseUrl, SteamHosts.API, "steamApiBaseUrl")
@@ -1020,6 +1041,7 @@ data class SteamEndpointsConfig(
             "getTradeHistoryPath" to getTradeHistoryPath,
             "getTradeStatusPath" to getTradeStatusPath,
             "getPlayerSummariesPath" to getPlayerSummariesPath,
+            "getPlayerLinkDetailsPath" to getPlayerLinkDetailsPath,
             "getSteamLevelPath" to getSteamLevelPath,
             "getSteamNotificationsPath" to getSteamNotificationsPath,
         ).forEach { (field, path) ->

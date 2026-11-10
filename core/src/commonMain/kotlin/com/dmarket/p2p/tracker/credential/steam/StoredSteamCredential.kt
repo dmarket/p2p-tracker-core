@@ -8,7 +8,7 @@ import kotlin.time.Instant
 
 /**
  * Serialization DTO for persisting a [SteamCredential] in flat key-value stores such as
- * `chrome.storage.local`.
+ * `chrome.storage.session`.
  *
  * Uses flat primitives (epoch-millisecond `Long`, plain-string Steam ID) to avoid the
  * `@Serializable` requirement on [Instant] and [SteamId]. Round-trips cleanly through

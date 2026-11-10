@@ -69,6 +69,8 @@ fun CreateOfferResult.toOutcomeJson(): String {
                 put("scope", result.scope.name.lowercase())
                 put("retryAfterSeconds", result.retryAfterSeconds)
             }
+            // Refused before any Steam write while the host keeps offer creation paused.
+            CreateOfferResult.CreatesPaused -> put("status", "creates_paused")
         }
     }.toString()
 }

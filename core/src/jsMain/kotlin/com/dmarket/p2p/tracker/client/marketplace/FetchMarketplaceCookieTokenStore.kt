@@ -44,7 +44,7 @@ external fun decodeURIComponent(encoded: String): String
  * ### Writing is how the *site* keeps working
  * The refresh endpoint rotates the refresh token and does not `Set-Cookie` — the site's own JavaScript writes
  * both cookies from the response body. So [write] must put both back, and it:
- * - mirrors the attributes of the record it read (`domain`/`hostOnly`, `path`, `secure`, `sameSite`) rather
+ * - mirrors, per cookie, the attributes of the record it read (`domain`/`hostOnly`, `path`, `secure`, `sameSite`) rather
  *   than inventing them, because a mismatched `domain` creates a *second* record with the same name and the
  *   page then reads whichever the browser happens to hand it;
  * - writes the **refresh** cookie first, so a teardown between the two writes leaves "old access + new
@@ -60,11 +60,13 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
     MarketplaceTokenStore {
 
     /**
-     * Attributes of the cookie records last seen, so a write can mirror them even when the record has just
-     * been deleted underneath us (which is exactly when restoring the pair matters most). Falls back to a
-     * conservative template derived from the configured site URL.
+     * Attributes of each cookie record last seen, kept per cookie because the two may differ (e.g. HttpOnly on
+     * the access cookie only), so a write can mirror them even when the record has just been deleted underneath
+     * us (which is exactly when restoring the pair matters most). A cookie never seen borrows the other's
+     * template, and with neither seen both use a conservative template derived from the configured site URL.
      */
-    private var template: CookieTemplate? = null
+    private var accessTemplate: CookieTemplate? = null
+    private var refreshTemplate: CookieTemplate? = null
 
     override suspend fun read(): StoredMarketplaceTokens? = coroutineScope {
         // Concurrent: two independent extension-API round trips, and this runs at least once per cycle plus
@@ -74,7 +76,8 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
         val refreshAsync = async { readCookie(scrapeConfig.refreshCookieName) }
         val access = accessAsync.await()
         val refresh = refreshAsync.await()
-        (refresh ?: access)?.let { template = it.template }
+        access?.let { accessTemplate = it.template }
+        refresh?.let { refreshTemplate = it.template }
         StoredMarketplaceTokens(
             accessToken = access?.value,
             refreshToken = refresh?.value,
@@ -84,15 +87,16 @@ class FetchMarketplaceCookieTokenStore(private val scrapeConfig: MarketplaceScra
     }
 
     override suspend fun write(tokens: MarketplaceTokenPair): MarketplaceTokenStore.WriteOutcome {
-        val attrs = template ?: defaultTemplate()
+        val accessAttrs = accessTemplate ?: refreshTemplate ?: defaultTemplate()
+        val refreshAttrs = refreshTemplate ?: accessTemplate ?: defaultTemplate()
         // Both entries carry the REFRESH token's expiry — the site does the same, deliberately, so that a
         // user who does nothing for a day is not signed out by an expired access cookie.
         val expiry = tokens.refreshTokenExpiresAt?.epochSeconds?.toDouble()
 
         // Refresh first: a teardown between the two writes must not leave a fresh access token beside a
         // superseded refresh token.
-        val wroteRefresh = setCookie(scrapeConfig.refreshCookieName, tokens.refreshToken, expiry, attrs)
-        val wroteAccess = setCookie(scrapeConfig.cookieName, tokens.accessToken, expiry, attrs)
+        val wroteRefresh = setCookie(scrapeConfig.refreshCookieName, tokens.refreshToken, expiry, refreshAttrs)
+        val wroteAccess = setCookie(scrapeConfig.cookieName, tokens.accessToken, expiry, accessAttrs)
         if (!wroteRefresh || !wroteAccess) return MarketplaceTokenStore.WriteOutcome.BLIND
 
         // Verify: another writer may have overwritten us between the set and now. Concurrent for the same
