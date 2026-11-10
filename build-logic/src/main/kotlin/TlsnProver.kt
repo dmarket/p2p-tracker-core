@@ -3,10 +3,8 @@ import org.gradle.api.GradleException
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
-import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
-import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -26,7 +24,7 @@ object TlsnProverPin {
     const val PACKAGE = "@dmarket/steam-provenance"
 
     // EXACT, never a range or a dist-tag: `^1.0.1` would also match every later release.
-    const val VERSION = "1.0.1"
+    const val VERSION = "1.1.0-SNAPSHOT.2"
 
     // The registry's `dist.integrity` for that version (`npm view <package>@<version> dist.integrity`): the
     // committed anchor for every byte the prover puts into our tarballs, checked by verifyTlsnProver against the
@@ -34,7 +32,7 @@ object TlsnProverPin {
     // kotlin-js-store/ is not tracked, and tracking it would freeze every transitive npm dependency of the
     // Kotlin/JS toolchain too — this pins the one npm input that ships, and nothing else.
     const val INTEGRITY =
-        "sha512-aXybXjvXMukEqpFTqnQtSS2SHQVwb9Wnvr/kb7IH/3hU8EtCc5fdloErRhbSMHsVyJO+jPnxGg3CCzP81NxhLQ=="
+        "sha512-hwbtqM7EaCpmUuROFuh1GRP8l97dGtGm1MQ5SNB+xPMidFJOJ6OQqEraXpR6gG8jPavs3nJK7NKTwEIuGyGWZg=="
 
     /** The paths a distribution takes from the installed package: the prover, its transport, and its provenance. */
     val SHIPPED = listOf("pkg/**", "transport/**", "VERSION")
@@ -68,12 +66,6 @@ abstract class VerifyTlsnProver : DefaultTask() {
     @get:PathSensitive(PathSensitivity.NONE)
     abstract val installLock: RegularFileProperty
 
-    /** Optional local candidate. Its sha512 is explicit; the lock must resolve the same archive sha1. */
-    @get:InputFiles
-    @get:Optional
-    @get:PathSensitive(PathSensitivity.NONE)
-    abstract val packageArchive: RegularFileProperty
-
     @get:OutputFile abstract val stamp: RegularFileProperty
 
     @TaskAction
@@ -104,18 +96,7 @@ abstract class VerifyTlsnProver : DefaultTask() {
         val lockedVersion = fields.firstOrNull { it.startsWith("version ") }?.removePrefix("version ")?.trim('"')
         val lockedIntegrity = fields.firstOrNull { it.startsWith("integrity ") }?.removePrefix("integrity ")
         if (lockedVersion != version) fail("$lock resolved version $lockedVersion")
-        if (packageArchive.isPresent) {
-            val archive = packageArchive.get().asFile
-            if (!archive.isFile) fail("candidate tarball does not exist")
-            val bytes = archive.readBytes()
-            val sri = "sha512-" + java.util.Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-512").digest(bytes))
-            if (sri != integrity) fail("candidate tarball integrity does not match tlsnProverIntegrity")
-            // Yarn's file: tarball entries use a resolved URL with a sha1, not a registry integrity field.
-            // Bind that install to the archive whose stronger sha512 we just checked.
-            val sha1 = MessageDigest.getInstance("SHA-1").digest(bytes).joinToString("") { "%02x".format(it) }
-            val resolved = fields.firstOrNull { it.startsWith("resolved ") }?.removePrefix("resolved ")?.trim('"')
-            if (resolved?.endsWith("#$sha1") != true) fail("lockfile does not resolve the verified candidate tarball")
-        } else if (lockedIntegrity?.split(' ')?.contains(integrity) != true) {
+        if (lockedIntegrity?.split(' ')?.contains(integrity) != true) {
             fail("installed integrity $lockedIntegrity is not the pinned $integrity")
         }
 
@@ -161,30 +142,5 @@ abstract class VerifyTlsnProver : DefaultTask() {
             "GIT_SHA=$gitSha WASM_SHA256=$wasmSha TRANSPORT_VERSION=${provenance["TRANSPORT_VERSION"]}"
         stamp.get().asFile.writeText(verdict + "\n")
         logger.lifecycle(verdict)
-    }
-}
-
-/** Keep locally overridden distributions usable for tests but refused by npm and release packaging. */
-fun Copy.markProverCandidate(testOnly: Boolean) {
-    inputs.property("testOnlyProver", testOnly)
-    // The distribution task can regenerate package.json without changing the copied prover files.
-    outputs.upToDateWhen { !testOnly }
-    doLast {
-        val dir = (this as Copy).destinationDir
-        val marker = dir.resolve("TLSN_TEST_ONLY")
-        val manifest = dir.resolve("package.json")
-        if (testOnly || marker.exists()) {
-            if (manifest.isFile) {
-                @Suppress("UNCHECKED_CAST")
-                val fields = groovy.json.JsonSlurper().parse(manifest) as MutableMap<String, Any?>
-                if (testOnly) fields["private"] = true else fields.remove("private")
-                manifest.writeText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(fields)) + "\n")
-            }
-            if (testOnly) {
-                marker.writeText("Local prover tarball: testing only. Publish and pin an upstream snapshot before shipping.\n")
-            } else {
-                marker.delete()
-            }
-        }
     }
 }

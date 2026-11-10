@@ -25,14 +25,12 @@ and certificate ceilings retain the prover's finite defaults; the notary also ap
 Tracing identifies `mode=proxy target=notary`. Worker lifecycle, cross-origin isolation, child deadlines
 and concurrency limits still apply.
 
-**Assets:** the default pinned 1.0.1 package supports MPC only. Selecting proxy with old assets fails
-before WASM compilation, worker initialization or the notary upgrade. Headless checks the actual JS
-exports when creating the tracker; the SDK checks once at startup and disables proving with a logged
-reason on incompatible assets. The bounded startup probe imports JS only and never initializes WASM.
-Supply a proxy-capable package (such as the 1.1.0 candidate from the matching steam-provenance branch)
-using headless/SDK `assetsDir`, or build both distributions for local testing with the verified candidate
-override below. Proxy support is additive; these changes do not imply that a new prover release or a
-proxy-enabled production notary is deployed.
+**Assets:** the pinned 1.1.0-SNAPSHOT.2 package supports MPC, proxy and Worker egress. Selecting proxy
+with old assets (1.0.1 or earlier, for example through `assetsDir`) fails before WASM compilation, worker
+initialization or the notary upgrade. Headless checks the actual JS exports when creating the tracker; the
+SDK checks once at startup and disables proving with a logged reason on incompatible assets. The bounded
+startup probe imports JS only and never initializes WASM. Proxy support is additive; the pin does not imply
+that a proxy-enabled production notary is deployed.
 
 Injected `WasmProverModule` implementations retain their one-argument `initialize` entry point.
 To support proxy they must also implement `initialize(threadCount, mode: IssuanceMode)` and retain that
@@ -62,9 +60,7 @@ selects a target address or upstream notary, and never falls back to a direct ro
 
 The package must export `connectEgressNotary` as well as `createProxyProver` / `proveProxy`. A package
 that supports only direct proxy fails before WASM compilation, worker initialization or signing an
-upgrade. Use a matching egress-capable candidate through `assetsDir` or the verified build override;
-the unchanged default 1.0.1 pin cannot provide proxy or egress. Do not infer egress capability from
-`1.1.0` alone: earlier local candidates with that version provided only direct proxy.
+upgrade. The pinned 1.1.0-SNAPSHOT.2 package exports all three; an `assetsDir` override must too.
 
 Egress uses `tlsn.notary.egress.v1` and the existing proxy proof/disclosure API. Browser bearer tokens
 and injected `WebSocketImpl` authentication work as before. A signed gateway must sign the actual
@@ -79,33 +75,6 @@ failure or cancellation; a directional FIN alone would not release a session blo
 also closes the owned WebSocket if cancelled before the egress HELLO arrives. The host target connector
 is unused. Injected prover modules must implement `initialize(threadCount, mode, transport)` to opt in;
 the default overload rejects egress so older modules cannot silently use direct routing.
-
-### Building with an unpublished candidate
-
-The registry pin is unchanged. Local candidate builds are **testing-only**: both distributions carry
-`private: true` and a `TLSN_TEST_ONLY` marker, and release packaging refuses them. To ship a candidate,
-publish it from steam-provenance as a release or branch snapshot (`-SNAPSHOT-<label>`) and pin its exact
-registry version and integrity using the normal procedure below.
-
-Kotlin/JS caches transitive npm metadata in compiled libraries. When switching between the registry
-pin and a candidate (or between candidates), run `./gradlew clean` first, then refresh the untracked
-Yarn lock with all three required properties used for the build:
-
-```bash
-./gradlew clean
-./gradlew kotlinUpgradeYarnLock :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution \
-  -PtlsnProverTarball=/absolute/path/to/dmarket-steam-provenance-1.1.0.tgz \
-  -PtlsnProverVersion=1.1.0 \
-  -PtlsnProverIntegrity='sha512-<base64 from the reviewed npm pack output>'
-```
-
-Use the tarball produced by steam-provenance's guarded package staging, and its `pack.json` integrity.
-The override verifies the archive's SHA-512 against that explicit anchor, binds Yarn's resolved file
-hash to the same archive, then performs the normal version, provenance and complete shipped-file
-checksum checks. A partial override or mismatched integrity fails the build. These are build inputs,
-not runtime options. Omit all three to return to the shipping pin. After 1.1.0 is published, use the
-normal pin-bump procedure below and verify the registry integrity rather than assuming it matches a
-local candidate.
 
 ## Where it comes from
 
