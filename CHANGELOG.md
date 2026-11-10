@@ -14,37 +14,20 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.3.0-beta] - 2026-11-10
+
 ### Added
 
-- Opt-in Worker egress for proxy issuance through `NotaryConfig.transport` and headless/SDK
-  `prover.transport` (`"direct"` or `"egress"`, default direct). Egress uses `notaryUrl` for the Worker
-  frontend, preserves proxy proof/disclosure behavior, checks connector support before initialization,
-  and aborts sessions on completion/failure/cancellation. Requires capable assets and configured
-  Worker/notary services; MPC plus egress is rejected and no route fallback occurs.
-- Opt-in notary proxy issuance through `NotaryConfig.mode` and headless/SDK `prover.mode` (`"mpc"` or
-  `"proxy"`, default MPC), propagated over child IPC. Proxy opens only the notary channel, preserves
-  presentation redaction and response handling, and rejects old assets before initialization or network
-  use. Requires proxy-capable assets and an enabled, routed notary; there is no automatic fallback.
-  The shipped prover, `@dmarket/steam-provenance@1.0.1`, supports MPC only: proxy and egress need a 1.1.0 or
-  later package through the headless/SDK `prover.assetsDir`.
-- The host can pause offer creation while cancels and trade tracking keep running. New
-  `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an
-  offer it would have created (DMA-482).
+- Opt-in Worker egress for proxy issuance: `NotaryConfig.transport` and headless/SDK `prover.transport` (`"direct"` or `"egress"`, default `"direct"`). It needs a capable prover package and a configured Worker; MPC with egress is rejected (DMA-501).
+- Opt-in notary proxy issuance: `NotaryConfig.mode` and headless/SDK `prover.mode` (`"mpc"` or `"proxy"`, default `"mpc"`). The shipped `@dmarket/steam-provenance@1.0.1` supports MPC only; proxy and egress need 1.1.0 or later through `prover.assetsDir` (DMA-501).
+- The host can pause offer creation while cancels and trade tracking keep running. New `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an offer it would have created (DMA-482).
 
 ### Fixed
 
-- Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) instead of
-  copying the refresh cookie's (DMA-815).
-
-- The web vault keeps the Steam credential in `storage.session` instead of `storage.local` and removes the old
-  copy. A host that opens `storage.session` to content scripts with `setAccessLevel` must close it first (DMA-817).
-
-- Partner persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails`, so an
-  offer to a renamed account is now flagged. New config field `SteamEndpointsConfig.getPlayerLinkDetailsPath`
-  (DMA-857).
-
-- A warning on an active offer is cleared while the persona-name read fails, unless the warning was made on the
-  name. `SuspiciousOffer.byName` now also marks a sent offer flagged on the name (DMA-818).
+- Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) (DMA-815).
+- The web vault keeps the Steam credential in `storage.session` and removes the old copy. A host that opens `storage.session` to content scripts with `setAccessLevel` must close it first (DMA-817).
+- Partner persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails`, so an offer to a renamed account is now flagged. New config field `SteamEndpointsConfig.getPlayerLinkDetailsPath` (DMA-857).
+- A warning on an active offer is cleared while the persona-name read fails, unless the warning was made on the name. `SuspiciousOffer.byName` now also marks a sent offer flagged on the name (DMA-818).
 
 ## [1.2.0-beta] - 2026-11-03
 
@@ -610,7 +593,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...HEAD
+[1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
 [1.1.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...v1.1.0-beta
 [1.0.3-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.2-beta...v1.0.3-beta
