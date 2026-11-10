@@ -229,6 +229,17 @@ sealed interface LifecycleEvent {
         val demanded: Int,
     ) : LifecycleEvent
 
+    /**
+     * The sparse history read was made due again, because [owed] deals have a history transition this cycle
+     * observed and could not prove yet (its proving budget ran out, the prover is parked, a freshness demand
+     * took its read, or the mint failed), and this cycle got at least one proof verified. Without it one Steam
+     * click rolling back several trades got one proof per sparse interval.
+     *
+     * Due on the next cycle, or — [retryAfterSeconds], set only then — when the parked prover's cooldown ends.
+     * Emitted only once the new due time is stored; a failed write is a `ProgressStoreFailed` instead.
+     */
+    data class RevertWatchRearmed(val owed: Int, val retryAfterSeconds: Int? = null) : LifecycleEvent
+
     /** A raw Steam status code was reported on `/trade-events`. */
     data class TradeStatusReported(val dealId: String, val source: String, val steamStatusCode: Int) : LifecycleEvent
 

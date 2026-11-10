@@ -560,6 +560,13 @@ data class NotaryConfig(
      * accepted (nothing left to corroborate) or a fresh proof for the same transition is refused (the
      * backend's latest word is "no").
      *
+     * **One kind of row does not expire: a history `12` whose report the backend accepted while the dedup
+     * baseline held it back** because the rollback's actor has not resolved. That report is re-sent on every
+     * history read until the actor resolves, and with this window the row was usually gone by the next sparse
+     * read (the window equals `revertWatchIntervalMs`), so each read re-proved a transition the backend had
+     * already accepted. Such a row is pinned instead (`TrackerProgressStore.pinAcceptedProofs`): the window
+     * protects a backend that is not ready to accept the report yet, and this one already has.
+     *
      * **`Int` milliseconds, like every other duration in this file, and not `Long` by choice:** a `Long` in an
      * `@JsExport` class fails the *production* JS compile outright (`Long can't be exported without using of
      * the bigint type`), and that task is not part of `./gradlew check` — so a `Long` here compiles and tests

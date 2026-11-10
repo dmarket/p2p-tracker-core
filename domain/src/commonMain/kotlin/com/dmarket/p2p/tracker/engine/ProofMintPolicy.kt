@@ -86,6 +86,14 @@ enum class ProofSkipReason(val message: String) {
      * a verdict exists for those, and it reached the backend through the submission that produced it.
      */
     val unprovable: Boolean get() = this == NO_PROVER || this == PROVER_PARKED || this == BUDGET_SPENT
+
+    /**
+     * Whether time alone undoes the skip: the budget renews with the next cycle and a park ends at its own
+     * deadline, so a later cycle can mint this proof with nothing else changing. [NO_PROVER] is not: a host
+     * without a prover stays without one. The loop reads a skipped history transition again for these, and
+     * only for these (see `TradeTrackerLoop.rearmRevertWatchFor`).
+     */
+    val deferred: Boolean get() = this == PROVER_PARKED || this == BUDGET_SPENT
 }
 
 /** Whether a due proof should be minted now, and if not, why not. */
@@ -144,6 +152,10 @@ object ProofMintPolicy {
      * @param mintedThisCycle whether this pass has already spent a proof — what makes [cycleDeadline] a bound
      *   on the *chain* rather than on any single proof.
      * @param cycleDeadline when this cycle must stop minting, or `null` for no bound.
+     * @param pinned the rows of [accepted] whose report the backend has ACCEPTED as well, while only the dedup
+     *   baseline held the transition back (`TrackerProgressStore.pinAcceptedProofs`). They corroborate with no
+     *   [acceptedTtlMs] limit: that window exists for a backend not yet ready to accept the report, and this
+     *   one already has. Last and defaulted, so a caller that has no pins reads exactly as before.
      */
     fun decide(
         intent: ProofIntent,
@@ -155,9 +167,10 @@ object ProofMintPolicy {
         proverParkedUntil: Instant?,
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
+        pinned: Set<ProofIntent> = emptySet(),
     ): ProofMintVerdict = when {
         intent in refused -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED)
-        isCorroborated(intent, now, accepted, acceptedTtlMs) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
+        isCorroborated(intent, now, accepted, acceptedTtlMs, pinned) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
         else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline)
     }
 
@@ -242,9 +255,19 @@ object ProofMintPolicy {
      * A clock that has moved BACKWARDS (a host time correction, a restored machine) makes the age negative;
      * that reads as expired rather than as infinitely fresh, so a bad clock can only ever cost a proof, never
      * suppress one forever.
+     *
+     * A [pinned] row needs no window, but it still needs its row: a pin is a property of a stored verdict, and
+     * one left behind after the row was cleared must not corroborate anything.
      */
-    private fun isCorroborated(intent: ProofIntent, now: Instant, accepted: Map<ProofIntent, Instant>, ttlMs: Int): Boolean {
+    private fun isCorroborated(
+        intent: ProofIntent,
+        now: Instant,
+        accepted: Map<ProofIntent, Instant>,
+        ttlMs: Int,
+        pinned: Set<ProofIntent>,
+    ): Boolean {
         val at = accepted[intent] ?: return false
+        if (intent in pinned) return true
         val age = now - at
         return !age.isNegative() && age.inWholeMilliseconds < ttlMs
     }
