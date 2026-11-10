@@ -137,6 +137,9 @@ TLSN prover @dmarket/steam-provenance@<version> verified (<n> files): GIT_SHA=�
    does a listed file that is missing (a missing `spawn.js` snippet would otherwise build green and fail
    only when `initialize()` starts its workers).
 4. **The binary.** `WASM_SHA256` in `VERSION` must be the digest of the `.wasm` actually installed.
+5. **Channel.** A stable `VERSION_NAME` (no `-SNAPSHOT`) must not pin a `SNAPSHOT` prover. `development`
+   may pin one; a `development` -> `main` merge brings that pin along, and this check stops it before a
+   stable release reaches npm. Checked first, before anything is read from the install.
 
 Checks 2–4 compare the package with itself and catch a damaged or half-replaced install; only check 1
 compares it with this repository. None of them proves the `.wasm` is what the pinned upstream revision
@@ -264,7 +267,8 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
 ## Bumping the prover
 
 1. Pick the release: `npm view @dmarket/steam-provenance dist-tags` to find it, then
-   `npm view @dmarket/steam-provenance@<version> gitHead dist.integrity`.
+   `npm view @dmarket/steam-provenance@<version> gitHead dist.integrity`. A `SNAPSHOT` release builds only
+   while `VERSION_NAME` ends in `-SNAPSHOT` (check 5).
 2. **Check `gitHead` against the notary.** It must equal the `GIT_SHA` of the notary build the target
    environment runs. The prover and the notary must agree on the `dep/tlsn` pin, and a mismatch surfaces as
    an **opaque MPC/deserialization failure**, not a version error. Correlate by commit only — never by the

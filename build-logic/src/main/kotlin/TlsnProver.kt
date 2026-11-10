@@ -54,6 +54,9 @@ abstract class VerifyTlsnProver : DefaultTask() {
 
     @get:Input abstract val packageIntegrity: Property<String>
 
+    /** VERSION_NAME of the library being built: decides whether a snapshot prover is allowed. */
+    @get:Input abstract val releaseVersion: Property<String>
+
     // @InputFiles, not @InputDirectory / @InputFile: those reject a missing path with Gradle's own validation
     // error before the action runs. A missing package is the failure that matters most — a Copy from an absent
     // directory succeeds and copies nothing, which would publish a tarball whose notary path 404s on the first
@@ -80,6 +83,14 @@ abstract class VerifyTlsnProver : DefaultTask() {
 
         fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") {
             "%02x".format(it)
+        }
+
+        // 5. Channel, checked first because it needs nothing installed: a stable release (VERSION_NAME without
+        //    -SNAPSHOT) ships only a stable prover. A snapshot prover is a development build of steam-provenance,
+        //    and nothing else stops it from reaching npm `latest` after a development -> main merge.
+        val release = releaseVersion.get()
+        if (!release.endsWith("-SNAPSHOT") && version.contains("SNAPSHOT", ignoreCase = true)) {
+            fail("a stable release ($release) cannot ship a snapshot prover; pin a stable release in TlsnProverPin")
         }
 
         if (!dir.resolve("pkg/client_wasm_bg.wasm").isFile) fail("not installed at $dir")
