@@ -14,12 +14,6 @@ GitHub Release.
 
 ## [Unreleased]
 
-### Changed
-
-- The TLSN prover moves to `@dmarket/steam-provenance@1.1.0-SNAPSHOT.2`, steam-provenance commit `a625278`
-  (`release/web/v1.1.0-SNAPSHOT.2`), the first package with proxy issuance and Worker egress. MPC stays the
-  default mode.
-
 ### Added
 
 - Opt-in Worker egress for proxy issuance through `NotaryConfig.transport` and headless/SDK
@@ -31,6 +25,8 @@ GitHub Release.
   `"proxy"`, default MPC), propagated over child IPC. Proxy opens only the notary channel, preserves
   presentation redaction and response handling, and rejects old assets before initialization or network
   use. Requires proxy-capable assets and an enabled, routed notary; there is no automatic fallback.
+  The shipped prover, `@dmarket/steam-provenance@1.0.1`, supports MPC only: proxy and egress need a 1.1.0 or
+  later package through the headless/SDK `prover.assetsDir`.
 - The host can pause offer creation while cancels and trade tracking keep running. New
   `setCreatesPaused(handle, paused)`; while paused, `awaitDirectiveOutcome` answers `status:"creates_paused"` for an
   offer it would have created (DMA-482).

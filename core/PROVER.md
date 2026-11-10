@@ -25,8 +25,9 @@ and certificate ceilings retain the prover's finite defaults; the notary also ap
 Tracing identifies `mode=proxy target=notary`. Worker lifecycle, cross-origin isolation, child deadlines
 and concurrency limits still apply.
 
-**Assets:** the pinned 1.1.0-SNAPSHOT.2 package supports MPC, proxy and Worker egress. Selecting proxy
-with old assets (1.0.1 or earlier, for example through `assetsDir`) fails before WASM compilation, worker
+**Assets:** the pinned 1.0.1 package supports MPC only. Proxy and Worker egress need a 1.1.0 or later
+package, which on the headless/SDK path can come through `assetsDir`; the browser path ships the pinned package
+and has no override. Selecting proxy with old assets (1.0.1 or earlier) fails before WASM compilation, worker
 initialization or the notary upgrade. Headless checks the actual JS exports when creating the tracker; the
 SDK checks once at startup and disables proving with a logged reason on incompatible assets. The bounded
 startup probe imports JS only and never initializes WASM. Proxy support is additive; the pin does not imply
@@ -60,7 +61,7 @@ selects a target address or upstream notary, and never falls back to a direct ro
 
 The package must export `connectEgressNotary` as well as `createProxyProver` / `proveProxy`. A package
 that supports only direct proxy fails before WASM compilation, worker initialization or signing an
-upgrade. The pinned 1.1.0-SNAPSHOT.2 package exports all three; an `assetsDir` override must too.
+upgrade. The pinned 1.0.1 package exports none of them; an `assetsDir` override must export all three.
 
 Egress uses `tlsn.notary.egress.v1` and the existing proxy proof/disclosure API. Browser bearer tokens
 and injected `WebSocketImpl` authentication work as before. A signed gateway must sign the actual

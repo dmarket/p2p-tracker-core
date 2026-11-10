@@ -31,12 +31,12 @@ agree with the deployed notary, so correlate the two by `GIT_SHA`.
 
 | Field | Value |
 |---|---|
-| npm package | `@dmarket/steam-provenance@1.1.0-SNAPSHOT.2` (pinned in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt)) |
-| `GIT_SHA` / npm `gitHead` | `a6252789dd3db2db09c80076e32836c653fc5e85` |
-| `BUILD_NUM` / `BUILD_URL` | `2234` / `https://circleci.com/gh/dmarket/steam-provenance/2234` |
+| npm package | `@dmarket/steam-provenance@1.0.1` (pinned in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt)) |
+| `GIT_SHA` / npm `gitHead` | `3fe335478bb7078372900de7fd0dee481bc8fdb3` |
+| `BUILD_NUM` / `BUILD_URL` | `1539` / `https://circleci.com/gh/dmarket/steam-provenance/1539` |
 | `TLSN_SUBMODULE_SHA` | `unknown` — the CI packaging does not record it; read the pinned `dep/tlsn` revision from that commit |
 | `CLIENT_WASM_VERSION` / `TRANSPORT_VERSION` | `0.1.0` / `0.2.0` |
-| Notary subprotocol | `tlsn.notary.v2`; `tlsn.notary.egress.v1` for Worker egress |
+| Notary subprotocol | `tlsn.notary.v2` |
 
 The full manifest ships in each package as `VERSION`, and the artifact's own documentation in the
 `@dmarket/steam-provenance` package as its `README.md`.
@@ -55,7 +55,7 @@ cd build/js/node_modules/@dmarket/steam-provenance && shasum -a 256 -c SHA256SUM
 The WASM binary itself:
 
 ```
-SHA-256 (pkg/client_wasm_bg.wasm) = ff90b1cb45ffd2828fbec29d323169e333d0db54c7e540af69f676ce1be0ff73
+SHA-256 (pkg/client_wasm_bg.wasm) = bb0f0e5f19770273f525cf8906b007de3de747c9e72b07f7a2082b2f394ed745
 ```
 
 The same value is stated in the package's `SHA256SUMS` and as `WASM_SHA256` in `VERSION`. All three must
@@ -79,4 +79,4 @@ corresponding license texts are reproduced here:
 links additional third-party crates beyond TLSNotary (its full transitive dependency tree). This file
 does not enumerate them. The `@dmarket/steam-provenance` package does: its `THIRD_PARTY_NOTICES.md` is
 generated from the crate graph the `.wasm` is compiled from and reproduces each crate's license notice.
-Read it from the pinned version (`npm pack @dmarket/steam-provenance@1.1.0-SNAPSHOT.2`).
+Read it from the pinned version (`npm pack @dmarket/steam-provenance@1.0.1`).
