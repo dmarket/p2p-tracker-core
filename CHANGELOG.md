@@ -17,6 +17,7 @@ GitHub Release.
 ### Added
 
 - The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `startTracker` and `platformEd25519Signer` throw `UnsupportedOperationException` for now (DMA-661).
+- Android: `AndroidTrackerPlatform` keeps the tracker state on disk per Steam account, seals the Steam credential and the device id with an Android Keystore key, and authenticates DMarket calls through the host's token layer. Call `clearAccountState()` on logout, and exclude the core's `SharedPreferences` files from backup and device transfer as the README shows (DMA-661).
 
 ## [1.3.0-beta] - 2026-11-10
 

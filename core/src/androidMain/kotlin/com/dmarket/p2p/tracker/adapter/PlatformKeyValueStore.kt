@@ -1,5 +1,5 @@
-// Compiled with the Android target. Nothing calls it yet: startTracker has no Android runtime until the
-// Android tracker facade lands (DMA-661), and the store it returns is reworked with the persistent state.
+// The default createLoop falls back to. It is not scoped to an account or bound to the install: the Android
+// tracker takes its vault and stores from AndroidTrackerPlatform instead.
 package com.dmarket.p2p.tracker.adapter
 
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore

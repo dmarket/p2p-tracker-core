@@ -326,7 +326,7 @@ supplies the one path that fits it:
 |---|---|---|
 | `CredentialMarketplaceAuthenticator` | **Web** — the library owns auth | Reads the `dm-trade-token` cookie and refreshes it through the DMarket refresh API when it nears expiry (`DefaultMarketplaceCredentialProvider`), attaches it as the `Authorization` header **raw — no `Bearer ` scheme**, which is what the gateway parses, and asks for one forced refresh on 401. |
 | `CredentialMarketplaceAuthenticator` over a **host-supplied** provider | **Mobile** — the host owns refresh | Same authenticator, different provider: the app plugs its own token layer in through `HostTokenMarketplaceCredentialProvider`, so the library never runs a second refresh mechanism against the same rotating credential. |
-| `TransportManagedMarketplaceAuthenticator` (default) | A host that authenticates inside its own transport | Attaches nothing and never retries. Note this is **not** the right choice for the DMarket Android app, which attaches `Authorization` per Retrofit method rather than via an interceptor. |
+| `TransportManagedMarketplaceAuthenticator` (default) | None shipped; a transport that authenticates every request itself | Attaches nothing and never retries. The DMarket Android app does not fit it: it attaches `Authorization` per Retrofit method and has no auth interceptor. |
 
 When either session is logged out the loop surfaces a **signal-only** flag — `needsReLogin` (Steam)
 and `needsMarketplaceReLogin` (DMarket) — and never opens UI itself; the host shows login UI, and the
@@ -736,22 +736,23 @@ credential is strictly worse than either alone. Such a host replaces `Marketplac
 
 ```kotlin
 // Android: the app's own :token_manager already does storage, single-flight, rotation and 401 handling.
-val marketplaceCredentials: MarketplaceCredentialProvider =
-    HostTokenMarketplaceCredentialProvider { force ->
-        // TokenException (no usable pair) → null + lastRefreshFailedLoggedOut, i.e. "show the sign-in prompt".
-        val data = tokenManager.getTokenData(forceRefresh = force)
-        MarketplaceCredential(
-            token = data.authorizationToken,
-            expiresAt = Instant.fromEpochSeconds(data.authorizationTokenExpirationTimestamp),
-        )
-    }
+// AndroidTrackerPlatform wraps it in HostTokenMarketplaceCredentialProvider and CredentialMarketplaceAuthenticator.
+val platform = AndroidTrackerPlatform(applicationContext, tokens = { force ->
+    // TokenException (no usable pair) → null + lastRefreshFailedLoggedOut, i.e. "show the sign-in prompt".
+    val data = tokenManager.getTokenData(forceRefresh = force)
+    MarketplaceCredential(
+        token = data.authorizationToken,
+        expiresAt = Instant.fromEpochSeconds(data.authorizationTokenExpirationTimestamp),
+    )
+})
 
-val marketplace = KtorMarketplaceClient(
-    httpClient = androidMarketplaceClient(hostOkHttp),
-    baseUrl = baseUrl,
-    authenticator = CredentialMarketplaceAuthenticator(marketplaceCredentials),
-)
+val marketplace = androidMarketplaceClient(hostOkHttp, baseUrl, platform.marketplaceAuthenticator)
+val notaryTokens = platform.notaryTokens // the same live token, for the notary
 ```
+
+The app attaches `Authorization` per Retrofit method and its `OkHttpClient` carries no auth interceptor, so the
+library attaches the token itself (raw, no `Bearer `) and asks `TokenManager` for one forced refresh on a 401. There is
+no transport-managed auth path on Android.
 
 `null` from the provider is load-bearing, not advisory: the loop's pre-heartbeat guard and the 401
 authenticator are both null checks, so a provider that hands back a token it knows is dead turns one clean
@@ -764,6 +765,45 @@ before the request is built. That is a change from earlier versions, which refre
 still never reads Steam's durable `steamRefresh_steam`. Both DMarket tokens, the refresh request body and the
 response are in the redactor's named-secret set, so neither reaches a log line, an exception message or a
 crash report.
+
+### Android: state on disk
+
+`AndroidTrackerPlatform` keeps the tracker's state in two private `SharedPreferences` files, written with `commit()`
+off the main thread, so a cold start (the process killed between wakes) resumes the loop state, the directive progress
+and the write claims:
+
+| File | Holds |
+|---|---|
+| `dmarket_p2p_tracker_install` | the device id and the Steam credential, both sealed with an Android Keystore AES-GCM key, and which Steam account the state belongs to |
+| `dmarket_p2p_tracker_account` | that account's loop state, progress, claims and throttles; no secret |
+
+- **Install-scoped.** The Keystore key never leaves the device. On a restored or transferred install the sealed values
+  do not open, so the tracker gets a new device id, reads no Steam credential (and re-acquires one) and erases the
+  account state that came along.
+- **Account-scoped.** `stores(account)` for another Steam account empties the account file first;
+  `clearAccountState()` (call it on logout) empties it and drops the Steam credential. The device id stays.
+
+Keep the core's files out of cloud backup and device-to-device transfer. Add these to the app's
+`dataExtractionRules` file (Android 12+), and the same four `<exclude>` lines inside `<full-backup-content>` of its
+`fullBackupContent` file (Android 11 and lower). The `vault`/`state` files are the ones `createLoop`'s Android
+defaults use:
+
+```xml
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_install.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_account.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_vault.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_state.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_install.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_account.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_vault.xml" />
+        <exclude domain="sharedpref" path="dmarket_p2p_tracker_state.xml" />
+    </device-transfer>
+</data-extraction-rules>
+```
 
 ### Ports you implement per platform
 
@@ -816,8 +856,8 @@ The whole point of the pure core is that the decision surface is testable with n
   surface is additionally pending DMarket security sign-off.
 - **Push** is poll-only by default; the lib parses payloads but owns no push transport (host-delivered
   via `deliverPush`).
-- **Android** builds and publishes as an AAR, but has no tracker runtime yet (`startTracker` throws
-  on Android). **iOS** is deferred (on request); the web extension is the shipping path.
+- **Android** builds and publishes as an AAR with its platform (`AndroidTrackerPlatform`: state on disk, vault,
+  device id, auth), but has no tracker runtime yet (`startTracker` throws on Android). **iOS** is deferred (on request); the web extension is the shipping path.
 
 ## Docs
 

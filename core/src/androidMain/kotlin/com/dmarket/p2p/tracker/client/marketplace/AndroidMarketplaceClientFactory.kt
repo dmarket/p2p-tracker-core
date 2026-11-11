@@ -1,4 +1,3 @@
-// Compiled with the Android target; no test exercises it yet.
 package com.dmarket.p2p.tracker.client.marketplace
 
 import com.dmarket.p2p.tracker.client.sanitizeHttpFailures
@@ -10,24 +9,18 @@ import okhttp3.OkHttpClient
 /**
  * Android factory for the DMarket [KtorMarketplaceClient].
  *
- * **Auth is the host's, not ours.** The Android app already owns its OkHttp `Authenticator` + a token
- * interceptor that inject and refresh the DMarket access token. We reuse that single auth path verbatim:
- * the host hands us its configured [OkHttpClient], we wrap it as the Ktor engine, and the marketplace
- * client uses the **default** [TransportManagedMarketplaceAuthenticator] — so the library attaches no
- * header and never retries on 401 (the OkHttp `Authenticator` already did, inside the engine). There is
- * exactly one refresh mechanism, and it is the app's.
- *
- * Contrast with web, where the library owns auth via [CredentialMarketplaceAuthenticator] over the
- * cookie scraper + page-load refresher.
- *
- * Wiring note: pass `marketplaceCredentials = null` to `TradeTrackerCore.createLoop` on Android —
- * there is no library-side credential provider, so `TradeTrackerLoop.needsMarketplaceReLogin` stays
- * `false` and the host drives re-login natively.
- *
- * The Steam reader keeps its **own** separate [HttpClient] (see `createSteamHttpClient`); only the
- * DMarket transport is host-supplied.
+ * Auth goes through [authenticator], which on Android is `AndroidTrackerPlatform.marketplaceAuthenticator`: a
+ * [CredentialMarketplaceAuthenticator] over the host's token layer (`HostTokenMarketplaceCredentialProvider`). It
+ * attaches the host's token raw in `Authorization` and asks the host for one forced refresh on a 401. The host keeps
+ * the only refresh mechanism; the library adds none. [hostOkHttp] is only the transport (the app's interceptors,
+ * pinning, proxy): the DMarket app attaches `Authorization` per Retrofit method, so its `OkHttpClient` adds no auth.
  */
-fun androidMarketplaceClient(hostOkHttp: OkHttpClient, baseUrl: String, requestTimeoutMs: Long = 30_000L): KtorMarketplaceClient {
+fun androidMarketplaceClient(
+    hostOkHttp: OkHttpClient,
+    baseUrl: String,
+    authenticator: MarketplaceAuthenticator,
+    requestTimeoutMs: Long = 30_000L,
+): KtorMarketplaceClient {
     val httpClient = HttpClient(OkHttp) {
         engine { preconfigured = hostOkHttp }
         // This factory builds its own client, so it does NOT inherit createHttpClient's sanitizing — it
@@ -36,5 +29,5 @@ fun androidMarketplaceClient(hostOkHttp: OkHttpClient, baseUrl: String, requestT
         sanitizeHttpFailures()
         install(HttpTimeout) { requestTimeoutMillis = requestTimeoutMs }
     }
-    return KtorMarketplaceClient(httpClient = httpClient, baseUrl = baseUrl)
+    return KtorMarketplaceClient(httpClient = httpClient, baseUrl = baseUrl, authenticator = authenticator)
 }

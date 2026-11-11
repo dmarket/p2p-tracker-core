@@ -1,33 +1,37 @@
-// Compiled with the Android target, not production-ready: the persistent per-account state of DMA-661
-// reworks it. It implements ONLY the DeviceKeyValueStore port.
 package com.dmarket.p2p.tracker.adapter
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Android [DeviceKeyValueStore] over a private [Context.MODE_PRIVATE] `SharedPreferences` file.
+ * Android [DeviceKeyValueStore] over one private `SharedPreferences` file. **Non-secret data only**: nothing here is
+ * encrypted; secrets go to [AndroidCredentialVault].
  *
- * **Non-secret data only** — this is deliberately *not* encrypted; the Steam credential goes through
- * `AndroidCredentialVault` (Keystore-backed) instead. Prefs IO is moved off the caller's dispatcher via
- * [Dispatchers.IO], matching the vault; writes use `commit()`-free `apply()` since durability here is
- * best-effort by contract (see `PersistedDealWriteClaimStore`).
- *
- * A separate prefs file from the vault's keeps the two concerns independently clearable.
+ * Every call runs on [io], never on the caller's thread. Writes use `commit()`, which returns once the file is on
+ * disk, so a write that returned survives the process being killed right after (`apply()` would not).
  */
-class SharedPreferencesKeyValueStore(context: Context, prefsName: String = DEFAULT_PREFS) : DeviceKeyValueStore {
-    private val prefs = context.applicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+class SharedPreferencesKeyValueStore(private val prefs: SharedPreferences, private val io: CoroutineDispatcher = Dispatchers.IO) :
+    DeviceKeyValueStore {
+    constructor(context: Context, prefsName: String = DEFAULT_PREFS) :
+        this(context.applicationContext.getSharedPreferences(prefsName, Context.MODE_PRIVATE))
 
-    override suspend fun get(key: String): String? = withContext(Dispatchers.IO) { prefs.getString(key, null) }
+    override suspend fun get(key: String): String? = withContext(io) { prefs.getString(key, null) }
 
-    override suspend fun set(key: String, value: String) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(key, value).apply()
+    override suspend fun set(key: String, value: String) {
+        withContext(io) { prefs.edit().putString(key, value).commit() }
     }
 
-    override suspend fun remove(key: String) = withContext(Dispatchers.IO) {
-        prefs.edit().remove(key).apply()
+    override suspend fun remove(key: String) {
+        withContext(io) { prefs.edit().remove(key).commit() }
+    }
+
+    /** Removes every key in the file. */
+    suspend fun clear() {
+        withContext(io) { prefs.edit().clear().commit() }
     }
 
     companion object {

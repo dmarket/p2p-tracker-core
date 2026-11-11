@@ -12,9 +12,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
  *   as the token itself).
  * - **Mobile**: the host app already owns the token and its refresh, so it supplies its own
  *   [MarketplaceCredentialProvider] (`HostTokenMarketplaceCredentialProvider`) and this same web-shaped
- *   authenticator reads through it — one auth source of truth, no duplicated refresh. A host that instead
- *   authenticates inside its own transport stack uses [TransportManagedMarketplaceAuthenticator], which
- *   attaches nothing and never retries on 401.
+ *   authenticator reads through it — one auth source of truth, no duplicated refresh.
  * - **Headless** ([TradingApiAuthenticator]): every request is signed with a DMarket Trading API key; nothing
  *   is refreshed.
  *
@@ -22,8 +20,8 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
  */
 interface MarketplaceAuthenticator {
     /**
-     * The bearer token to attach to the next request, or `null` to send it unauthenticated — either
-     * because the transport authenticates itself (mobile) or because no session is available (logged out).
+     * The token to attach to the next request, or `null` to send it unauthenticated — either because the
+     * transport authenticates itself or because no session is available (logged out).
      */
     suspend fun tokenOrNull(): String?
 
@@ -72,10 +70,9 @@ class CredentialMarketplaceAuthenticator(private val provider: MarketplaceCreden
 }
 
 /**
- * The default authenticator: attaches no header and never retries, because the **HTTP transport** owns
- * auth. This is the mobile path — the host app's OkHttp `Authenticator` + token interceptor inject and
- * refresh the DMarket token before Ktor ever sees the request — and the right default for any host that
- * authenticates at the transport layer.
+ * The default authenticator: attaches no header and never retries. Only for a transport that authenticates
+ * every request itself; no shipped host does. The Android app attaches `Authorization` per Retrofit method and has
+ * no auth interceptor, so it goes through [CredentialMarketplaceAuthenticator] like the others.
  */
 object TransportManagedMarketplaceAuthenticator : MarketplaceAuthenticator {
     override suspend fun tokenOrNull(): String? = null
