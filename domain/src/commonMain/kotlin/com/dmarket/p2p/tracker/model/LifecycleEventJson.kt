@@ -245,6 +245,13 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             }
             putJsonArray("cleared") { event.cleared.forEach { add(it.value) } }
         }
+        is LifecycleEvent.WakeReceived -> {
+            put("event", "WakeReceived")
+            put("type", event.type)
+            put("dealId", event.dealId)
+            put("proveAfter", event.proveAfter)
+            put("acknowledged", event.acknowledged)
+        }
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")
             put("directivesExecuted", event.directivesExecuted)

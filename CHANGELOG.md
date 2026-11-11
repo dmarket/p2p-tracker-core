@@ -16,7 +16,9 @@ GitHub Release.
 
 ### Added
 
-- The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `startTracker` and `platformEd25519Signer` throw `UnsupportedOperationException` for now (DMA-661).
+- The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `platformEd25519Signer` throws `UnsupportedOperationException` for now (DMA-661).
+- Android: the tracker runs. Call `AndroidTracker.install(...)` in `Application.onCreate`, then `startTracker()`; `AndroidTracker.tracker` is a `P2pTracker` with `state`, `setForeground`, `onPush` and `deviceId`. Enqueue each wake push with `P2pTrackerWorker.enqueue(context, payload)`: the core acknowledges it and syncs, and polls only while the app is in the foreground (DMA-661).
+- `PushEnvelopeDto` reads `proveAfter` and `issuedAt`, and `toWakeOrNull()` returns them with the wake. The wake envelope and its ack are provisional until the backend contract defines them (DMA-661).
 - Android: `AndroidTrackerPlatform` keeps the tracker state on disk per Steam account, seals the Steam credential and the device id with an Android Keystore key, and authenticates DMarket calls through the host's token layer. Call `clearAccountState()` on logout, and exclude the core's `SharedPreferences` files from backup and device transfer as the README shows (DMA-661).
 
 ## [1.3.0-beta] - 2026-11-10

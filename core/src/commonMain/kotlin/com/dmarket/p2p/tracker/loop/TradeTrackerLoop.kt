@@ -1016,9 +1016,16 @@ class TradeTrackerLoop(
     // Scheduling state below (lastRunAt / nextHeartbeatAt / lastActiveTracking / expeditedUntil) is
     // mutated inside cycleMutex by runOnce, but also touched by the loop's own entry points
     // (forceHeartbeatNow, awaitDirectiveOutcome, deliverPush → nextWakeDelay). This is safe under
-    // the library's contract that a single driver thread advances the loop — true on the JS worker (the
-    // only live target). A future multithreaded (mobile) driver must serialize these entry points
-    // (guard them with cycleMutex or an atomic) before relying on this state across threads.
+    // the library's contract that a single driver advances the loop: the JS worker is single-threaded,
+    // and the mobile facade ([com.dmarket.p2p.tracker.runtime.P2pTracker]) makes every call it makes into
+    // the loop (forceHeartbeatNow, wakeFromPush, runOnceReporting, nextWakeDelay, mode) under its own
+    // lock. A new multithreaded driver must do the same.
+
+    /**
+     * Foreground or background, read wherever the cadence and the heartbeat's `foreground` look at the mode. Starts
+     * at [LoopConfig.mode]; the mobile facade switches it when the app goes to or leaves the screen.
+     */
+    var mode: TrackerMode = config.mode
 
     /** When [start]'s loop last completed a cycle — the reference point for push floor-honouring. */
     private var lastRunAt: Instant? = null
@@ -1604,7 +1611,7 @@ class TradeTrackerLoop(
             clearServerErrorStreak()
             consecutiveAuthFailures += 1
             // Not persisted: see [consecutiveAuthFailures].
-            nextHeartbeatAt = clock.now() + cadence.authFailureBackoff(consecutiveAuthFailures, config.surface, config.mode)
+            nextHeartbeatAt = clock.now() + cadence.authFailureBackoff(consecutiveAuthFailures, config.surface, mode)
             if (!marketplaceReLoginAnnounced) {
                 marketplaceReLoginAnnounced = true
                 emit(LifecycleEvent.ReLoginNeeded("marketplace"))
@@ -1697,7 +1704,7 @@ class TradeTrackerLoop(
      * heartbeat after a start already counts.
      */
     private fun foregroundFor(credential: SteamCredential): Boolean {
-        val minimum = config.foregroundMinTokenLifetime ?: return config.mode == TrackerMode.Foreground
+        val minimum = config.foregroundMinTokenLifetime ?: return mode == TrackerMode.Foreground
         val subject = credential.subjectSteamId
         val anotherAccount = AccountBinding.evaluate(lastLinkedSteamId, subject) == AccountBindingStatus.MISMATCH ||
             mismatchTokenSteamId == subject
@@ -1784,14 +1791,14 @@ class TradeTrackerLoop(
             val remaining = at - clock.now()
             // Came due while a cycle ran, so no cycle has tried it: wake now, not a failed beat's poll floor later.
             val untried = cycleStartedAt.let { it == null || it < at }
-            if (remaining <= Duration.ZERO && untried) Duration.ZERO else cadence.heartbeatWakeDelay(remaining, config.surface, config.mode)
+            if (remaining <= Duration.ZERO && untried) Duration.ZERO else cadence.heartbeatWakeDelay(remaining, config.surface, mode)
         }
         // A fresh instance with nothing to watch can only idle until the heartbeat is due — don't burn
         // poll/expedited-cadence wakes on cycles that would do nothing (a restored expedited window
         // matters only to a worker that has a tracking list to fast-poll).
         if (lastActiveTracking == null && untilHeartbeat != null) return untilHeartbeat
         val pollClass = if (isExpedited()) PollClass.ExpeditedOffer else PollClass.ActiveOffer
-        val poll = cadence.nextPollDelay(config.surface, config.mode, pollClass)
+        val poll = cadence.nextPollDelay(config.surface, mode, pollClass)
         return if (untilHeartbeat == null) poll else minOf(poll, untilHeartbeat)
     }
 
@@ -1814,7 +1821,7 @@ class TradeTrackerLoop(
                     pushDoorbell.onReceive { true }
                 }
                 if (fromPush) {
-                    val wait = cadence.pushCoalesceDelay(clock.now(), lastRunAt, config.surface, config.mode)
+                    val wait = cadence.pushCoalesceDelay(clock.now(), lastRunAt, config.surface, mode)
                     if (wait > Duration.ZERO) delay(wait)
                     while (pushDoorbell.tryReceive().isSuccess) { /* coalesce the burst */ }
                 }
@@ -1881,7 +1888,7 @@ class TradeTrackerLoop(
     }
 
     private suspend fun scheduleNextHeartbeat(ttlSeconds: Int) {
-        val at = clock.now() + cadence.nextHeartbeatDelay(ttlSeconds, config.surface, config.mode)
+        val at = clock.now() + cadence.nextHeartbeatDelay(ttlSeconds, config.surface, mode)
         nextHeartbeatAt = at
         loopState.setNextHeartbeatAt(at)
     }

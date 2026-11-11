@@ -8,7 +8,7 @@ import com.dmarket.p2p.tracker.port.host.CredentialVault
 /**
  * Android resolves to the Keystore-backed [AndroidCredentialVault]. The vault needs an application
  * [Context]; the host stashes it once at startup (see [AndroidAppContextHolder]) so this factory stays
- * free of Context plumbing — mirroring how [AndroidWorkManagerHolder] feeds [platformScheduler]. The
+ * free of Context plumbing. The
  * host passes only a Context (non-secret); the plaintext credential never crosses back to host code.
  */
 actual fun platformCredentialVault(): CredentialVault = AndroidCredentialVault(AndroidAppContextHolder.context)

@@ -25,8 +25,9 @@ interface TrackerHandle {
  * from `platformScheduler(scope, mode)` (the cross-platform selection mechanism):
  * - **web** (`actual`): `chrome.alarms` + the Service Worker `push` event; survives MV3
  *   service-worker teardown. Must be called synchronously at the service-worker top level.
- * - **iOS / Android** (`actual`, when those targets are enabled): `BGTaskScheduler` / `WorkManager`
- *   + APNs / FCM.
+ * - **Android** (`actual`): needs `AndroidTracker.install(context, …)` first; starts the process's [P2pTracker],
+ *   which polls only in the foreground and is otherwise woken by pushes through `P2pTrackerWorker`.
+ * - **iOS** (deferred): `BGTaskScheduler` + APNs.
  * - **JVM**: not supported — compose a loop with [TradeTrackerCore.createLoop] and drive it yourself.
  *
  * @param baseUrl the DMarket API base URL. Defaults to [TrackerConfig.DEFAULT_DMARKET_BASE_URL] so a

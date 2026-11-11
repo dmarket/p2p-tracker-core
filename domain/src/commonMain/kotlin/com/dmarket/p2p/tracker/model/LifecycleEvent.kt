@@ -439,6 +439,14 @@ sealed interface LifecycleEvent {
      */
     data class SuspiciousOutgoingOffers(val offers: List<SuspiciousOffer>, val cleared: List<OfferId> = emptyList()) : LifecycleEvent
 
+    /**
+     * The mobile tracker took a wake push (DMA-659, provisional): [type] is `wake_all` or `wake_deal`, [dealId] the
+     * deal a `wake_deal` names, [proveAfter] the envelope's, re-formatted (ISO-8601). [acknowledged] is whether the
+     * receipt ack went out; it is sent before the sync, and a failed one does not stop it.
+     */
+    data class WakeReceived(val type: String, val dealId: String?, val proveAfter: String?, val acknowledged: Boolean) :
+        LifecycleEvent
+
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :
         LifecycleEvent

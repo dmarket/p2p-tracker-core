@@ -24,10 +24,9 @@ class AndroidActualsTest {
     }
 
     @Test
-    fun startTrackerIsRefused() {
-        assertFailsWith<UnsupportedOperationException> {
-            startTracker()
-        }
+    fun startTrackerNeedsInstallFirst() {
+        // The Context comes from AndroidTracker.install; without it there is nothing to start on.
+        assertFailsWith<IllegalStateException> { startTracker() }
     }
 
     private companion object {

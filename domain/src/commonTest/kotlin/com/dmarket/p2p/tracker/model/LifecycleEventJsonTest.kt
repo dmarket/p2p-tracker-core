@@ -197,6 +197,16 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun wake_received_carries_the_wake_and_whether_it_was_acknowledged() {
+        val json = parse(LifecycleEvent.WakeReceived("wake_deal", "d-1", "2026-11-11T10:00:00Z", acknowledged = true))
+        assertEquals("WakeReceived", json["event"]?.jsonPrimitive?.content)
+        assertEquals("wake_deal", json["type"]?.jsonPrimitive?.content)
+        assertEquals("d-1", json["dealId"]?.jsonPrimitive?.content)
+        assertEquals("2026-11-11T10:00:00Z", json["proveAfter"]?.jsonPrimitive?.content)
+        assertEquals("true", json["acknowledged"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun marketplace_server_error_carries_endpoint_and_status() {
         val json = parse(LifecycleEvent.MarketplaceServerError(endpoint = "heartbeat", statusCode = 404))
         assertEquals("MarketplaceServerError", json["event"]?.jsonPrimitive?.content)
@@ -379,6 +389,7 @@ class LifecycleEventJsonTest {
                 cleared = listOf(OfferId("o2")),
             ),
             LifecycleEvent.CycleFailed("storage unavailable"),
+            LifecycleEvent.WakeReceived("wake_all", null, null, acknowledged = false),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),
         )
         for (event in samples) {

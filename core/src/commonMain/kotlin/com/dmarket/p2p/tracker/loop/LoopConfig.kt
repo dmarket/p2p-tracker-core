@@ -11,7 +11,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * @param clientVersion The semver string reported by the client (e.g. `"1.4.2"`).
  * @param surface The runtime surface (browser, iOS, Android) — drives cadence floors.
- * @param mode Foreground vs background — affects cadence floors.
+ * @param mode Foreground vs background — affects cadence floors. The loop starts in it; `TradeTrackerLoop.mode` switches it at runtime.
  * @param tunables The host-suppliable [TrackerConfig] (cadence, backoff, endpoints, …). Defaults to
  *   [TrackerConfig.defaults]; the loop builds its [com.dmarket.p2p.tracker.policy.CadencePolicy] from
  *   `tunables.cadence` and reads `tunables.steamEndpoints` for the history poll size.

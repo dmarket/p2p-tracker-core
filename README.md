@@ -652,7 +652,7 @@ val loop = TradeTrackerCore().createLoop(
     marketplace = myMarketplaceClient, // MarketplaceClient (e.g. KtorMarketplaceClient over OkHttp)
     steamReader = mySteamReadClient,   // SteamReadClient (offerStatuses + recentTransfers)
     scraper = mySteamSessionScraper,   // SteamSessionScraper
-    scheduler = myWorkManagerScheduler, // Scheduler (WorkManager / BGTaskScheduler)
+    scheduler = myScheduler,           // Scheduler (chrome.alarms on web; the Android tracker drives itself, see below)
     deviceId = myDeviceIdStore,        // DeviceIdStore — persistent install-scoped device_id (the directive-lease key)
     // vault defaults to platformCredentialVault() (Keychain / Android Keystore); override for tests.
     // clock / notary / offerCreator / offerCanceller / inventoryReader / sessionRefresher /
@@ -805,6 +805,35 @@ defaults use:
 </data-extraction-rules>
 ```
 
+### Android: the tracker
+
+`AndroidTracker` is the Android entry. `startTracker` takes no `Context`, so the app hands it over once in
+`Application.onCreate`, then starts the tracker when a user is logged in:
+
+```kotlin
+AndroidTracker.install(
+    context = this,
+    tokens = myTokenSupplier,          // the MarketplaceTokenSupplier shown above
+    linkedAccount = { userManager.readUserNow().steamId?.let(::SteamId) },
+)
+val handle = startTracker()             // builds the process's P2pTracker and starts it for the linked account
+val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onPush, deviceId
+```
+
+- **Push.** The app's push service enqueues the wake with the push's data payload:
+  `P2pTrackerWorker.enqueue(context, payloadJson)`. The Worker calls `tracker.onPush`, which acknowledges the wake on
+  receipt and then syncs (a heartbeat, then the deal watch and reports). The app sends no ack and has no Worker of its
+  own. Unknown `type`s are ignored. The wake envelope `{type, dealId?, reason, proveAfter?, issuedAt}` and its ack are
+  provisional until the backend contract defines them; until then the ack is a no-op.
+- **Foreground.** `tracker.setForeground(true)` while the app is on screen: only then does the tracker poll. In the
+  background nothing is scheduled; a wake runs a cycle. The heartbeat only says "last seen", so a day-long
+  `ttl_seconds` wakes nothing.
+- **State.** `tracker.state` is a `StateFlow<TrackerState>`: the blocking reason, the linked account and a mismatch,
+  the last sync, and per deal the last check, the last code and where its proof stands.
+- **Accounts.** `start()` serves the account `linkedAccount` names; for another account the previous loop stops and
+  ends before the new account's state is opened. `stop()` on logout, then `clearAccountState()`.
+- **Device registry.** `tracker.deviceId()` is the id the heartbeat carries.
+
 ### Ports you implement per platform
 
 All interfaces live in
@@ -830,6 +859,7 @@ and a default; substitute platform implementations as you enable iOS/Android.
 | `SteamSessionRefresher` / `SteamWebSessionGateway` | Keep the `steamLoginSecure` web session alive in the background. | `DefaultSteamSessionRefresher` / `FetchSteamWebSessionGateway` · `NoOpSteamSessionRefresher` |
 | `NotaryProver` | Generate a TLSN proof for a decisive transition on a `proof_required` deal (`POST /notary`). | `DelegatingNotaryProver` when the host supplies a proving context · `NoOpNotaryProver` (stub presentation) otherwise |
 | `PushChannel` | Backend→client push wake-up (transport-agnostic). | `NoOpPushChannel` (poll-only) |
+| `WakeAcknowledger` | Acknowledge a mobile wake push on receipt, before the sync. Provisional. | `NoOpWakeAcknowledger` |
 
 ---
 
@@ -854,10 +884,11 @@ The whole point of the pure core is that the decision surface is testable with n
 - **Directive execution** is off by default: `directivesEnabled` defaults to `false` on
   `TradeTrackerCore.createLoop`, and the web facade (`Tracker.start`) enables it. The create write
   surface is additionally pending DMarket security sign-off.
-- **Push** is poll-only by default; the lib parses payloads but owns no push transport (host-delivered
-  via `deliverPush`).
+- **Push** is poll-only on web; the lib parses payloads but owns no push transport (host-delivered
+  via `deliverPush` on web, `P2pTrackerWorker.enqueue` on Android).
 - **Android** builds and publishes as an AAR with its platform (`AndroidTrackerPlatform`: state on disk, vault,
-  device id, auth), but has no tracker runtime yet (`startTracker` throws on Android). **iOS** is deferred (on request); the web extension is the shipping path.
+  device id, auth) and its tracker (`AndroidTracker`, `P2pTracker`, `P2pTrackerWorker`). The Steam session and the
+  offer writes are not wired yet, so a leased `create_offer` / `cancel_offer` lapses to another device. **iOS** is deferred (on request); the web extension is the shipping path.
 
 ## Docs
 
