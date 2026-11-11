@@ -1,8 +1,6 @@
-// PHASE 3 SCAFFOLD — reference only, NOT compiled until the Android target is enabled in
-// build-logic/.../dmarket.kmp.library.gradle.kts (the `androidTarget { ... }` block). KMP ignores this
-// source set until then; it is linted by spotless but not type-checked. Finalize against a real Android
-// build. It implements ONLY the Scheduler port — the cadence/decision logic stays shared in commonMain
-// (CadencePolicy + TradeTrackerLoop), so mobile and web stay consistent.
+// Compiled with the Android target, not production-ready: the Android tracker runtime of DMA-661 replaces
+// this Worker with a CoroutineWorker-based one. It implements ONLY the Scheduler port — the cadence/decision
+// logic stays shared in commonMain (CadencePolicy + TradeTrackerLoop), so mobile and web stay consistent.
 package com.dmarket.p2p.tracker.adapter
 
 import android.content.Context

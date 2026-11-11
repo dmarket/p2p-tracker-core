@@ -50,11 +50,23 @@ version: 2.1
 # reaches core, and nothing is released.
 # Only env var still needed: GITHUB_TOKEN (contents:write) — for the tag + GitHub Release on STABLE
 # releases. Snapshots need no secrets at all.
+#
+# Maven (the Android AARs, plus the JVM/JS/metadata variants, of com.dmarket.p2p:trade-tracker-core and
+# :trade-tracker-domain): publish_maven runs beside publish_npm after the same `hold_release` and uploads to
+# Maven Central through the Sonatype Central Portal (`./gradlew publishToMavenCentral`, plugin
+# com.vanniktech.maven.publish). A stable version becomes a deployment that is released from the Portal;
+# `<x.y.z>-SNAPSHOT` goes to the Central snapshots repository; a branch snapshot is not published to Maven, since
+# Maven has no dist-tag to keep it apart from main's snapshot. Credentials come only from the `maven-central`
+# context, which only this job uses: ORG_GRADLE_PROJECT_mavenCentralUsername / _mavenCentralPassword (a Portal
+# user token) and ORG_GRADLE_PROJECT_signingInMemoryKey / _signingInMemoryKeyPassword (the armored PGP key).
+# Until they are set, publish_maven says so and publishes nothing.
 
 executors:
-  jdk-node:
+  android-node:
     docker:
-      - image: cimg/openjdk:17.0-node
+      # JDK 21 (runs Gradle; the compile toolchain is JDK 17 via foojay), the Android SDK (ANDROID_HOME) for the
+      # Android target, and Node for the Kotlin/JS tests and the npm packaging.
+      - image: cimg/android:2026.10.1-node
     resource_class: large
   node-publish:
     docker:
@@ -93,7 +105,7 @@ jobs:
   # recompile all Kotlin/JS from scratch). The dists + npm packaging also run on non-publish branches
   # — after `check` they are cheap incremental work, and publish_npm stays branch-filtered.
   build_and_test:
-    executor: jdk-node
+    executor: android-node
     steps:
       - checkout
       # No separate prover step: the TLSN prover is a pinned npm dependency, and :core:verifyTlsnProver
@@ -302,6 +314,42 @@ jobs:
           bash scripts/ci/delete-release-branch.sh
           NATIVE_RELEASE_COMMAND
 
+  publish_maven:
+    executor: android-node
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - restore_gradle_cache
+      - run:
+          name: Publish the Maven artifacts to Maven Central (Sonatype Central Portal)
+          command: |
+            set -euo pipefail
+            source release.env
+            if [ "${SKIP_PUBLISH:-false}" = "true" ]; then
+              echo "Skipping: commit message contains [skip publish] — no Maven publish."
+              exit 0
+            fi
+            if [ -n "${SNAPSHOT_LABEL:-}" ]; then
+              echo "Skipping: a branch snapshot ($VERSION_NAME-$SNAPSHOT_LABEL) is published to npm only."
+              exit 0
+            fi
+            # Same agreement publish_npm checks: the branch names the version it releases.
+            if [ "${CIRCLE_BRANCH#release/v}" != "$VERSION_NAME" ]; then
+              echo "ERROR: branch '$CIRCLE_BRANCH' proposes ${CIRCLE_BRANCH#release/v} but gradle.properties says $VERSION_NAME." >&2
+              exit 1
+            fi
+            missing=""
+            for v in ORG_GRADLE_PROJECT_mavenCentralUsername ORG_GRADLE_PROJECT_mavenCentralPassword \
+                     ORG_GRADLE_PROJECT_signingInMemoryKey ORG_GRADLE_PROJECT_signingInMemoryKeyPassword; do
+              if [ -z "${!v:-}" ]; then missing="$missing $v"; fi
+            done
+            if [ -n "$missing" ]; then
+              echo "Skipping: the maven-central context does not set:$missing — nothing published to Maven Central."
+              exit 0
+            fi
+            ./gradlew publishToMavenCentral --no-daemon --stacktrace
+
 workflows:
   ci:
     jobs:
@@ -327,6 +375,11 @@ workflows:
               only: /^release\/v\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/
       - publish_npm:
           context: ["release-writer"]
+          requires:
+            - hold_release
+          filters: *release_branches
+      - publish_maven:
+          context: ["maven-central"]
           requires:
             - hold_release
           filters: *release_branches

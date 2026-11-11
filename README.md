@@ -453,12 +453,14 @@ core/src/{jvm,android,ios}Main/...   per-target actuals (HTTP engine, scheduler,
 ./gradlew spotlessApply          # auto-format (ktlint via Spotless) — run before committing
 ./gradlew :domain:koverHtmlReport
 ./gradlew :core:jsBrowserProductionLibraryDistribution   # ESM + .d.ts for the extension
-./gradlew publishToMavenLocal    # dry-run publish (real publish is on-request)
+./gradlew publishToMavenLocal    # :domain + :core into ~/.m2 (unsigned), incl. the Android AARs
 ```
 
-- **iOS / Android targets are deferred (on request)** — see the commented blocks in
-  `build-logic/.../dmarket.kmp.library.gradle.kts`. The iOS target can only be built on a CI macOS
-  runner with full Xcode.
+- **The Android target needs an Android SDK** (compileSdk 37): `sdk.dir` in `local.properties` or
+  `ANDROID_HOME`. Only `:domain` and `:core` build for Android.
+- **The iOS target is deferred (on request)** — see the commented block in
+  `build-logic/.../dmarket.kmp.library.gradle.kts`. It can only be built on a CI macOS runner with
+  full Xcode.
 - **The dev-only Chrome debug harness:** `./gradlew :debug-harness:assembleDebugExtension`, then load
   `tools/debug-extension` unpacked — see [tools/debug-extension/README.md](tools/debug-extension/README.md).
 
@@ -814,7 +816,8 @@ The whole point of the pure core is that the decision surface is testable with n
   surface is additionally pending DMarket security sign-off.
 - **Push** is poll-only by default; the lib parses payloads but owns no push transport (host-delivered
   via `deliverPush`).
-- **iOS / Android targets** are deferred (on request); the web extension is the shipping path.
+- **Android** builds and publishes as an AAR, but has no tracker runtime yet (`startTracker` throws
+  on Android). **iOS** is deferred (on request); the web extension is the shipping path.
 
 ## Docs
 

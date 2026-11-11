@@ -1,5 +1,5 @@
 plugins {
-    id("dmarket.kmp.library")
+    id("dmarket.kmp.published")
 }
 
 kotlin {

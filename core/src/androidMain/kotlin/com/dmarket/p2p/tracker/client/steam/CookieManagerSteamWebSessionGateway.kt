@@ -1,7 +1,5 @@
-// PHASE 3 SCAFFOLD — reference only, NOT compiled until the Android target is enabled in
-// build-logic/.../dmarket.kmp.library.gradle.kts (the `androidTarget { ... }` block). KMP ignores this
-// source set until then; it is linted by spotless but not type-checked. Finalize against a real
-// Android build. It implements ONLY the gateway — the refresh algorithm is shared in commonMain
+// Compiled with the Android target, not production-ready: the Steam session in the core vault (DMA-662)
+// finishes it. It implements ONLY the gateway — the refresh algorithm is shared in commonMain
 // (DefaultSteamSessionRefresher), so mobile and web stay consistent.
 package com.dmarket.p2p.tracker.client.steam
 
@@ -59,7 +57,7 @@ class CookieManagerSteamWebSessionGateway(
     override suspend fun getWithSession(url: String): String? {
         val request = Request.Builder().url(url).get().build()
         http.newCall(request).execute().use { response ->
-            return if (response.isSuccessful) response.body?.string() else null
+            return if (response.isSuccessful) response.body.string() else null
         }
     }
 
@@ -72,7 +70,7 @@ class CookieManagerSteamWebSessionGateway(
             if (!response.isSuccessful) {
                 throw TransientSessionException("session POST non-OK status: ${response.code}")
             }
-            response.body?.string()
+            response.body.string()
         }
     }
 

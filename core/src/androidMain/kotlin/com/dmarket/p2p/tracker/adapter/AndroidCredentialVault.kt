@@ -1,7 +1,5 @@
-// PHASE 3 SCAFFOLD — reference only, NOT compiled until the Android target is enabled in
-// build-logic/.../dmarket.kmp.library.gradle.kts (the `androidTarget { ... }` block). KMP ignores this
-// source set until then; it is linted by spotless but not type-checked. Finalize against a real Android
-// build. It implements ONLY the CredentialVault port.
+// Compiled with the Android target, not production-ready: the persistent state of DMA-661 reworks it (a
+// failed decrypt reads as NEEDS_REFRESH, state per account). It implements ONLY the CredentialVault port.
 //
 // Encryption is delegated to the Android Keystore: the AES-256-GCM key is generated *inside* the
 // Keystore (hardware-backed where available, StrongBox if present) and is **non-exportable** — it never

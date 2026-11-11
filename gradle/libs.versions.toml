@@ -7,6 +7,12 @@ turbine = "1.2.1"
 
 ktor = "3.6.1"
 
+# Same AGP as the Android app that consumes the AAR (its androidGradlePlugin). KGP 2.4.10 declares AGP
+# support up to 9.1.0; 9.3.1 is outside that table, and the build and tests pass on it.
+androidGradlePlugin = "9.3.1"
+androidxWork = "2.11.2"
+vanniktechMavenPublish = "0.37.0"
+
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
@@ -19,12 +25,16 @@ ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", 
 ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "ktor" }
 ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "androidxWork" }
+
+# Gradle plugins that build-logic puts on its classpath for the `dmarket.kmp.published` convention plugin.
+android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "androidGradlePlugin" }
+vanniktech-maven-publish-plugin = { module = "com.vanniktech:gradle-maven-publish-plugin", version.ref = "vanniktechMavenPublish" }
 
 # Only the two Kotlin plugins are declared here: the root build applies them with `apply false` so
-# the Kotlin Gradle plugin is loaded once on the root classpath. Every other plugin (kover, spotless)
-# is applied by id from the `dmarket.kmp.library` convention plugin, which pins its own versions in
-# build-logic/build.gradle.kts — build-logic cannot easily read this catalog, so declaring them here
-# too would just be a second source of truth that can drift.
+# the Kotlin Gradle plugin is loaded once on the root classpath. Every other plugin is applied by id from
+# a convention plugin: kover and spotless are pinned in build-logic/build.gradle.kts, AGP and vanniktech
+# come from the [libraries] entries above.
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }

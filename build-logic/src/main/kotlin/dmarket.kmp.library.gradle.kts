@@ -1,8 +1,8 @@
 // Convention plugin shared by every module in this repo.
 //
-// Live targets this phase: jvm() (fast unit tests) and js(IR) (the web-extension consumer).
-// Android + iOS targets are intentionally deferred — see the commented block below.
-// Keeping them out now means the build needs neither the Android SDK nor Xcode.
+// Targets: jvm() (fast unit tests) and js(IR) (the web-extension consumer). The Android target lives in
+// `dmarket.kmp.published`, which only the published modules (:domain, :core) apply, so the rest of the build
+// needs no Android SDK. iOS is deferred — see the commented block below.
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
     id("org.jetbrains.kotlin.plugin.serialization")
@@ -23,8 +23,6 @@ kotlin {
         browser()
     }
 
-    // TODO: enable the Android target (AAR → Maven Central).
-    //   androidTarget { publishLibraryVariants("release") }
     // TODO: enable iOS targets (XCFramework → SwiftPM). Requires full
     //   Xcode, so this can only be built/tested on a macOS CI runner.
     //   iosArm64(); iosSimulatorArm64(); iosX64()

@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.targets.js.npm.npmProject
 import org.jetbrains.kotlin.gradle.targets.js.testing.KotlinJsTest
 
 plugins {
-    id("dmarket.kmp.library")
+    id("dmarket.kmp.published")
 }
 
 // The TLSN prover this library ships is pinned once, in build-logic (TlsnProverPin): the headless package
@@ -39,6 +39,10 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.okhttp)
+        }
+        androidMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.androidx.work.runtime.ktx)
         }
         jsMain.dependencies {
             implementation(libs.ktor.client.js)
@@ -91,6 +95,17 @@ kotlin.sourceSets.commonMain {
 // generation silently falling back to something else.
 tasks.withType<Test>().configureEach {
     systemProperty("dmarket.versionName", providers.gradleProperty("VERSION_NAME").get())
+}
+
+// The common suite also runs on the Android host, except the Trading API signing path: platformEd25519Signer
+// refuses on Android (the Android host authenticates with its own DMarket token), so the tests that sign run on
+// the JVM and JS only.
+tasks.withType<Test>().matching { it.name == "testAndroidHostTest" }.configureEach {
+    filter {
+        excludeTestsMatching("com.dmarket.p2p.tracker.client.marketplace.PlatformEd25519SignerTest")
+        excludeTestsMatching("com.dmarket.p2p.tracker.client.marketplace.TradingApiAuthenticatorTest")
+        excludeTestsMatching("com.dmarket.p2p.tracker.runtime.HeadlessTrackerTest")
+    }
 }
 
 // The library output uses ES modules (useEsModules() above), but the Mocha / Node test runner

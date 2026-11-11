@@ -14,6 +14,10 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Added
+
+- The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `startTracker` and `platformEd25519Signer` throw `UnsupportedOperationException` for now (DMA-661).
+
 ## [1.3.0-beta] - 2026-11-10
 
 ### Added

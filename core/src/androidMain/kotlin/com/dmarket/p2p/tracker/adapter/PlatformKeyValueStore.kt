@@ -1,6 +1,5 @@
-// PHASE 3 SCAFFOLD — reference only, NOT compiled until the Android target is enabled in
-// build-logic/.../dmarket.kmp.library.gradle.kts (the `androidTarget { ... }` block). KMP ignores this
-// source set until then; it is linted by spotless but not type-checked.
+// Compiled with the Android target. Nothing calls it yet: startTracker has no Android runtime until the
+// Android tracker facade lands (DMA-661), and the store it returns is reworked with the persistent state.
 package com.dmarket.p2p.tracker.adapter
 
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore

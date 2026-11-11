@@ -1,6 +1,4 @@
-// PHASE 3 SCAFFOLD — reference only, NOT compiled until the Android target is enabled in
-// build-logic/.../dmarket.kmp.library.gradle.kts (androidTarget()). KMP ignores this source set until then;
-// it is linted by spotless but not type-checked.
+// Compiled with the Android target. It holds no code, only the wiring note below.
 //
 // READ THIS BEFORE WRITING ANY ANDROID DMARKET-AUTH CODE. There is deliberately no adapter here that names
 // the app's own `TokenManager`: that type lives in the application repository, and the dependency runs
