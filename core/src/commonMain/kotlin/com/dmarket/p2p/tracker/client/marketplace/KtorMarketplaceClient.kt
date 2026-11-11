@@ -365,7 +365,7 @@ class KtorMarketplaceClient(
      * The default authenticator sends the token RAW (no `Bearer ` scheme): the live exchange-gateway parses
      * the header value as the JWT itself and 401s on a `Bearer `-prefixed value (verified against dev2
      * 2026-07-07; the DMarket FE sends it the same way). Diverges from the golden contract text on purpose.
-     * No header at all → sent unauthenticated: the transport authenticates itself (mobile) or the user is
+     * No header at all → sent unauthenticated: the transport authenticates itself or the user is
      * logged out (web), in which case the 401 path / re-login signal takes over.
      */
     private suspend fun HttpRequestBuilder.authorize(method: HttpMethod, body: String) {

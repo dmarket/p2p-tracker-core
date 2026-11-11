@@ -1433,7 +1433,7 @@ class TradeTrackerLoop(
         // missing-connection state and bail. `current()` is the same call the heartbeat would make anyway
         // (via the authenticator), so it adds no network on the happy path; on a fresh cached token it
         // returns immediately, and on a signed-out one the provider's own latch keeps it network-free.
-        // Skipped when no provider is wired (mobile hosts authenticate at the transport layer). The
+        // Skipped when no provider is wired (a host whose transport authenticates itself). The
         // reactive MarketplaceUnauthorizedException path below stays the backstop for a token that is
         // present but rejected. Because the heartbeat is retried on every due cycle (nextHeartbeatAt is
         // never advanced on this early return), the loop self-heals: the next cycle after the user logs

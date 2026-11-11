@@ -72,9 +72,9 @@ fun createSteamHttpClient(
 
 /**
  * The DMarket-facing transport for [com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient]. Separate from the Steam client (see
- * [createSteamHttpClient]). On mobile the host supplies its own pre-authenticated `HttpClient` instead
- * of this factory (its OkHttp `Authenticator` owns token injection + refresh) — **that client must call
- * [sanitizeHttpFailures] itself**, or Ktor's leaky non-2xx exceptions apply and
+ * [createSteamHttpClient]). On Android the host's `OkHttpClient` is the engine instead
+ * (`androidMarketplaceClient`), and auth still goes through the client's authenticator — **a client built that way
+ * must call [sanitizeHttpFailures] itself**, or Ktor's leaky non-2xx exceptions apply and
  * `KtorMarketplaceClient`'s status mapping stops matching.
  *
  * @param secretParamNames redaction set, forwarded to [createHttpClient]. Present for symmetry with

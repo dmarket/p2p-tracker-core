@@ -121,7 +121,8 @@ class AndroidTrackerPlatform internal constructor(
 
     /**
      * The state storage of [account] (a steamid64). Another account's state, if any, is erased first, so the stores
-     * built over this start empty for a new account and keep what they had for the same one.
+     * built over this start empty for a new account and keep what they had for the same one. Stop the previous
+     * account's loop first: its stores hold state in memory and would write it into the new account's file.
      */
     suspend fun storageFor(account: SteamId): DeviceKeyValueStore = mutex.withLock {
         require(STEAM_ID_64.matches(account.value)) { "not a steamid64" }
