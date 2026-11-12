@@ -1,6 +1,5 @@
 package com.dmarket.p2p.tracker.runtime
 
-import com.dmarket.p2p.tracker.adapter.host.CoroutineScheduler
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
@@ -16,8 +15,12 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
+import com.dmarket.p2p.tracker.port.host.Scheduler
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlin.time.Duration
 
 /**
  * Builds the DMarket client over the host's own HTTP stack (on Android, the app's `OkHttpClient`). The client must
@@ -30,6 +33,18 @@ fun interface MarketplaceClientFactory {
         requestTimeoutMs: Long,
         retry: MarketplaceRetryConfig,
     ): MarketplaceClient
+}
+
+/**
+ * The mobile loop's scheduler: arms nothing. [P2pTracker] drives every cycle (on screen by polling, else on a push),
+ * and a timer in the process scope would outlive [P2pTracker.stop] and [P2pTracker.onLogout].
+ */
+private object NoWakeScheduler : Scheduler {
+    override val ticks: Flow<Unit> = emptyFlow()
+
+    override fun schedule(delay: Duration) = Unit
+
+    override fun cancel() = Unit
 }
 
 /**
@@ -85,8 +100,7 @@ class MobileTracker(
                 marketplace = marketplace,
                 steamReader = KtorSteamReadClient(steamHttp, config.steamEndpoints),
                 scraper = KtorSteamSessionScraper(steamHttp, config.steamScrape, config.steamEndpoints.communityBaseUrl),
-                // Never armed: P2pTracker drives the loop itself.
-                scheduler = CoroutineScheduler(scope),
+                scheduler = NoWakeScheduler,
                 deviceId = platform.deviceIds,
                 vault = platform.vault,
                 clock = platform.clock,

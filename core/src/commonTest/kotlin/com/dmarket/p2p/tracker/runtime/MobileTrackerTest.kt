@@ -8,6 +8,7 @@ import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
+import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
@@ -23,7 +24,13 @@ import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -95,8 +102,9 @@ class MobileTrackerTest {
     private fun TestScope.tracker(
         factory: MarketplaceClientFactory? = null,
         config: TrackerConfig = TrackerConfig.defaults(),
+        scope: CoroutineScope = backgroundScope,
     ): P2pTracker = MobileTracker(platform, linkedAccount = { linked }, cellularProofs = { false }, hostMarketplaceClient = factory)
-        .tracker(backgroundScope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
+        .tracker(scope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
 
     @Test
     fun theHostClientFactoryGetsTheConfiguredRetry() = runTest {
@@ -202,5 +210,21 @@ class MobileTrackerTest {
         )
 
         assertSame(platform.marketplaceAuthenticator, given)
+    }
+
+    @Test
+    fun aDeliveryLeavesNoTimerBehindOnceStopped() = runTest {
+        val scope = CoroutineScope(StandardTestDispatcher(testScheduler) + Job())
+        workAsTheLinkedAccount()
+        val tracker = tracker(MarketplaceClientFactory { _, _, _, _ -> FakeMarketplaceClient() }, scope = scope)
+        assertTrue(tracker.start())
+
+        // A fresh session heartbeats before its create-trade call, and that heartbeat reschedules the loop.
+        tracker.startDelivery(DealId("deal-1"))
+        tracker.stop()
+        runCurrent()
+
+        assertTrue(scope.coroutineContext.job.children.none(), "nothing may wait in the process scope after stop")
+        scope.cancel()
     }
 }
