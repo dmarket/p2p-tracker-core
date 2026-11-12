@@ -118,7 +118,7 @@ jobs:
       - restore_gradle_cache
       - run:
           name: Check (spotless + JVM/JS tests + kover gate) + both JS library distributions
-          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution --no-daemon --stacktrace
+          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution --max-workers=2 --no-daemon --stacktrace
       - save_gradle_cache
       - run:
           name: Collect test results
