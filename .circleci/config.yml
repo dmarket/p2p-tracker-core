@@ -330,12 +330,16 @@ jobs:
               echo "Skipping: commit message contains [skip publish] — no Maven publish."
               exit 0
             fi
+            MAVEN_VERSION="$VERSION_NAME"
+            EXPECTED_BRANCH_VERSION="$VERSION_NAME"
             if [ -n "${SNAPSHOT_LABEL:-}" ]; then
-              echo "Skipping: a branch snapshot ($VERSION_NAME-$SNAPSHOT_LABEL) is published to npm only."
-              exit 0
+              # Maven treats only a version ending in -SNAPSHOT as a snapshot, so the label goes before it
+              # (1.3.1-SNAPSHOT + development -> 1.3.1-development-SNAPSHOT) and never overwrites main's snapshot.
+              MAVEN_VERSION="${VERSION_NAME%-SNAPSHOT}-$SNAPSHOT_LABEL-SNAPSHOT"
+              EXPECTED_BRANCH_VERSION="$VERSION_NAME-$SNAPSHOT_LABEL"
             fi
             # Same agreement publish_npm checks: the branch names the version it releases.
-            if [ "${CIRCLE_BRANCH#release/v}" != "$VERSION_NAME" ]; then
+            if [ "${CIRCLE_BRANCH#release/v}" != "$EXPECTED_BRANCH_VERSION" ]; then
               echo "ERROR: branch '$CIRCLE_BRANCH' proposes ${CIRCLE_BRANCH#release/v} but gradle.properties says $VERSION_NAME." >&2
               exit 1
             fi
@@ -348,7 +352,8 @@ jobs:
               echo "Skipping: the maven-central context does not set:$missing — nothing published to Maven Central."
               exit 0
             fi
-            ./gradlew publishToMavenCentral --no-daemon --stacktrace
+            echo "Publishing $MAVEN_VERSION"
+            ./gradlew publishToMavenCentral -PVERSION_NAME="$MAVEN_VERSION" --no-daemon --stacktrace
 
 workflows:
   ci:
