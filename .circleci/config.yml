@@ -55,8 +55,8 @@ version: 2.1
 # :trade-tracker-domain): publish_maven runs beside publish_npm after the same `hold_release` and uploads to
 # Maven Central through the Sonatype Central Portal (`./gradlew publishToMavenCentral`, plugin
 # com.vanniktech.maven.publish). A stable version becomes a deployment that is released from the Portal;
-# `<x.y.z>-SNAPSHOT` goes to the Central snapshots repository; a branch snapshot is not published to Maven, since
-# Maven has no dist-tag to keep it apart from main's snapshot. Credentials come only from the `maven-central`
+# `<x.y.z>-SNAPSHOT` goes to the Central snapshots repository, and a branch snapshot goes there as
+# `<x.y.z>-<label>-SNAPSHOT`, apart from main's. Credentials come only from the `maven-central`
 # context, which only this job uses: ORG_GRADLE_PROJECT_mavenCentralUsername / _mavenCentralPassword (a Portal
 # user token) and ORG_GRADLE_PROJECT_signingInMemoryKey / _signingInMemoryKeyPassword (the armored PGP key).
 # Until they are set, publish_maven says so and publishes nothing.
@@ -392,4 +392,5 @@ workflows:
           context: ["release-writer"]
           requires:
             - publish_npm
+            - publish_maven
           filters: *release_branches
