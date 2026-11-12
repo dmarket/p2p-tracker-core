@@ -15,8 +15,8 @@ import kotlinx.serialization.encodeToString
  * and the plaintext is never handed to host code.
  *
  * An entry that does not open or does not decode (the key is gone after a restore or a device transfer, a corrupt
- * value, an old schema) is erased and read as `null`, never thrown. `SteamCredentialProvider` then takes the refresh
- * path, as it does for any credential it has not got.
+ * value, an old schema) is erased and read as `null`. `SteamCredentialProvider` then takes the refresh path, as it
+ * does for any credential it has not got. A Keystore failure that may pass is thrown and erases nothing.
  */
 class AndroidCredentialVault(private val sealed: DeviceKeyValueStore) : CredentialVault {
     /** A vault in its own prefs file, sealed with the default Keystore key. */

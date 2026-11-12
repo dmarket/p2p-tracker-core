@@ -1,7 +1,6 @@
 package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
-import com.dmarket.p2p.tracker.adapter.notary.MarketplaceNotaryTokenProvider
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.TrackerConfig
@@ -33,7 +32,6 @@ import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
-import com.dmarket.p2p.tracker.port.notary.NotaryTokenProvider
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -111,9 +109,6 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
 
     /** Attaches the host's token raw in `Authorization` and asks it for one forced refresh on a 401. */
     val marketplaceAuthenticator: MarketplaceAuthenticator = CredentialMarketplaceAuthenticator(marketplaceCredentials)
-
-    /** The notary's DMarket token: the same live token as every marketplace call. */
-    val notaryTokens: NotaryTokenProvider = MarketplaceNotaryTokenProvider(marketplaceCredentials)
 
     /**
      * The state storage of [account] (a steamid64). Another account's state, if any, is erased first, so the stores

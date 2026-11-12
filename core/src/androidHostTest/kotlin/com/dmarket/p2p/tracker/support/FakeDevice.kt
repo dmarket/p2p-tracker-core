@@ -1,7 +1,9 @@
 package com.dmarket.p2p.tracker.support
 
 import android.content.SharedPreferences
+import com.dmarket.p2p.tracker.adapter.SealKeyMissingException
 import com.dmarket.p2p.tracker.adapter.SecretCipher
+import javax.crypto.AEADBadTagException
 import kotlin.random.Random
 
 /**
@@ -17,20 +19,24 @@ class FakeDisk(val files: MutableMap<String, MutableMap<String, String>> = mutab
 }
 
 /**
- * The Android Keystore of one device: a key made on the first encrypt, kept on the device, never copied. A value
- * sealed under another key (or with no key at all) does not open, as AES-GCM's tag check would refuse it.
+ * The Android Keystore of one device: a key made on the first encrypt, kept on the device, never copied. With no key,
+ * decrypt throws [SealKeyMissingException]; a value sealed under another key fails AES-GCM's tag check
+ * ([AEADBadTagException]). While [failure] is set, every call throws it, as a busy or restarting Keystore does.
  */
 class FakeKeystore : SecretCipher {
     private var key: ByteArray? = null
+    var failure: Exception? = null
 
     override fun encrypt(plaintext: ByteArray): ByteArray {
+        failure?.let { throw it }
         val k = key ?: Random.nextBytes(KEY_BYTES).also { key = it }
         return k + plaintext.mapIndexed { i, b -> (b.toInt() xor k[i % KEY_BYTES].toInt()).toByte() }
     }
 
     override fun decrypt(sealed: ByteArray): ByteArray {
-        val k = checkNotNull(key) { "no key" }
-        check(sealed.size >= KEY_BYTES && sealed.copyOf(KEY_BYTES).contentEquals(k)) { "tag mismatch" }
+        failure?.let { throw it }
+        val k = key ?: throw SealKeyMissingException("fake")
+        if (sealed.size < KEY_BYTES || !sealed.copyOf(KEY_BYTES).contentEquals(k)) throw AEADBadTagException("tag mismatch")
         return sealed.copyOfRange(KEY_BYTES, sealed.size).mapIndexed { i, b -> (b.toInt() xor k[i % KEY_BYTES].toInt()).toByte() }
             .toByteArray()
     }

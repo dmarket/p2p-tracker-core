@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.adapter
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import java.security.GeneralSecurityException
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -12,14 +13,18 @@ import javax.crypto.spec.GCMParameterSpec
  * Encrypts what the core keeps sealed on disk. A seam so tests can stand in for the Android Keystore, which the host
  * tests do not have.
  *
- * [decrypt] throws when the value cannot be opened: the key is gone (a restore or a device-to-device transfer, since
- * Keystore keys never leave the device), or the value is corrupt or was sealed by another key.
+ * [decrypt] throws [SealKeyMissingException] when the key is gone (a restore or a device-to-device transfer, since
+ * Keystore keys never leave the device) and `AEADBadTagException` when the value is corrupt or was sealed by another
+ * key. Anything else it throws is a failure of the key store itself, which may pass, so it says nothing about the value.
  */
 interface SecretCipher {
     fun encrypt(plaintext: ByteArray): ByteArray
 
     fun decrypt(sealed: ByteArray): ByteArray
 }
+
+/** [SecretCipher.decrypt] has no key under [alias]: whatever was sealed with it belongs to another install. */
+class SealKeyMissingException(alias: String) : GeneralSecurityException("no Keystore key $alias")
 
 /**
  * AES-256-GCM with a non-exportable key generated inside the Android Keystore (hardware-backed where the device has
@@ -38,7 +43,7 @@ class KeystoreAesGcmCipher(private val keyAlias: String = DEFAULT_KEY_ALIAS) : S
     }
 
     override fun decrypt(sealed: ByteArray): ByteArray {
-        val key = existingKey() ?: error("no Keystore key $keyAlias")
+        val key = existingKey() ?: throw SealKeyMissingException(keyAlias)
         val ivLength = sealed[0].toInt()
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
             init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, sealed, 1, ivLength))

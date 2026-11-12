@@ -20,6 +20,7 @@ import com.dmarket.p2p.tracker.support.FakeDisk
 import com.dmarket.p2p.tracker.support.FakeKeystore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
+import java.security.KeyStoreException
 import kotlin.io.encoding.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -119,10 +120,35 @@ class AndroidTrackerPlatformTest {
         val disk = FakeDisk()
         platform(disk, FakeKeystore()).workAs(alice)
         val install = disk.files.getValue(AndroidTrackerPlatform.INSTALL_FILE)
-        val sealed = SealedKeyValueStore(SharedPreferencesKeyValueStore(disk.prefs(AndroidTrackerPlatform.INSTALL_FILE)), FakeKeystore())
-
-        assertNull(sealed.get("steam_credential"))
+        val plain = SharedPreferencesKeyValueStore(disk.prefs(AndroidTrackerPlatform.INSTALL_FILE))
+        // No key under the alias (a restore or a transfer).
+        assertNull(SealedKeyValueStore(plain, FakeKeystore()).get("steam_credential"))
         assertFalse("steam_credential" in install)
+        // A key, but not the one that sealed the value: the tag check fails.
+        val otherKey = FakeKeystore().apply { encrypt(byteArrayOf(1)) }
+        assertNull(SealedKeyValueStore(plain, otherKey).get("device_id"))
+        assertFalse("device_id" in install)
+    }
+
+    @Test
+    fun aKeystoreFaultFailsTheCallAndErasesNothing() = runTest {
+        val disk = FakeDisk()
+        val keystore = FakeKeystore()
+        val platform = platform(disk, keystore)
+        platform.workAs(alice)
+        val deviceId = platform.deviceIds.current()
+        val onDisk = disk.copy().files
+
+        keystore.failure = KeyStoreException("keystore2 busy")
+        assertFailsWith<KeyStoreException> { platform.deviceIds.current() }
+        assertFailsWith<KeyStoreException> { platform.vault.readSteamCredential() }
+        assertFailsWith<KeyStoreException> { platform.stores(alice) }
+        assertEquals(onDisk, disk.files)
+
+        keystore.failure = null
+        assertEquals(deviceId, platform.deviceIds.current())
+        assertEquals(credential, platform.vault.readSteamCredential())
+        assertEquals(setOf(DirectiveId("directive-1")), platform.stores(alice).progress.loadHandledDirectives())
     }
 
     @Test
@@ -179,8 +205,7 @@ class AndroidTrackerPlatformTest {
             platform.marketplaceAuthenticator.headersFor(MarketplaceRequest("GET", "/x", "")),
         )
         assertTrue(platform.marketplaceAuthenticator.refreshOnUnauthorized("host-jwt"))
-        assertEquals("host-jwt", platform.notaryTokens.notaryToken())
-        assertEquals(listOf(null, "host-jwt", null), asked)
+        assertEquals(listOf(null, "host-jwt"), asked)
     }
 
     @Test
