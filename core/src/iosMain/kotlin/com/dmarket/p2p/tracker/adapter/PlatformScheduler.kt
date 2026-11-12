@@ -3,16 +3,13 @@
 // this source set until then; it is linted by spotless but not type-checked.
 package com.dmarket.p2p.tracker.adapter
 
+import com.dmarket.p2p.tracker.adapter.host.CoroutineScheduler
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.port.host.Scheduler
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * iOS selection: foreground (app active) stays alive → in-process [CoroutineScheduler]; background →
- * [BgTaskScheduler], which survives app suspension via `BGTaskScheduler`. The host must register the
- * task identifier at launch (see [BgTaskScheduler]) and route the launch handler to its `fireTick()`.
+ * iOS: an in-process [CoroutineScheduler] in either mode, as on Android. The mobile tracker (`P2pTracker`) never arms
+ * the scheduler: on screen it polls, and in the background only a forwarded APNs wake runs a cycle.
  */
-actual fun platformScheduler(scope: CoroutineScope, mode: TrackerMode): Scheduler = when (mode) {
-    TrackerMode.Foreground -> CoroutineScheduler(scope)
-    TrackerMode.Background -> BgTaskScheduler()
-}
+actual fun platformScheduler(scope: CoroutineScope, mode: TrackerMode): Scheduler = CoroutineScheduler(scope)

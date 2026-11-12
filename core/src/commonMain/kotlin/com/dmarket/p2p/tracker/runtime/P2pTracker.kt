@@ -72,6 +72,7 @@ import kotlin.time.Instant
  * @param deliveryTimeout how long [startDelivery] waits for the create before it answers
  *   [CreateOfferResult.CreateInFlight]; the create goes on regardless.
  * @param random the draws behind the 429 backoff's jitter.
+ * @param clearAccountState what [onLogout] erases: the account's state and the Steam credential, never the device id.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -86,6 +87,7 @@ class P2pTracker(
     private val cycleDeadline: Duration = DEFAULT_CYCLE_DEADLINE,
     random: Random = Random.Default,
     private val deliveryTimeout: Duration = DEFAULT_DELIVERY_TIMEOUT,
+    private val clearAccountState: suspend () -> Unit = {},
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -136,6 +138,15 @@ class P2pTracker(
 
     /** Stops the loop and waits for its cycle to end. */
     suspend fun stop() = lifecycle.withLock { stopLocked() }
+
+    /**
+     * The user logged out of DMarket: stops the loop, waits for its cycle to end, then erases the account's state and
+     * the Steam credential. The device id stays. Under the start lock, so no start opens the stores in between.
+     */
+    suspend fun onLogout() = lifecycle.withLock {
+        stopLocked()
+        clearAccountState()
+    }
 
     /** The app came on screen ([foreground] `true`) or left it. Only on screen does the tracker poll. */
     suspend fun setForeground(foreground: Boolean) = lifecycle.withLock {

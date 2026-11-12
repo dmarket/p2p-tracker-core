@@ -787,7 +787,8 @@ and the write claims:
   do not open, so the tracker gets a new device id, reads no Steam credential (and re-acquires one) and erases the
   account state that came along.
 - **Account-scoped.** `stores(account)` for another Steam account empties the account file first;
-  `clearAccountState()` (call it on logout) empties it and drops the Steam credential. The device id stays.
+  `clearAccountState()` empties it and drops the Steam credential; `P2pTracker.onLogout()` calls it once the loop has
+  stopped. The device id stays.
 
 Keep the core's files out of cloud backup and device-to-device transfer. Add these to the app's
 `dataExtractionRules` file (Android 12+), and the same four `<exclude>` lines inside `<full-backup-content>` of its
@@ -838,7 +839,8 @@ val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onP
 - **State.** `tracker.state` is a `StateFlow<TrackerState>`: the blocking reason, the linked account and a mismatch,
   the last sync, and per deal the last check, the last code and where its proof stands.
 - **Accounts.** `start()` serves the account `linkedAccount` names; for another account the previous loop stops and
-  ends before the new account's state is opened. `stop()` on logout, then `clearAccountState()`.
+  ends before the new account's state is opened. On logout call `tracker.onLogout()`: it stops the loop, then erases
+  the Steam credential and the account's state; the device id stays.
 - **Device registry.** `tracker.deviceId()` is the id the heartbeat carries.
 - **Update status.** `tracker.updateStatus(dealId, allowCellularProof)` runs one forced cycle (sync, Steam read,
   report, proof) under the same lock as every other and returns `StatusUpdate{checkedAt, code, proofState, retryAfter,

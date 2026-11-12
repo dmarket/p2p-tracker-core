@@ -70,6 +70,12 @@ import platform.darwin.OSStatus
  *
  * Behaviour contract (fixed): [writeSteamCredential] upserts, [readSteamCredential] decodes-or-null,
  * [clearSteamCredential] deletes. Treating `errSecItemNotFound` as a no-op keeps clear/read idempotent.
+ *
+ * **Kept only for DMA-715, not ready to use.** Before it ships:
+ *  - the Core Foundation objects it creates (`CFBridgingRetain`, `CFDictionaryCreate`) are never released; each call
+ *    leaks them until they are paired with `CFRelease`;
+ *  - every item, the add and the update alike, must carry `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`; today
+ *    only the add sets it, so an item written by another build keeps whatever accessibility it had.
  */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 class KeychainCredentialVault(private val service: String = DEFAULT_SERVICE) : CredentialVault {
