@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,7 +29,12 @@ object AndroidTracker {
     @Volatile var tracker: P2pTracker? = null
         private set
 
-    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /**
+     * Where [startTracker] runs the tracker's start and stop. A failure there must not crash the app's process: the
+     * tracker answers its own faults with [com.dmarket.p2p.tracker.model.LifecycleEvent.CycleFailed], so the handler
+     * only keeps an escaped one from reaching the thread's uncaught-exception handler.
+     */
+    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineExceptionHandler { _, _ -> })
 
     /**
      * Hands the tracker what only the app has. Call once, in `Application.onCreate`, before [startTracker].
