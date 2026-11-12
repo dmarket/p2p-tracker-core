@@ -93,7 +93,8 @@ class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rat
  * [onServerDate] hears the `Date` of every reply that carries one, a refusal included, so a host whose requests
  * are signed over its own clock can tell a skewed clock from a refused key. `null` (the default) reads none.
  *
- * A failed heartbeat's or proof submission's body is read for the gateway's machine code (at most [ERROR_BODY_CHARS],
+ * A failed heartbeat's, proof submission's or deal call's (`accept`, `create-trade`, `getDeal`) body is read for the
+ * gateway's machine code (at most [ERROR_BODY_CHARS],
  * redacted) and carried as [MarketplaceServerErrorException.errorCode]: a 403 `P2P_STEAM_NOT_LINKED` is the account's
  * to fix, not the gateway's, and a `/notary` 409 `P2P_DEAL_CLOSED` names why a proof was refused. See
  * [gatewayErrorCode] for where the code is read from.
@@ -199,17 +200,17 @@ class KtorMarketplaceClient(
     }
 
     override suspend fun acceptDeal(id: DealId): DealActionResult {
-        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/accept", "{}")
+        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/accept", "{}", readErrorCode = true)
         return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain(id)
     }
 
     override suspend fun startDelivery(id: DealId): DealActionResult {
-        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/create-trade", "{}")
+        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/create-trade", "{}", readErrorCode = true)
         return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain(id)
     }
 
     override suspend fun getDeal(id: DealId): Deal {
-        val text = getJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}")
+        val text = getJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}") { captureErrorBody(ERROR_BODY_CHARS) }
         return TrackerJson.decodeFromString<DealDto>(text).toDomain()
     }
 

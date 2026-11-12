@@ -15,6 +15,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
+import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.wire.parsePushEnvelope
 import com.dmarket.p2p.tracker.wire.toWakeOrNull
 import kotlinx.coroutines.CoroutineScope
@@ -37,6 +38,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -67,6 +69,8 @@ import kotlin.time.Instant
  * @param cellularProofs the user's "proofs on mobile data" option, read on each cycle; the host holds it and its
  *   default (off, D6).
  * @param eventObserver every lifecycle event, after the tracker's own handling.
+ * @param deliveryTimeout how long [startDelivery] waits for the create before it answers
+ *   [CreateOfferResult.CreateInFlight]; the create goes on regardless.
  * @param random the draws behind the 429 backoff's jitter.
  */
 class P2pTracker(
@@ -81,6 +85,7 @@ class P2pTracker(
     private val eventObserver: EventObserver = NoOpEventObserver,
     private val cycleDeadline: Duration = DEFAULT_CYCLE_DEADLINE,
     random: Random = Random.Default,
+    private val deliveryTimeout: Duration = DEFAULT_DELIVERY_TIMEOUT,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -188,6 +193,62 @@ class P2pTracker(
         return statusOf(dealId, failureOf(dealId, s.loop, run), retryAfter, s.loop.observedCode(dealId))
     }
 
+    /**
+     * The seller's "Create trade" (§A7): the seller's consent to deliver the deal, and the create that follows. The
+     * tracker calls `POST /p2p/deals/{id}/create-trade` itself and runs the `create_offer` it answers with through the
+     * heartbeat's own directive path, so the same deal leased by a heartbeat, or asked for twice, ends in one Steam
+     * offer. This is the only caller of `create-trade` on mobile.
+     *
+     * Call it only on the seller's own action, never as an automatic retry after a failure: each call consents to the
+     * deal's current attempt, and after a failed offer that is a replacement, so a retry would send a new offer.
+     *
+     * Waits up to `deliveryTimeout`, then answers [CreateOfferResult.CreateInFlight]; a later call answers with the
+     * created offer. A run that ends without a directive says why in [DeliveryOutcome.reasonCode] (the backend
+     * refused) or [DeliveryOutcome.error] (the last call failed).
+     */
+    suspend fun startDelivery(dealId: DealId): DeliveryOutcome {
+        val s = lifecycle.withLock { session ?: startLocked() }
+            ?: return DeliveryOutcome(CreateOfferResult.Failed(NOT_RUNNING_ERROR), error = DealCallError(DealCallErrorKind.NOT_RUNNING))
+        val result = s.loop.awaitDirectiveOutcome(dealId, deliveryTimeout, s.scope)
+        if (result !is CreateOfferResult.Failed) return DeliveryOutcome(result)
+        val call = s.loop.lastDeliveryCall(dealId)
+        return DeliveryOutcome(
+            result,
+            reasonCode = call?.getOrNull()?.reasonCode?.takeIf { it.isNotBlank() },
+            error = call?.exceptionOrNull()?.toDealCallError(),
+        )
+    }
+
+    /**
+     * The seller's accept (COMMIT): a sync first (a forced heartbeat and one cycle, as on screen), then
+     * `POST /p2p/deals/{id}/accept`. When the sync leaves the tracker blocked (the wrong Steam account, no Steam session,
+     * DMarket unreachable), the accept is not sent and the block is the answer.
+     */
+    suspend fun acceptDeal(dealId: DealId): AcceptOutcome {
+        val s = lifecycle.withLock { session ?: startLocked() } ?: return AcceptOutcome.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
+        cycle(s, wake = null, manual = true, onScreen = true) ?: return AcceptOutcome.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
+        s.loop.blockingState.takeIf { it != TrackerBlock.NONE }?.let { return AcceptOutcome.Blocked(it) }
+        return try {
+            AcceptOutcome.Done(s.loop.marketplace.acceptDeal(dealId))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            AcceptOutcome.Failed(e.toDealCallError())
+        }
+    }
+
+    /** The deal's detail, `GET /p2p/deals/{id}`; its state reads with or without the `P2P_DEAL_STATE_` prefix. */
+    suspend fun getDeal(dealId: DealId): DealRead {
+        val s = lifecycle.withLock { session ?: startLocked() } ?: return DealRead.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
+        return try {
+            DealRead.Found(s.loop.marketplace.getDeal(dealId))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            DealRead.Failed(e.toDealCallError())
+        }
+    }
+
     /** The install's device id, for the app's device registry (DMA-540). */
     suspend fun deviceId(): DeviceId = deviceIds.current()
 
@@ -229,15 +290,23 @@ class P2pTracker(
 
     /**
      * One cycle in [s]'s scope, under its lock and within [cycleDeadline]; `null` when the session stopped under it.
-     * A [wake] or a [manual] update forces the heartbeat first: both always sync. The proof gate is set for this cycle.
+     * A [wake] or a [manual] update forces the heartbeat first: both always sync. The proof gate is set for this cycle,
+     * and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
      */
-    private suspend fun cycle(s: Session, wake: Wake?, manual: Boolean = false, allowCellularProof: Boolean = false): CycleRun? {
+    private suspend fun cycle(
+        s: Session,
+        wake: Wake?,
+        manual: Boolean = false,
+        allowCellularProof: Boolean = false,
+        onScreen: Boolean = false,
+    ): CycleRun? {
         val run = s.scope.async {
             s.cycleLock.withLock {
                 watchedAt = null
                 val cycleProbe = CycleProbe()
                 probe = cycleProbe
                 s.loop.proofsDeferred = !proofsAllowed(allowCellularProof)
+                if (onScreen) s.loop.mode = TrackerMode.Foreground
                 val completed = withTimeoutOrNull(cycleDeadline) {
                     when {
                         wake != null -> {
@@ -252,6 +321,7 @@ class P2pTracker(
                     }
                     true
                 } ?: false
+                if (onScreen) s.loop.mode = modeOf(foreground)
                 if (watchedAt != null && !cycleProbe.steamRateLimited) steamBackoff.answered()
                 refresh(s)
                 CycleRun(s.loop.nextWakeDelay(), completed, cycleProbe)
@@ -369,5 +439,13 @@ class P2pTracker(
     companion object {
         /** The longest one cycle runs before it is cancelled; WorkManager stops a Worker after 10 minutes. */
         val DEFAULT_CYCLE_DEADLINE: Duration = 3.minutes
+
+        /**
+         * [startDelivery]'s wait: enough for a heartbeat on a fresh loop, two `create-trade` calls 2 s apart and the Steam
+         * write when each answers in seconds. A slower run answers [CreateOfferResult.CreateInFlight] and still creates.
+         */
+        val DEFAULT_DELIVERY_TIMEOUT: Duration = 60.seconds
+
+        private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account"
     }
 }

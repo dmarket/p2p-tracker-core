@@ -7,8 +7,10 @@ import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.marketplace.CounterpartyBadges
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
+import com.dmarket.p2p.tracker.model.marketplace.DealCounterparty
 import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAck
@@ -214,6 +216,20 @@ fun DealDto.toDomain(): Deal = Deal(
     trustedAcceptUri = (trustedAcceptUri ?: trustedAcceptUrlLegacy)?.takeIf { it.isNotBlank() },
     createdAt = Instant.parse(createTime),
     updatedAt = Instant.parse(updateTime),
+    cancellable = cancellable,
+    nextAction = nextAction?.takeIf { it.isNotBlank() },
+    createOffer = createOffer?.toDirective(DealId(dealId)),
+    cancelFee = cancelFee?.toDomain(),
+    cancelFeeEndTime = cancelFeeEndTime?.takeIf { it.isNotBlank() }?.let(Instant::parse),
+    counterparty = counterparty?.let { c ->
+        DealCounterparty(
+            accountId = AccountId(c.accountId),
+            steamId = c.steamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
+            name = c.name,
+            avatar = c.avatar,
+            badges = c.badges?.let { CounterpartyBadges(it.steamLevel, it.tradingStatus, it.profilePrivate, it.validTradeUrl) },
+        )
+    },
 )
 
 /** [DealActionResponseDto.createOffer] as the `create_offer` [Directive] for [dealId]; `null` for a blank directive id. */

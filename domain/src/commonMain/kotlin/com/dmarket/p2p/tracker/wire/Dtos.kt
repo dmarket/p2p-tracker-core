@@ -294,14 +294,40 @@ data class DealDto(
     @SerialName("trustedAcceptUrl") val trustedAcceptUrlLegacy: String? = null,
     @SerialName("createTime") val createTime: String, // RFC3339
     @SerialName("updateTime") val updateTime: String, // RFC3339
+    @SerialName("cancellable") val cancellable: Boolean? = null,
+    @SerialName("nextAction") val nextAction: String? = null,
+    @SerialName("createOffer") val createOffer: CreateOfferDto? = null,
+    @SerialName("cancelFee") val cancelFee: MoneyDto? = null,
+    @SerialName("cancelFeeEndTime") val cancelFeeEndTime: String? = null, // RFC3339
+    @SerialName("counterparty") val counterparty: CounterpartyDto? = null,
 ) {
     /** Redacted: the accept link embeds a bearer `token=` — see [com.dmarket.p2p.tracker.model.marketplace.Deal]. */
     override fun toString(): String = "DealDto(dealId=$dealId, state=$state, buyerAccountId=$buyerAccountId, " +
         "sellerAccountId=$sellerAccountId, offerId=$offerId, assetId=$assetId, price=$price, " +
         "steamOfferId=$steamOfferId, reasonCode=$reasonCode, " +
         "trustedAcceptUri=${(trustedAcceptUri ?: trustedAcceptUrlLegacy)?.let { NetworkRedaction.redactUrl(it) }}, " +
-        "createTime=$createTime, updateTime=$updateTime)"
+        "createTime=$createTime, updateTime=$updateTime, cancellable=$cancellable, nextAction=$nextAction, " +
+        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty)"
 }
+
+/** [DealDto.counterparty]: the other party of the deal, relative to the caller. */
+@Serializable
+data class CounterpartyDto(
+    @SerialName("accountId") val accountId: String,
+    @SerialName("steamId") val steamId: String? = null,
+    @SerialName("name") val name: String? = null,
+    @SerialName("avatar") val avatar: String? = null,
+    @SerialName("badges") val badges: CounterpartyBadgesDto? = null,
+)
+
+/** [CounterpartyDto.badges]: the gateway's Steam trust signals. */
+@Serializable
+data class CounterpartyBadgesDto(
+    @SerialName("steamLevel") val steamLevel: Int? = null,
+    @SerialName("tradingStatus") val tradingStatus: String? = null,
+    @SerialName("profilePrivate") val profilePrivate: Boolean? = null,
+    @SerialName("validTradeUrl") val validTradeUrl: Boolean? = null,
+)
 
 /** [DealActionResponseDto.createOffer]: the fields of the deal's `create_offer` directive a Steam create needs. */
 @Serializable

@@ -56,6 +56,7 @@ import com.dmarket.p2p.tracker.model.PushSignal
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.UnansweredCreate
+import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
@@ -391,7 +392,8 @@ private const val ROLLBACK_STATUS = 12
  */
 class TradeTrackerLoop(
     val config: LoopConfig,
-    private val marketplace: MarketplaceClient,
+    /** Internal for the mobile facade's deal calls (`acceptDeal`, `getDeal`), which go through the loop's own client. */
+    internal val marketplace: MarketplaceClient,
     private val steamReader: SteamReadClient,
     private val credentials: SteamCredentialProvider,
     private val scheduler: Scheduler,
@@ -541,8 +543,19 @@ class TradeTrackerLoop(
         return withTimeoutOrNull(timeout) { waiter.await() } ?: CreateOfferResult.CreateInFlight(dealId)
     }
 
+    /** The last `create-trade` call of each deal's latest [awaitDirectiveOutcome] run; guarded by [createWaitersLock]. */
+    private val deliveryCalls = mutableMapOf<DealId, Result<DealActionResult>>()
+
+    /**
+     * The last `POST /create-trade` call [awaitDirectiveOutcome] made for [dealId] in its latest run, answered or failed;
+     * `null` when that run made none (a wrong-account session, or a claim that answered first). Read by the mobile
+     * facade to say why a run ended without a directive.
+     */
+    internal suspend fun lastDeliveryCall(dealId: DealId): Result<DealActionResult>? = createWaitersLock.withLock { deliveryCalls[dealId] }
+
     /** [awaitDirectiveOutcome]'s work: asks the backend for [dealId]'s `create_offer`, then runs it. */
     private suspend fun createFromDelivery(dealId: DealId, waiter: CompletableDeferred<CreateOfferResult>) {
+        createWaitersLock.withLock { deliveryCalls.remove(dealId) }
         // An instance with no heartbeat yet sends one first: the linked Steam id the account guard compares with is
         // held in memory only, so on a respawned worker that guard would otherwise have nothing to compare.
         if (lastActiveTracking == null) heartbeatNow()
@@ -554,8 +567,11 @@ class TradeTrackerLoop(
         val retryDelays = config.createDirectiveRetryDelays.iterator()
         while (!waiter.isCompleted) {
             // A failed call is repeated like an empty answer: it says nothing about the deal. A 401 has already been
-            // refreshed and retried inside the client.
-            val delivery = runCatching { marketplace.startDelivery(dealId) }.getOrNull()
+            // refreshed and retried inside the client. The last call is kept for the mobile facade, which tells the
+            // user why the run ended without a directive.
+            val call = runCatching { marketplace.startDelivery(dealId) }
+            createWaitersLock.withLock { deliveryCalls[dealId] = call }
+            val delivery = call.getOrNull()
             delivery?.reasonCode?.takeIf { it.isNotBlank() }?.let { code ->
                 waiter.complete(CreateOfferResult.Failed("$DELIVERY_REFUSED_ERROR: $code"))
                 return

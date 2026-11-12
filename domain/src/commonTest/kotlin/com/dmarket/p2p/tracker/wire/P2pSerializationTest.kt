@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.wire
 
 import com.dmarket.p2p.tracker.engine.DealRoleBinding
+import com.dmarket.p2p.tracker.model.AccountId
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
@@ -11,6 +12,7 @@ import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
+import com.dmarket.p2p.tracker.model.marketplace.Money
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
@@ -470,6 +472,54 @@ class P2pSerializationTest {
         assertEquals(1599L, deal.price.amountCents)
         assertEquals("USD", deal.price.currencyCode)
         assertEquals("https://steamcommunity.com/tradeoffer/st1", deal.trustedAcceptUri)
+    }
+
+    @Test
+    fun the_deal_detail_reads_the_gateway_shape_with_its_own_fields() {
+        // §A5's example: the prefix-stripped state, plus the detail-only fields; cancelFee/cancelFeeEndTime as web reads them.
+        val json = """
+            {"dealId":"d1","state":"COMMITTED","cancellable":false,"nextAction":"seller_create_trade",
+             "buyerAccountId":"b1","sellerAccountId":"s1","offerId":"of1","assetId":"a1",
+             "price":{"currency":"USD","amount":"607"},
+             "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T13:00:00Z",
+             "cancelFee":{"currency":"USD","amount":"30"},"cancelFeeEndTime":"2026-06-16T14:00:00+02:00",
+             "counterparty":{"accountId":"b1","steamId":"76561198000000002","name":"Buyer","avatar":"https://a/1.png",
+               "badges":{"steamLevel":12,"tradingStatus":"ok","profilePrivate":false,"validTradeUrl":true}},
+             "createOffer":{"directiveId":"dir-9","action":"create_offer","partnerSteamId":"76561198000000002",
+               "assetIds":["a1"],"tradeToken":"tok","contextId":2}}
+        """.trimIndent()
+        val deal = TrackerJson.decodeFromString<DealDto>(json).toDomain()
+
+        assertEquals(P2PDealState.COMMITTED, deal.state)
+        assertEquals(false, deal.cancellable)
+        assertEquals("seller_create_trade", deal.nextAction)
+        assertEquals(Money("USD", 30), deal.cancelFee)
+        assertEquals(Instant.parse("2026-06-16T12:00:00Z"), deal.cancelFeeEndTime)
+        val counterparty = assertNotNull(deal.counterparty)
+        assertEquals(AccountId("b1"), counterparty.accountId)
+        assertEquals(SteamId("76561198000000002"), counterparty.steamId)
+        assertEquals("Buyer", counterparty.name)
+        assertEquals(12, counterparty.badges?.steamLevel)
+        val create = assertNotNull(deal.createOffer)
+        assertEquals(DirectiveId("dir-9") to DealId("d1"), create.directiveId to create.dealId)
+        assertEquals(DirectiveAction.CREATE_OFFER, create.action)
+        assertTrue("tok" !in deal.toString(), "the trade token is a bearer capability")
+    }
+
+    @Test
+    fun a_deal_detail_without_its_own_fields_reads_them_as_absent() {
+        val deal = TrackerJson.decodeFromString<DealDto>(
+            """{"dealId":"d1","state":"P2P_DEAL_STATE_AWAITING_TRADE","buyerAccountId":"b1",
+               "sellerAccountId":"s1","offerId":"of1","assetId":"a1","price":{"currency":"USD","amount":"1"},
+               "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T12:00:00Z"}""",
+        ).toDomain()
+        assertEquals(P2PDealState.AWAITING_TRADE, deal.state)
+        assertNull(deal.cancellable)
+        assertNull(deal.nextAction)
+        assertNull(deal.createOffer)
+        assertNull(deal.cancelFee)
+        assertNull(deal.cancelFeeEndTime)
+        assertNull(deal.counterparty)
     }
 
     @Test

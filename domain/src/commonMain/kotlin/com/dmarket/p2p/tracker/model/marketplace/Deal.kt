@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.model.AccountId
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import kotlin.time.Instant
 
@@ -74,6 +75,17 @@ data class Money(val currencyCode: String, val amountCents: Long)
  *
  * [trustedAcceptUri] is the backend-vouched Steam link the buyer (who has no plugin) accepts in — primarily
  * a C2 concern, carried here for completeness.
+ *
+ * The deal detail's own fields, all absent on an older gateway:
+ * - [cancellable]: `true` only in `AWAITING_SELLER_ACCEPT`, the one state the buyer can cancel in.
+ * - [nextAction]: the gateway's next-step vocabulary, verbatim (`seller_accept`, `seller_create_trade`,
+ *   `buyer_accept_trade`, `await_settlement`, `none`); an unknown value is passed on, not refused.
+ * - [createOffer]: the deal's pending `create_offer` directive, served while COMMITTED (and, once the seller's
+ *   consent is required, only after they gave it). A host never runs it itself: the create goes through
+ *   `startDelivery`.
+ * - [cancelFee]: what a buyer's cancellation costs until [cancelFeeEndTime], as the service quotes it; absent is
+ *   not zero.
+ * - [counterparty]: the other party, relative to the caller.
  */
 data class Deal(
     val dealId: DealId,
@@ -88,6 +100,12 @@ data class Deal(
     val trustedAcceptUri: String? = null,
     val createdAt: Instant,
     val updatedAt: Instant,
+    val cancellable: Boolean? = null,
+    val nextAction: String? = null,
+    val createOffer: Directive? = null,
+    val cancelFee: Money? = null,
+    val cancelFeeEndTime: Instant? = null,
+    val counterparty: DealCounterparty? = null,
 ) {
     /**
      * Redacted: [trustedAcceptUri] embeds `?partner=…&token=…`, and that `token` is a bearer capability.
@@ -98,5 +116,27 @@ data class Deal(
         "sellerAccountId=$sellerAccountId, offerId=$offerId, assetId=$assetId, price=$price, " +
         "steamOfferId=$steamOfferId, reasonCode=$reasonCode, " +
         "trustedAcceptUri=${trustedAcceptUri?.let { NetworkRedaction.redactUrl(it) }}, " +
-        "createdAt=$createdAt, updatedAt=$updatedAt)"
+        "createdAt=$createdAt, updatedAt=$updatedAt, cancellable=$cancellable, nextAction=$nextAction, " +
+        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty)"
 }
+
+/**
+ * The other party of a deal, relative to the caller: the buyer sees the seller, the seller the buyer. [name] is the
+ * Steam persona only when [steamId] is set (the gateway starts from the DMarket username); an account lookup that
+ * failed leaves [accountId] alone, so an absent [steamId] means no Steam-derived identity.
+ */
+data class DealCounterparty(
+    val accountId: AccountId,
+    val steamId: SteamId? = null,
+    val name: String? = null,
+    val avatar: String? = null,
+    val badges: CounterpartyBadges? = null,
+)
+
+/** Steam trust signals on a [DealCounterparty], as the gateway sends them. */
+data class CounterpartyBadges(
+    val steamLevel: Int? = null,
+    val tradingStatus: String? = null,
+    val profilePrivate: Boolean? = null,
+    val validTradeUrl: Boolean? = null,
+)

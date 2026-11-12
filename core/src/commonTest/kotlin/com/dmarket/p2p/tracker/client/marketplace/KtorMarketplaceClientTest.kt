@@ -656,6 +656,20 @@ class KtorMarketplaceClientTest {
     }
 
     @Test
+    fun a_refused_deal_call_carries_the_gateways_code() = runTest {
+        val engine = MockEngine {
+            respond("""{"code":"P2P_NOT_A_PARTICIPANT","message":"not a participant"}""", HttpStatusCode.Forbidden, jsonHeaders())
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+        val refusals = listOf(
+            assertFailsWith<MarketplaceServerErrorException> { client.acceptDeal(DealId("d-1")) },
+            assertFailsWith<MarketplaceServerErrorException> { client.startDelivery(DealId("d-1")) },
+            assertFailsWith<MarketplaceServerErrorException> { client.getDeal(DealId("d-1")) },
+        )
+        assertEquals(List(3) { 403 to "P2P_NOT_A_PARTICIPANT" }, refusals.map { it.statusCode to it.errorCode })
+    }
+
+    @Test
     fun a_refused_proof_carries_the_gateways_code() = runTest {
         val engine =
             MockEngine { respond("""{"code":"P2P_DEAL_CLOSED","message":"deal is closed"}""", HttpStatusCode.Conflict, jsonHeaders()) }

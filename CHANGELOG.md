@@ -23,6 +23,9 @@ GitHub Release.
 - Android: `P2pTracker.updateStatus(dealId, allowCellularProof)` runs one sync, watch and report for a manual status update and returns `StatusUpdate` with `checkedAt`, `code`, `proofState`, `retryAfter` and an `UpdateFailure`. A 429 from DMarket or Steam sets `retryAfter` and the deal's `cooldownUntil` instead of passing silently (DMA-661).
 - Android: on a metered network a notary proof runs only with the user's option or `allowCellularProof`; otherwise it is deferred, `ProofDeferred` is emitted and the status it proves is not reported until it runs. `AndroidTracker.install` takes a required `cellularProofs` option (DMA-661).
 - New lifecycle events `ProofDeferred` and `RateLimited` (DMA-661).
+- Android: `P2pTracker.startDelivery(dealId)` is the seller's "Create trade": the core calls `create-trade` and creates the offer itself, once per deal however often it is asked. It returns `DeliveryOutcome` with the `CreateOfferResult`, the backend's `reasonCode` on a refusal and a `DealCallError` (429, network, timeout, server status and P2P code) when the call failed; call it only on the seller's action, never as a retry (DMA-661).
+- Android: `P2pTracker.acceptDeal(dealId)` syncs, then accepts the deal; it returns `AcceptOutcome` with the backend's `DealActionResult`, the `TrackerBlock` that kept it from being sent, or a `DealCallError` with the HTTP status and the P2P code (DMA-661).
+- Android: `P2pTracker.getDeal(dealId)` returns the deal as `DealRead`. `Deal` gains `cancellable`, `nextAction`, `createOffer`, `cancelFee`, `cancelFeeEndTime` and `counterparty` (DMA-661).
 
 ## [1.3.0-beta] - 2026-11-10
 
