@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.adapter.SealedKeyValueStore
 import com.dmarket.p2p.tracker.adapter.SharedPreferencesKeyValueStore
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceRequest
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
+import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.ClaimVerdict
 import com.dmarket.p2p.tracker.model.ClaimPhase
@@ -21,6 +22,8 @@ import com.dmarket.p2p.tracker.support.FakeKeystore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import java.security.KeyStoreException
+import java.security.UnrecoverableKeyException
+import javax.crypto.spec.SecretKeySpec
 import kotlin.io.encoding.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -51,7 +54,7 @@ class AndroidTrackerPlatformTest {
     )
 
     private fun platform(disk: FakeDisk, keystore: FakeKeystore, tokens: MarketplaceTokenSupplier = MarketplaceTokenSupplier { null }) =
-        AndroidTrackerPlatform(prefs = disk::prefs, cipher = keystore, tokens = tokens, clock = clock, io = Dispatchers.Unconfined)
+        AndroidTrackerPlatform(prefs = disk::prefs, cipher = keystore.cipher(), tokens = tokens, clock = clock, io = Dispatchers.Unconfined)
 
     /** What a session leaves behind: a device id, a Steam credential, and the account's loop state, progress and claims. */
     private suspend fun AndroidTrackerPlatform.workAs(account: SteamId) {
@@ -122,12 +125,66 @@ class AndroidTrackerPlatformTest {
         val install = disk.files.getValue(AndroidTrackerPlatform.INSTALL_FILE)
         val plain = SharedPreferencesKeyValueStore(disk.prefs(AndroidTrackerPlatform.INSTALL_FILE))
         // No key under the alias (a restore or a transfer).
-        assertNull(SealedKeyValueStore(plain, FakeKeystore()).get("steam_credential"))
+        assertNull(SealedKeyValueStore(plain, FakeKeystore().cipher()).get("steam_credential"))
         assertFalse("steam_credential" in install)
         // A key, but not the one that sealed the value: the tag check fails.
-        val otherKey = FakeKeystore().apply { encrypt(byteArrayOf(1)) }
+        val otherKey = FakeKeystore().apply { replace() }.cipher()
         assertNull(SealedKeyValueStore(plain, otherKey).get("device_id"))
         assertFalse("device_id" in install)
+    }
+
+    @Test
+    fun aMalformedSealedDeviceIdIsErasedAndANewOneIsMade() = runTest {
+        val malformed = listOf<(ByteArray) -> ByteArray>(
+            { ByteArray(0) },
+            { it.copyOf(1 + it[0] + 5) },
+            { byteArrayOf(-1) + it.copyOfRange(1, it.size) },
+            { byteArrayOf(0) + it.copyOfRange(1, it.size) },
+            { byteArrayOf(17) + it.copyOfRange(1, it.size) },
+            { byteArrayOf(12, 1, 2, 3) },
+        )
+        for (corrupt in malformed) {
+            val disk = FakeDisk()
+            val keystore = FakeKeystore()
+            platform(disk, keystore).workAs(alice)
+            val install = disk.files.getValue(AndroidTrackerPlatform.INSTALL_FILE)
+            val oldDeviceId = install.getValue(DeviceVaultKeys.DEVICE_ID)
+            val oldId = platform(disk, keystore).deviceIds.current()
+            install[DeviceVaultKeys.DEVICE_ID] = Base64.encode(corrupt(Base64.decode(oldDeviceId)))
+
+            val restarted = platform(disk, keystore)
+
+            assertNotEquals(oldId, restarted.deviceIds.current())
+            assertNull(restarted.vault.readSteamCredential())
+            restarted.assertCleanState(alice)
+        }
+    }
+
+    @Test
+    fun aKeystoreKeyThatNoLongerWorksIsReplacedAndANewDeviceIdIsMade() = runTest {
+        val breakages = listOf<FakeKeystore.() -> Unit>(
+            { entryFailure = UnrecoverableKeyException("entry does not open") },
+            // Cipher.init refuses it with an InvalidKeyException, as for a KeyPermanentlyInvalidatedException.
+            { key = SecretKeySpec(ByteArray(3), "AES") },
+        )
+        for (breakKey in breakages) {
+            val disk = FakeDisk()
+            val keystore = FakeKeystore()
+            platform(disk, keystore).workAs(alice)
+            val oldId = platform(disk, keystore).deviceIds.current()
+            val oldKey = keystore.key
+            keystore.breakKey()
+
+            val restarted = platform(disk, keystore)
+            val newId = restarted.deviceIds.current()
+
+            assertNotEquals(oldId, newId)
+            assertNull(restarted.vault.readSteamCredential())
+            restarted.assertCleanState(alice)
+            assertNotEquals(oldKey, keystore.key)
+            // The new key under the same alias opens what it sealed on the next start.
+            assertEquals(newId, platform(disk, keystore).deviceIds.current())
+        }
     }
 
     @Test

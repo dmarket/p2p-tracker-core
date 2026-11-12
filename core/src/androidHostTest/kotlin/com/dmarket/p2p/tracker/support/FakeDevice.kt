@@ -1,10 +1,11 @@
 package com.dmarket.p2p.tracker.support
 
 import android.content.SharedPreferences
-import com.dmarket.p2p.tracker.adapter.SealKeyMissingException
+import com.dmarket.p2p.tracker.adapter.KeystoreAesGcmCipher
+import com.dmarket.p2p.tracker.adapter.SealKeyStore
 import com.dmarket.p2p.tracker.adapter.SecretCipher
-import javax.crypto.AEADBadTagException
-import kotlin.random.Random
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
 
 /**
  * The prefs files of one install, as on disk: file name → key → value. [copy] is what a backup or a device-to-device
@@ -19,31 +20,29 @@ class FakeDisk(val files: MutableMap<String, MutableMap<String, String>> = mutab
 }
 
 /**
- * The Android Keystore of one device: a key made on the first encrypt, kept on the device, never copied. With no key,
- * decrypt throws [SealKeyMissingException]; a value sealed under another key fails AES-GCM's tag check
- * ([AEADBadTagException]). While [failure] is set, every call throws it, as a busy or restarting Keystore does.
+ * The Android Keystore of one device under [KeystoreAesGcmCipher]: no key until the first encrypt, kept on the device,
+ * never copied. While [failure] is set, every call throws it, as a busy or restarting Keystore does; [entryFailure] is
+ * what reading the entry throws (an entry that never opens again) until a new key replaces it.
  */
-class FakeKeystore : SecretCipher {
-    private var key: ByteArray? = null
+class FakeKeystore : SealKeyStore {
+    override val alias = "fake"
+    var key: SecretKey? = null
     var failure: Exception? = null
+    var entryFailure: Exception? = null
 
-    override fun encrypt(plaintext: ByteArray): ByteArray {
+    override fun find(): SecretKey? {
         failure?.let { throw it }
-        val k = key ?: Random.nextBytes(KEY_BYTES).also { key = it }
-        return k + plaintext.mapIndexed { i, b -> (b.toInt() xor k[i % KEY_BYTES].toInt()).toByte() }
+        entryFailure?.let { throw it }
+        return key
     }
 
-    override fun decrypt(sealed: ByteArray): ByteArray {
+    override fun replace(): SecretKey {
         failure?.let { throw it }
-        val k = key ?: throw SealKeyMissingException("fake")
-        if (sealed.size < KEY_BYTES || !sealed.copyOf(KEY_BYTES).contentEquals(k)) throw AEADBadTagException("tag mismatch")
-        return sealed.copyOfRange(KEY_BYTES, sealed.size).mapIndexed { i, b -> (b.toInt() xor k[i % KEY_BYTES].toInt()).toByte() }
-            .toByteArray()
+        entryFailure = null
+        return KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { key = it }
     }
 
-    private companion object {
-        const val KEY_BYTES = 16
-    }
+    fun cipher(): SecretCipher = KeystoreAesGcmCipher(this)
 }
 
 /** A string-only [SharedPreferences] over [values]; `commit()` applies `clear()` first, as Android does. */
