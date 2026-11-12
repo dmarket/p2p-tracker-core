@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.runtime
 
 import android.content.Context
+import com.dmarket.p2p.tracker.adapter.ConnectivityNetworkConditions
 import com.dmarket.p2p.tracker.adapter.host.CoroutineScheduler
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
@@ -38,6 +39,8 @@ object AndroidTracker {
     private class Installation(
         val platform: AndroidTrackerPlatform,
         val linkedAccount: suspend () -> SteamId?,
+        val cellularProofs: () -> Boolean,
+        val network: ConnectivityNetworkConditions,
         val hostOkHttp: OkHttpClient?,
         val clientVersion: String,
     )
@@ -55,6 +58,8 @@ object AndroidTracker {
      *
      * @param tokens the app's DMarket token layer (`TokenManager.getTokenData(forceRefresh)`).
      * @param linkedAccount the Steam account the logged-in user links, or `null` when none; read on every start.
+     * @param cellularProofs the user's "proofs on mobile data" option (T-04), read before every cycle; the app owns its
+     *   default (off). Reading the network needs `ACCESS_NETWORK_STATE`; without it every network reads as metered.
      * @param hostOkHttp the app's `OkHttpClient` for DMarket calls; `null` takes the platform's.
      * @param clientVersion the app's version, for the heartbeat.
      */
@@ -62,10 +67,18 @@ object AndroidTracker {
         context: Context,
         tokens: MarketplaceTokenSupplier,
         linkedAccount: suspend () -> SteamId?,
+        cellularProofs: () -> Boolean,
         hostOkHttp: OkHttpClient? = null,
         clientVersion: String = TradeTrackerCore.VERSION,
     ) {
-        installation = Installation(AndroidTrackerPlatform(context, tokens), linkedAccount, hostOkHttp, clientVersion)
+        installation = Installation(
+            AndroidTrackerPlatform(context, tokens),
+            linkedAccount,
+            cellularProofs,
+            ConnectivityNetworkConditions(context),
+            hostOkHttp,
+            clientVersion,
+        )
     }
 
     /** The tracker, built on the first call; later calls return the same one, whatever they pass. */
@@ -141,6 +154,8 @@ object AndroidTracker {
             deviceIds = platform.deviceIds,
             linkedAccount = installed.linkedAccount,
             loopFor = loopFor,
+            network = installed.network,
+            cellularProofs = installed.cellularProofs,
             eventObserver = eventObserver,
         )
     }

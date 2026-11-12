@@ -27,7 +27,19 @@ class ProofMintPolicyTest {
         parkedUntil: Instant? = null,
         minted: Boolean = true,
         deadline: Instant? = null,
-    ) = ProofMintPolicy.decide(intent, now, refused, accepted, acceptedTtlMs, proverAvailable, parkedUntil, minted, deadline)
+        networkDeferred: Boolean = false,
+    ) = ProofMintPolicy.decide(
+        intent,
+        now,
+        refused,
+        accepted,
+        acceptedTtlMs,
+        proverAvailable,
+        parkedUntil,
+        minted,
+        deadline,
+        networkDeferred,
+    )
 
     @Test
     fun nothing_in_the_way_mints() {
@@ -113,6 +125,22 @@ class ProofMintPolicyTest {
             ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER),
             decide(proverAvailable = false, parkedUntil = T0 + 45.seconds, deadline = T0),
         )
+    }
+
+    @Test
+    fun a_closed_network_gate_defers_after_settled_answers_and_no_prover_but_before_the_breaker() {
+        val deferred = ProofMintVerdict.Skip(ProofSkipReason.NETWORK_DEFERRED)
+        assertEquals(deferred, decide(networkDeferred = true))
+        assertEquals(deferred, decide(networkDeferred = true, parkedUntil = T0 + 45.seconds, deadline = T0))
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
+            decide(accepted = mapOf(intent to T0), networkDeferred = true),
+        )
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER), decide(proverAvailable = false, networkDeferred = true))
+        assertEquals(deferred, ProofMintPolicy.decideFreshness(null, T0, true, null, false, null, networkDeferred = true))
+        // Deferred is neither: its report waits and is never claimed unproven.
+        assertFalse(ProofSkipReason.NETWORK_DEFERRED.unprovable)
+        assertFalse(ProofSkipReason.NETWORK_DEFERRED.corroborated)
     }
 
     @Test
@@ -219,6 +247,7 @@ class ProofMintPolicyTest {
                 ProofSkipReason.ALREADY_ACCEPTED -> decide(accepted = mapOf(intent to T0))
                 ProofSkipReason.FRESHNESS_RETRY_PENDING -> decideFreshness(progress = laddered(T0 + 30.seconds))
                 ProofSkipReason.NO_PROVER -> decide(proverAvailable = false)
+                ProofSkipReason.NETWORK_DEFERRED -> decide(networkDeferred = true)
                 ProofSkipReason.PROVER_PARKED -> decide(parkedUntil = T0 + 30.seconds)
                 ProofSkipReason.BUDGET_SPENT -> decide(deadline = T0)
             }

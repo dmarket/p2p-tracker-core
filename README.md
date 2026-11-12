@@ -815,6 +815,7 @@ AndroidTracker.install(
     context = this,
     tokens = myTokenSupplier,          // the MarketplaceTokenSupplier shown above
     linkedAccount = { userManager.readUserNow().steamId?.let(::SteamId) },
+    cellularProofs = { settings.proofsOnMobileData },  // the user's option; the app owns its default (off)
 )
 val handle = startTracker()             // builds the process's P2pTracker and starts it for the linked account
 val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onPush, deviceId
@@ -833,6 +834,16 @@ val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onP
 - **Accounts.** `start()` serves the account `linkedAccount` names; for another account the previous loop stops and
   ends before the new account's state is opened. `stop()` on logout, then `clearAccountState()`.
 - **Device registry.** `tracker.deviceId()` is the id the heartbeat carries.
+- **Update status.** `tracker.updateStatus(dealId, allowCellularProof)` runs one forced cycle (sync, Steam read,
+  report, proof) under the same lock as every other and returns `StatusUpdate{checkedAt, code, proofState, retryAfter,
+  failure}`. `failure` keeps the causes apart (`RATE_LIMITED`, `STEAM_SESSION`, `STEAM`, `NOTARY`, `DMARKET`,
+  `TIMEOUT`, `NOT_RUNNING`, `OTHER`); a 429 from DMarket or Steam sets `retryAfter` and the deal's `cooldownUntil`, and a
+  call inside that window answers at once without a request. The server's own permit for manual updates is the app's.
+- **Proofs on mobile data.** A notary proof (~20 MB) runs on a metered network (cellular, data saver) only when
+  `cellularProofs` says yes or the call passes `allowCellularProof = true` after the user agreed. Otherwise the proof is
+  deferred: `ProofDeferred` is emitted, the deal's `proofState` is `DEFERRED`, and the status that needs the proof is
+  not reported until it runs. Reads and reports go on any network. Needs `ACCESS_NETWORK_STATE`; without it every
+  network reads as metered.
 
 ### Ports you implement per platform
 
@@ -843,6 +854,7 @@ and a default; substitute platform implementations as you enable iOS/Android.
 | Port | Purpose | Web actual / default |
 |---|---|---|
 | `Clock` | Current time (injected for deterministic tests). | `SystemClock` |
+| `NetworkConditions` | Whether the device's network is metered, for the mobile proof gate. | `ConnectivityNetworkConditions` (Android) · `NetworkConditions.Unmetered` |
 | `Scheduler` | Platform wake-up scheduling (`chrome.alarms` / WorkManager / BGTaskScheduler). | `WebExtAlarmsScheduler` (web) · `CoroutineScheduler` (tests/foreground) |
 | `CredentialVault` | Device-local secure storage for the Steam credential. | `WebExtStorageCredentialVault` (default via `platformCredentialVault()`) · `InMemoryCredentialVault` (tests) |
 | `MarketplaceClient` | The `/exchange/v1/p2p/ext/` endpoints (heartbeat / trade-events / notary / trade-actions / inventory) + the DMarket app conveniences (accept / getDeal). **Never accepts a `SteamCredential`** (audit boundary). | `KtorMarketplaceClient` |

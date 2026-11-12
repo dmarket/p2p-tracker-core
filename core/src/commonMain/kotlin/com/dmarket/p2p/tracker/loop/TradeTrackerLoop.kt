@@ -7,7 +7,9 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamInventoryReader
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamNotificationReader
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCanceller
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCreator
+import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
+import com.dmarket.p2p.tracker.client.steam.SteamRateLimitedException
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.AccountBinding
 import com.dmarket.p2p.tracker.engine.AccountBindingStatus
@@ -31,6 +33,7 @@ import com.dmarket.p2p.tracker.engine.ProofFreshness
 import com.dmarket.p2p.tracker.engine.ProofIntent
 import com.dmarket.p2p.tracker.engine.ProofMintPolicy
 import com.dmarket.p2p.tracker.engine.ProofMintVerdict
+import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.ReportAck
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.engine.ReportPlan
@@ -339,6 +342,8 @@ internal val HOST_REQUESTED_SENT_OFFERS_FLOOR = 30.seconds
  * scan. One request each, so a page of lookalike offers cannot turn into a burst against DMarket's public limit.
  */
 internal const val MAX_DMARKET_VERIFICATIONS_PER_SCAN = 5
+
+private const val HTTP_TOO_MANY_REQUESTS = 429
 
 /** The [LifecycleEvent.SteamReadFailed] axis of a missing DMarket answer. */
 private const val IS_TRADE_OUR_AXIS = "is_trade_our"
@@ -1171,6 +1176,19 @@ class TradeTrackerLoop(
     private val cycleMutex = Mutex()
 
     /**
+     * The mobile proof gate, closed: no proof is minted and a decisive report that needs one waits unsent
+     * ([ProofSkipReason.NETWORK_DEFERRED]). Set by `P2pTracker` before each cycle; the web never sets it.
+     */
+    var proofsDeferred: Boolean = false
+
+    /**
+     * Whether the last cycle that needed Steam found no Steam credential: the session is gone, or its refresh failed.
+     * [blockingState] and [needsReLogin] say which; this flag also covers a refresh that failed for another reason.
+     */
+    var steamCredentialUnavailable: Boolean = false
+        private set
+
+    /**
      * Whether this host can prove at all — Firefox today, and any caller that passes no prover.
      *
      * Keyed on the prover's own id rather than on config, because the id is what the prover asserts about
@@ -1490,6 +1508,7 @@ class TradeTrackerLoop(
             setSteamMintAttempted(true)
             if (credentials.mintSession(lastLinkedSteamId)) acquired = credentials.current()
         }
+        steamCredentialUnavailable = acquired == null
         acquired ?: run {
             // Steam-session guard. The sticky is set (and persisted) BEFORE the event is emitted, per the
             // same discipline as the marketplace paths below: delivery is synchronous and a host reads
@@ -1640,7 +1659,8 @@ class TradeTrackerLoop(
                 emit(LifecycleEvent.MarketplaceServerError("heartbeat", e.statusCode))
             }
             return null
-        } catch (_: RateLimitedException) {
+        } catch (e: RateLimitedException) {
+            emitIfRateLimited(e)
             return null
         } catch (_: CancellationException) {
             // Teardown, not a network failure: swallow without touching the error counter (pre-existing
@@ -2830,16 +2850,10 @@ class TradeTrackerLoop(
                     notaryThrottle.parkedUntil(now),
                     mintedThisCycle,
                     proofDeadline,
+                    proofsDeferred,
                 )
             if (verdict is ProofMintVerdict.Skip) {
-                emit(
-                    LifecycleEvent.ProofSuppressed(
-                        demand.dealId.value,
-                        FreshProofDemand.AXIS.wireName,
-                        verdict.reason.message,
-                        retryAfterSeconds = verdict.retryAfterSeconds,
-                    ),
-                )
+                emitProofSkip(demand.dealId, FreshProofDemand.AXIS.wireName, verdict)
                 continue
             }
             mintedThisCycle = true
@@ -2982,6 +2996,7 @@ class TradeTrackerLoop(
                 proverParkedUntil = notaryThrottle.parkedUntil(now),
                 mintedThisCycle = mintedThisCycle,
                 cycleDeadline = proofDeadline,
+                networkDeferred = proofsDeferred,
             )
             if (verdict is ProofMintVerdict.Skip) {
                 // An ALREADY_ACCEPTED skip still counts as verified, so the report it corroborates goes out.
@@ -2991,14 +3006,7 @@ class TradeTrackerLoop(
                 // report goes out unproven instead of waiting for one that will never arrive. Also read off
                 // the reason, for the same reason: the gate and the decision share one source.
                 if (verdict.reason.unprovable) proofUnprovable += intent
-                emit(
-                    LifecycleEvent.ProofSuppressed(
-                        intent.dealId.value,
-                        intent.source.wireName,
-                        verdict.reason.message,
-                        retryAfterSeconds = verdict.retryAfterSeconds,
-                    ),
-                )
+                emitProofSkip(intent.dealId, intent.source.wireName, verdict)
                 continue
             }
             val deal = tracking.firstOrNull { it.dealId == intent.dealId }
@@ -3130,6 +3138,7 @@ class TradeTrackerLoop(
                     val partial = failure as? TradeStatusBatchInterruptedException
                     delivered = sendable.take(partial?.deliveredCount ?: 0)
                     // The unheard rest is explained by what stopped the batch, not by the wrapper.
+                    emitIfRateLimited(partial?.cause ?: failure)
                     val reason = (partial?.cause ?: failure).redactedSummary()
                     val answered = partial?.let { ReportAcknowledgement.match(delivered, it.results) }.orEmpty()
                     answered + sendable.drop(delivered.size).map { ReportAck(it, accepted = false, reason = reason) }
@@ -3214,6 +3223,27 @@ class TradeTrackerLoop(
         val settled = acceptedIntents.filterNotTo(HashSet()) { it in proofUnprovable }
         if (settled.isNotEmpty()) runCatching { unprovenClaims.release(settled) }
         return accepted.size to proofsSubmitted
+    }
+
+    /** A skipped proof: [LifecycleEvent.ProofDeferred] when the network gate held it, [LifecycleEvent.ProofSuppressed] otherwise. */
+    private suspend fun emitProofSkip(dealId: DealId, source: String, verdict: ProofMintVerdict.Skip) {
+        if (verdict.reason == ProofSkipReason.NETWORK_DEFERRED) {
+            emit(LifecycleEvent.ProofDeferred(dealId.value, source))
+        } else {
+            emit(
+                LifecycleEvent.ProofSuppressed(dealId.value, source, verdict.reason.message, retryAfterSeconds = verdict.retryAfterSeconds),
+            )
+        }
+    }
+
+    /** Tells the host about a 429 among [failure]'s kinds; the caller's own handling is unchanged. */
+    private suspend fun emitIfRateLimited(failure: Throwable) {
+        when {
+            failure is RateLimitedException -> emit(LifecycleEvent.RateLimited("marketplace", failure.retryAfterSeconds))
+            failure is SteamRateLimitedException -> emit(LifecycleEvent.RateLimited("steam", failure.retryAfterSeconds))
+            failure is HttpStatusException && failure.statusCode == HTTP_TOO_MANY_REQUESTS ->
+                emit(LifecycleEvent.RateLimited("steam", failure.retryAfterSeconds))
+        }
     }
 
     /**
@@ -3587,6 +3617,7 @@ class TradeTrackerLoop(
         }
         // A persistent (non-auth) read failure would otherwise be an invisible no-op tick — surface it.
         val offerSnapshots = offerResult.getOrElse {
+            emitIfRateLimited(it)
             emit(LifecycleEvent.SteamReadFailed("offer", it.redactedSummary()))
             emptyMap()
         }
@@ -3594,6 +3625,7 @@ class TradeTrackerLoop(
         // a replacement, and replaying the dead id to it is what froze the deal on the backend.
         releaseDeadOfferClaims(offerSnapshots, DEAD_OFFER_TRIGGER_WATCH)
         val transfers = historyResult?.getOrElse {
+            emitIfRateLimited(it)
             emit(LifecycleEvent.SteamReadFailed("history", it.redactedSummary()))
             emptyList()
         } ?: emptyList()

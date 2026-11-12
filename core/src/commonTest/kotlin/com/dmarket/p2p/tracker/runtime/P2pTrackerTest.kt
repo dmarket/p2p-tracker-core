@@ -18,6 +18,7 @@ import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.port.host.EventObserver
+import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.support.FakeClock
@@ -89,6 +90,8 @@ class P2pTrackerTest {
         deviceIds = FakeDeviceIdStore(),
         linkedAccount = { accountA },
         loopFor = { _, observer -> loop(marketplace, observer, reader) },
+        network = NetworkConditions.Unmetered,
+        cellularProofs = { false },
         acknowledger = acknowledger,
         eventObserver = events,
     )
@@ -272,6 +275,8 @@ class P2pTrackerTest {
             deviceIds = FakeDeviceIdStore(),
             linkedAccount = { accountA },
             loopFor = { _, observer -> loop(mp, observer) },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
             cycleDeadline = 30.seconds,
         )
 
@@ -303,6 +308,8 @@ class P2pTrackerTest {
                 log += "stores of ${account.value}"
                 loop(if (account == accountA) heldA else FakeMarketplaceClient(), observer)
             },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
         )
 
         launch { tracker.onPush(wakeAll) }
@@ -325,6 +332,8 @@ class P2pTrackerTest {
             deviceIds = FakeDeviceIdStore(),
             linkedAccount = { linked },
             loopFor = { _, observer -> loop(FakeMarketplaceClient(), observer) },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
         )
         assertTrue(tracker.start())
 

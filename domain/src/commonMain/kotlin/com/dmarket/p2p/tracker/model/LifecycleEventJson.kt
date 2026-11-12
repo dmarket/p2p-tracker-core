@@ -252,6 +252,16 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("proveAfter", event.proveAfter)
             put("acknowledged", event.acknowledged)
         }
+        is LifecycleEvent.ProofDeferred -> {
+            put("event", "ProofDeferred")
+            put("dealId", event.dealId)
+            put("source", event.source)
+        }
+        is LifecycleEvent.RateLimited -> {
+            put("event", "RateLimited")
+            put("surface", event.surface)
+            put("retryAfterSeconds", event.retryAfterSeconds)
+        }
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")
             put("directivesExecuted", event.directivesExecuted)

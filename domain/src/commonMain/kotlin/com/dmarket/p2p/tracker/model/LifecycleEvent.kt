@@ -447,6 +447,20 @@ sealed interface LifecycleEvent {
     data class WakeReceived(val type: String, val dealId: String?, val proveAfter: String?, val acknowledged: Boolean) :
         LifecycleEvent
 
+    /**
+     * A decisive transition's proof was put off by the mobile proof gate: the device is on a metered network
+     * without the user's cellular opt-in. Its report waits, unsent, until a proof runs; nothing is claimed
+     * unproven. Emitted on every cycle the gate holds it. The host acks the wake's result as deferred with it once
+     * that ack exists (DMA-659); [source] is the axis (`offer`, `history`).
+     */
+    data class ProofDeferred(val dealId: String, val source: String) : LifecycleEvent
+
+    /**
+     * A 429: [surface] `marketplace` (DMarket) or `steam`, [retryAfterSeconds] its `Retry-After` when sent. The
+     * cycle carries on without the refused call, as before.
+     */
+    data class RateLimited(val surface: String, val retryAfterSeconds: Long?) : LifecycleEvent
+
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :
         LifecycleEvent

@@ -207,6 +207,18 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun proof_deferred_and_rate_limited_carry_their_fields() {
+        val deferred = parse(LifecycleEvent.ProofDeferred("d-1", "offer"))
+        assertEquals("ProofDeferred", deferred["event"]?.jsonPrimitive?.content)
+        assertEquals("d-1", deferred["dealId"]?.jsonPrimitive?.content)
+        assertEquals("offer", deferred["source"]?.jsonPrimitive?.content)
+        val limited = parse(LifecycleEvent.RateLimited("marketplace", 30))
+        assertEquals("RateLimited", limited["event"]?.jsonPrimitive?.content)
+        assertEquals("marketplace", limited["surface"]?.jsonPrimitive?.content)
+        assertEquals("30", limited["retryAfterSeconds"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun marketplace_server_error_carries_endpoint_and_status() {
         val json = parse(LifecycleEvent.MarketplaceServerError(endpoint = "heartbeat", statusCode = 404))
         assertEquals("MarketplaceServerError", json["event"]?.jsonPrimitive?.content)
@@ -390,6 +402,8 @@ class LifecycleEventJsonTest {
             ),
             LifecycleEvent.CycleFailed("storage unavailable"),
             LifecycleEvent.WakeReceived("wake_all", null, null, acknowledged = false),
+            LifecycleEvent.ProofDeferred("d-1", "offer"),
+            LifecycleEvent.RateLimited("steam", null),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),
         )
         for (event in samples) {
