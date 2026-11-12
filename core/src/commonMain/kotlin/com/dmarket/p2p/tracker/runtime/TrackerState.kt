@@ -36,8 +36,9 @@ data class TrackerState(
  * @property checkedAt when a cycle last read its Steam status ("Last update").
  * @property lastCode the last raw Steam status code reported for it.
  * @property proofState whether its report waits on a proof.
- * @property cooldownUntil until when a manual "Update status" is not available: set by [P2pTracker.updateStatus] from a
- *   429's `Retry-After`. The server's own permit (DMA-660) is the app's.
+ * @property cooldownUntil until when a manual "Update status" is not available: set by [P2pTracker.updateStatus] after a
+ *   429, to the longer of its `Retry-After` and a backoff that doubles with each 429 in a row ([RateLimitBackoff]). The
+ *   server's own permit (DMA-660) is the app's.
  */
 data class DealTrackingState(
     val checkedAt: Instant? = null,
@@ -69,7 +70,8 @@ enum class ProofState {
  * @property code the raw Steam status code this run read for it (the history axis before the offer axis), else the last
  *   one reported; `null` when neither exists, e.g. the read failed right after a cold start.
  * @property proofState where its proof stands; [ProofState.DEFERRED] when the gate held it (T-13 asks for permission).
- * @property retryAfter how long until a retry can go out; set with [UpdateFailure.RATE_LIMITED] only.
+ * @property retryAfter how long until a retry can go out: the 429's wait from [RateLimitBackoff], or what is left of it;
+ *   set with [UpdateFailure.RATE_LIMITED] only.
  * @property failure why the update fell short (T-16), or `null` when it ran through.
  */
 data class StatusUpdate(

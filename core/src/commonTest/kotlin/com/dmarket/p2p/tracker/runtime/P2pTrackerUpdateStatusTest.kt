@@ -39,6 +39,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -71,7 +72,17 @@ class P2pTrackerUpdateStatusTest {
         val heldMarketplace: MarketplaceClient = marketplace,
     )
 
-    private fun TestScope.tracker(setup: Setup) = P2pTracker(
+    /** Every draw is 0: no jitter. */
+    private object Lowest : Random() {
+        override fun nextBits(bitCount: Int): Int = 0
+    }
+
+    /** Every draw is just under 1: the most jitter. */
+    private object Highest : Random() {
+        override fun nextBits(bitCount: Int): Int = -1 ushr (32 - bitCount)
+    }
+
+    private fun TestScope.tracker(setup: Setup, random: Random = Lowest) = P2pTracker(
         scope = backgroundScope,
         clock = clock,
         deviceIds = FakeDeviceIdStore(),
@@ -97,6 +108,7 @@ class P2pTrackerUpdateStatusTest {
         network = { setup.metered },
         cellularProofs = { setup.cellularOptIn },
         eventObserver = events,
+        random = random,
     )
 
     // ---- updateStatus --------------------------------------------------------------------------
@@ -157,8 +169,57 @@ class P2pTrackerUpdateStatusTest {
         val update = tracker.updateStatus(deal)
 
         assertEquals(UpdateFailure.RATE_LIMITED, update.failure)
-        assertEquals(P2pTracker.DEFAULT_RATE_LIMIT_WAIT_SECONDS.seconds, update.retryAfter, "no Retry-After: the default wait")
+        assertEquals(RateLimitBackoff.BASE, update.retryAfter, "no Retry-After: the ladder's first step")
         assertTrue(events.events.contains(LifecycleEvent.RateLimited("steam", null)))
+    }
+
+    @Test
+    fun dmarket_429s_in_a_row_without_retry_after_climb_the_ladder() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(null) }
+        val tracker = tracker(Setup(mp))
+
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "the first 429")
+        clock.advance(30.seconds)
+        assertEquals(60.seconds, tracker.updateStatus(deal).retryAfter, "the second in a row doubles")
+        assertEquals(clock.now() + 60.seconds, tracker.state.value.deals[deal]?.cooldownUntil)
+    }
+
+    @Test
+    fun a_retry_after_longer_than_the_ladder_wins_and_a_shorter_one_does_not() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(300) }
+        val tracker = tracker(Setup(mp))
+        assertEquals(300.seconds, tracker.updateStatus(deal).retryAfter)
+
+        clock.advance(300.seconds)
+        mp.heartbeatThrowable = RateLimitedException(1)
+        assertEquals(60.seconds, tracker.updateStatus(deal).retryAfter, "a 1 s Retry-After does not cut the second step")
+    }
+
+    @Test
+    fun an_answered_heartbeat_ends_the_run_of_429s() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(null) }
+        val tracker = tracker(Setup(mp))
+        tracker.updateStatus(deal)
+        clock.advance(30.seconds)
+        tracker.updateStatus(deal)
+        clock.advance(60.seconds)
+
+        mp.heartbeatThrowable = null
+        assertNull(tracker.updateStatus(deal).failure)
+        clock.advance(1.minutes)
+
+        mp.heartbeatThrowable = RateLimitedException(null)
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "the ladder starts over")
+    }
+
+    @Test
+    fun jitter_adds_up_to_a_quarter_of_the_wait() = runTest {
+        val lowest = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(null) }
+        assertEquals(30.seconds, tracker(Setup(lowest), Lowest).updateStatus(deal).retryAfter)
+
+        val highest = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(null) }
+        val most = tracker(Setup(highest), Highest).updateStatus(deal).retryAfter!!
+        assertTrue(most > 37.seconds && most <= 37.5.seconds, "at most 30 s + 25 %: $most")
     }
 
     @Test

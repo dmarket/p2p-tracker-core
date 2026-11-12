@@ -204,7 +204,7 @@ class HeadlessTracker(
     private var updateRequired = false
     private var updateDueTime: Instant? = null
     private var dealDeadlines: Map<DealId, Instant> = emptyMap()
-    private var rateLimitStreak = 0
+    private val rateLimitBackoff = RateLimitBackoff(random)
 
     private val observer = EventObserver { event ->
         if (event is LifecycleEvent.HeartbeatSent) steam.heartbeatReturned()
@@ -259,20 +259,13 @@ class HeadlessTracker(
 
     private fun rateLimitWait(): Duration? = rateLimitedUntil?.let { it - clock.now() }?.takeIf { it > Duration.ZERO }
 
-    /**
-     * DMarket answered 429: nothing more goes to it until [Retry-After][retryAfterSeconds] has passed, nor before a
-     * backoff that doubles with each 429 in a row from [RATE_LIMIT_BACKOFF_BASE] to [RATE_LIMIT_BACKOFF_MAX], whichever
-     * is later — plus up to a quarter more at random, so SDKs behind one address do not all come back at once.
-     */
+    /** DMarket answered 429: nothing more goes to it for the wait [RateLimitBackoff] gives. */
     private fun rateLimited(retryAfterSeconds: Long?) {
-        rateLimitStreak += 1
-        val ladder = RATE_LIMIT_BACKOFF_BASE * (1 shl (rateLimitStreak - 1).coerceAtMost(RATE_LIMIT_MAX_DOUBLINGS))
-        val wait = maxOf(retryAfterSeconds?.coerceAtLeast(0)?.seconds ?: Duration.ZERO, ladder.coerceAtMost(RATE_LIMIT_BACKOFF_MAX))
-        rateLimitedUntil = clock.now() + wait + wait * (random.nextDouble() * RATE_LIMIT_JITTER)
+        rateLimitedUntil = clock.now() + rateLimitBackoff.refused(retryAfterSeconds)
     }
 
     private fun answered() {
-        rateLimitStreak = 0
+        rateLimitBackoff.answered()
     }
 
     /**
@@ -545,14 +538,11 @@ class HeadlessTracker(
          */
         val UNANSWERED_CREATE_GRACE: Duration = 2.minutes
 
-        /** The first wait after a 429 with no longer `Retry-After`; it doubles with each 429 in a row. */
-        val RATE_LIMIT_BACKOFF_BASE: Duration = 30.seconds
+        /** [RateLimitBackoff.BASE]. */
+        val RATE_LIMIT_BACKOFF_BASE: Duration = RateLimitBackoff.BASE
 
-        /** The longest wait a run of 429s grows to: as long as the gateway's own ban on an address. */
-        val RATE_LIMIT_BACKOFF_MAX: Duration = 10.minutes
-
-        private const val RATE_LIMIT_MAX_DOUBLINGS = 5
-        private const val RATE_LIMIT_JITTER = 0.25
+        /** [RateLimitBackoff.MAX]. */
+        val RATE_LIMIT_BACKOFF_MAX: Duration = RateLimitBackoff.MAX
 
         /** The gateway's refusal of a heartbeat for an account that links no Steam account. */
         const val STEAM_NOT_LINKED_CODE: String = "P2P_STEAM_NOT_LINKED"

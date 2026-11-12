@@ -34,9 +34,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
+import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -67,6 +67,7 @@ import kotlin.time.Instant
  * @param cellularProofs the user's "proofs on mobile data" option, read on each cycle; the host holds it and its
  *   default (off, D6).
  * @param eventObserver every lifecycle event, after the tracker's own handling.
+ * @param random the draws behind the 429 backoff's jitter.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -79,6 +80,7 @@ class P2pTracker(
     private val acknowledger: WakeAcknowledger = NoOpWakeAcknowledger,
     private val eventObserver: EventObserver = NoOpEventObserver,
     private val cycleDeadline: Duration = DEFAULT_CYCLE_DEADLINE,
+    random: Random = Random.Default,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -99,11 +101,16 @@ class P2pTracker(
     private class CycleProbe {
         var heartbeat = false
         var retryAfter: Duration? = null
+        var steamRateLimited = false
         var steamReadFailed = false
         var failed = false
         val proofFailed = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
     }
+
+    /** A run of 429s per surface: DMarket's ends on a heartbeat that came back, Steam's on a cycle that read it. */
+    private val dmarketBackoff = RateLimitBackoff(random)
+    private val steamBackoff = RateLimitBackoff(random)
 
     private class CycleRun(val next: Duration, val completed: Boolean, val probe: CycleProbe)
 
@@ -245,6 +252,7 @@ class P2pTracker(
                     }
                     true
                 } ?: false
+                if (watchedAt != null && !cycleProbe.steamRateLimited) steamBackoff.answered()
                 refresh(s)
                 CycleRun(s.loop.nextWakeDelay(), completed, cycleProbe)
             }
@@ -310,12 +318,15 @@ class P2pTracker(
         when (event) {
             is LifecycleEvent.HeartbeatSent -> {
                 probe.heartbeat = true
+                dmarketBackoff.answered()
                 mutableState.update { it.copy(lastSyncAt = clock.now()) }
             }
             is LifecycleEvent.CycleCompleted -> if (event.watching > 0) watchedAt = clock.now()
             is LifecycleEvent.CycleFailed -> probe.failed = true
             is LifecycleEvent.RateLimited -> {
-                val wait = (event.retryAfterSeconds?.coerceAtLeast(0) ?: DEFAULT_RATE_LIMIT_WAIT_SECONDS).seconds
+                val steam = event.surface == "steam"
+                if (steam) probe.steamRateLimited = true
+                val wait = (if (steam) steamBackoff else dmarketBackoff).refused(event.retryAfterSeconds)
                 probe.retryAfter = maxOf(probe.retryAfter ?: Duration.ZERO, wait)
             }
             is LifecycleEvent.SteamReadFailed -> if (event.axis == "offer" || event.axis == "history") probe.steamReadFailed = true
@@ -358,8 +369,5 @@ class P2pTracker(
     companion object {
         /** The longest one cycle runs before it is cancelled; WorkManager stops a Worker after 10 minutes. */
         val DEFAULT_CYCLE_DEADLINE: Duration = 3.minutes
-
-        /** The wait after a 429 that sent no `Retry-After`. */
-        const val DEFAULT_RATE_LIMIT_WAIT_SECONDS: Long = 60
     }
 }
