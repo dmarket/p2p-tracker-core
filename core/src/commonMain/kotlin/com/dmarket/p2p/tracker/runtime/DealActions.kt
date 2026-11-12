@@ -79,7 +79,7 @@ enum class DealCallErrorKind {
     /** No reply within the request timeout. */
     TIMEOUT,
 
-    /** No tracker runs: the app's user links no Steam account. No call was made. */
+    /** No tracker runs: the app's user links no Steam account, or its loop did not start. No call was made. */
     NOT_RUNNING,
 
     /** The reply could not be read, or the call failed in a way none of the above names. */

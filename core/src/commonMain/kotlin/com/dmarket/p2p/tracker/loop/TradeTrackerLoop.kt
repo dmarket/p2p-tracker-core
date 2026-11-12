@@ -577,7 +577,7 @@ class TradeTrackerLoop(
             // A failed call is repeated like an empty answer: it says nothing about the deal. A 401 has already been
             // refreshed and retried inside the client. The last call is kept for the mobile facade, which tells the
             // user why the run ended without a directive.
-            val call = runCatching { marketplace.startDelivery(dealId) }
+            val call = runCatching { marketplace.startDelivery(dealId) }.onFailure { if (it is CancellationException) throw it }
             createWaitersLock.withLock { deliveryCalls[dealId] = call }
             val delivery = call.getOrNull()
             delivery?.reasonCode?.takeIf { it.isNotBlank() }?.let { code ->

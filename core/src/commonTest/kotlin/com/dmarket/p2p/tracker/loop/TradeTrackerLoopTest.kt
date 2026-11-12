@@ -89,6 +89,7 @@ import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.test.Test
@@ -1178,6 +1179,23 @@ class TradeTrackerLoopTest {
         assertTrue(mp.directiveOutcomes.isEmpty())
         assertEquals(2, mp.startDeliveryCalls)
         assertEquals(2_000L, testScheduler.currentTime - start)
+    }
+
+    @Test
+    fun a_deadline_on_the_last_create_trade_call_answers_in_flight_not_a_refusal() = runTest {
+        // The host's cycle deadline cancels the repeated call: that says nothing about the deal, so neither the press nor
+        // a second one that joined its wait is told no create_offer came.
+        val mp = FakeMarketplaceClient(heartbeatResponse = sellerHeartbeat)
+        val l = warmLoop(mp, FakeSteamOfferCreator())
+        mp.startDeliveryDelay = 1.5.seconds
+        val deadline: suspend (suspend () -> Unit) -> Unit = { work -> withTimeoutOrNull(4.seconds) { work() } }
+
+        val first = async { l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this@runTest, deadline) }
+        val second = async { l.awaitDirectiveOutcome(DealId("deal-1"), 30.seconds, this@runTest, deadline) }
+
+        assertIs<CreateOfferResult.CreateInFlight>(first.await())
+        assertIs<CreateOfferResult.CreateInFlight>(second.await())
+        assertEquals(2, mp.startDeliveryCalls, "the deadline fell on the repeated call")
     }
 
     @Test

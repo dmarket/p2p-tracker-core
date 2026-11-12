@@ -379,4 +379,40 @@ class P2pTrackerTest {
 
         assertEquals(TrackerState(), tracker.state.value)
     }
+
+    @Test
+    fun a_loop_that_does_not_start_answers_not_running_says_why_and_the_next_call_starts_again() = runTest {
+        var fault: Throwable? = IllegalStateException("Keystore busy")
+        val mp = FakeMarketplaceClient()
+        val tracker = P2pTracker(
+            scope = backgroundScope,
+            clock = clock,
+            deviceIds = FakeDeviceIdStore(),
+            linkedAccount = { accountA },
+            loopFor = { _, observer ->
+                fault?.let { throw it }
+                loop(mp, observer)
+            },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
+            eventObserver = events,
+        )
+        val deal = DealId("d1")
+        val notRunning = DealCallError(DealCallErrorKind.NOT_RUNNING)
+
+        assertEquals(StatusUpdate(failure = UpdateFailure.NOT_RUNNING), tracker.updateStatus(deal))
+        assertEquals(notRunning, tracker.startDelivery(deal).error)
+        assertEquals(AcceptOutcome.Failed(notRunning), tracker.acceptDeal(deal))
+        assertEquals(DealRead.Failed(notRunning), tracker.getDeal(deal))
+        assertTrue(tracker.onPush(wakeAll), "the wake is still taken")
+        assertFalse(tracker.start())
+        assertEquals(6, events.events.count { it == LifecycleEvent.CycleFailed("IllegalStateException: Keystore busy") })
+        assertFalse(tracker.state.value.running)
+        assertTrue(mp.heartbeatsSent.isEmpty())
+
+        fault = null
+        assertTrue(tracker.onPush(wakeAll))
+        assertEquals(1, mp.heartbeatsSent.size, "the next call starts the loop")
+        assertTrue(tracker.state.value.running)
+    }
 }

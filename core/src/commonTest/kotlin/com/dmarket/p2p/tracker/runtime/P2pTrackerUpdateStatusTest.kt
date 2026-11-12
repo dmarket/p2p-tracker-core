@@ -53,6 +53,7 @@ class P2pTrackerUpdateStatusTest {
     private val offer = OfferId("offer-1")
     private val clock = FakeClock()
     private val events = RecordingEventObserver()
+    private var linked = account
 
     private fun heartbeat(proofRequired: Boolean = false) = HeartbeatResponse(
         activeTracking = listOf(
@@ -86,7 +87,7 @@ class P2pTrackerUpdateStatusTest {
         scope = backgroundScope,
         clock = clock,
         deviceIds = FakeDeviceIdStore(),
-        linkedAccount = { account },
+        linkedAccount = { linked },
         loopFor = { _, observer ->
             TradeTrackerLoop(
                 config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background),
@@ -243,6 +244,33 @@ class P2pTrackerUpdateStatusTest {
 
         mp.heartbeatThrowable = RateLimitedException(null)
         assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "the ladder starts over")
+    }
+
+    @Test
+    fun a_logout_or_another_account_starts_the_dmarket_429s_over_and_keeps_steams() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(300) }
+        val tracker = tracker(Setup(mp))
+        tracker.updateStatus(deal)
+        tracker.onLogout()
+
+        mp.heartbeatThrowable = RateLimitedException(null)
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "after a logout: no cooldown, the ladder's first step")
+
+        linked = SteamId("76561198000000002")
+        tracker.start()
+        val sent = mp.heartbeatAttempts
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "another account: no cooldown, the ladder's first step")
+        assertEquals(sent + 1, mp.heartbeatAttempts)
+
+        mp.heartbeatThrowable = null
+        val reader = object : SteamReadClient by FakeSteamReadClient() {
+            override suspend fun offerSnapshots(credential: SteamCredential, offerIds: Set<OfferId>): Map<OfferId, SteamOfferSnapshot> =
+                throw SteamRateLimitedException(120)
+        }
+        val steam = tracker(Setup(FakeMarketplaceClient(heartbeat()), reader = reader))
+        steam.updateStatus(deal)
+        steam.onLogout()
+        assertEquals(UpdateFailure.RATE_LIMITED, steam.updateStatus(deal).failure, "Steam's 429 is the address's, not the user's")
     }
 
     @Test

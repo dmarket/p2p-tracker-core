@@ -10,6 +10,7 @@ import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.Wake
+import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
@@ -129,6 +130,9 @@ class P2pTracker(
     @Volatile
     private var steamCooldownUntil: Instant? = null
 
+    /** Whose DMarket 429s [dmarketCooldownUntil] counts: another account or a logout starts it over; Steam's stays. */
+    private var dmarketAccount: SteamId? = null
+
     private class CycleRun(val next: Duration, val completed: Boolean, val probe: CycleProbe)
 
     private val observer = EventObserver { event ->
@@ -155,6 +159,7 @@ class P2pTracker(
      */
     suspend fun onLogout() = lifecycle.withLock {
         stopLocked()
+        resetDmarketCooldown(null)
         clearAccountState()
     }
 
@@ -295,13 +300,28 @@ class P2pTracker(
         session?.takeIf { it.account == account && it.job.isActive }?.let { return it }
         // Before the new account's stores open: the old loop's in-memory state must not reach them.
         stopLocked()
-        val loop = loopFor(account, observer)
+        if (account != dmarketAccount) resetDmarketCooldown(account)
+        val loop = try {
+            loopFor(account, observer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // A store that does not open now (a Keystore fault) may open on the next call, which starts again.
+            emitQuietly(LifecycleEvent.CycleFailed(e.redactedSummary()))
+            return null
+        }
         loop.mode = modeOf(foreground)
         val s = Session(account, loop)
         session = s
         mutableState.value = TrackerState(running = true, foreground = foreground, account = account)
         if (foreground) s.driver = s.scope.launch { drive(s) }
         return s
+    }
+
+    private fun resetDmarketCooldown(account: SteamId?) {
+        dmarketAccount = account
+        dmarketBackoff.answered()
+        dmarketCooldownUntil = null
     }
 
     private suspend fun stopLocked() {
@@ -490,6 +510,6 @@ class P2pTracker(
         val DEFAULT_DELIVERY_TIMEOUT: Duration = 60.seconds
 
         private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
-        private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account"
+        private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account, or its loop did not start"
     }
 }

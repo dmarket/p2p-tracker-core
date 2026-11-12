@@ -105,7 +105,7 @@ enum class UpdateFailure {
     /** The run outlived the cycle deadline and was cancelled. */
     TIMEOUT,
 
-    /** No tracker runs: the app's user links no Steam account, or the tracker stopped during the run. */
+    /** No tracker runs: the app's user links no Steam account, its loop did not start, or it stopped during the run. */
     NOT_RUNNING,
 
     /** The cycle failed in a way none of the above names. */
