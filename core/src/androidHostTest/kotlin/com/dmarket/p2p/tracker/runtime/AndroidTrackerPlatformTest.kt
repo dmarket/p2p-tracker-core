@@ -1,5 +1,7 @@
 package com.dmarket.p2p.tracker.runtime
 
+import android.security.KeyStoreException
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import com.dmarket.p2p.tracker.adapter.SealedKeyValueStore
 import com.dmarket.p2p.tracker.adapter.SharedPreferencesKeyValueStore
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceRequest
@@ -21,17 +23,19 @@ import com.dmarket.p2p.tracker.support.FakeDisk
 import com.dmarket.p2p.tracker.support.FakeKeystore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
-import java.security.KeyStoreException
+import java.security.InvalidKeyException
+import java.security.ProviderException
 import java.security.UnrecoverableKeyException
-import javax.crypto.spec.SecretKeySpec
 import kotlin.io.encoding.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -161,15 +165,21 @@ class AndroidTrackerPlatformTest {
     }
 
     @Test
-    fun aKeystoreKeyThatNoLongerWorksIsReplacedAndANewDeviceIdIsMade() = runTest {
-        val breakages = listOf<FakeKeystore.() -> Unit>(
-            { entryFailure = UnrecoverableKeyException("entry does not open") },
-            // Cipher.init refuses it with an InvalidKeyException, as for a KeyPermanentlyInvalidatedException.
-            { key = SecretKeySpec(ByteArray(3), "AES") },
+    fun aKeystoreKeyThatIsGoneForGoodIsReplacedAndANewDeviceIdIsMade() = runTest {
+        // (API, breakage): no key is covered by the device-transfer test.
+        val gone = listOf<Pair<Int, FakeKeystore.() -> Unit>>(
+            36 to { initFailure = KeyPermanentlyInvalidatedException("lock screen removed") },
+            24 to { initFailure = KeyPermanentlyInvalidatedException("lock screen removed") },
+            33 to { entryFailure = unrecoverable(FakeKeystore.gone()) },
+            36 to { entryFailure = unrecoverable(FakeKeystore.gone(KeyStoreException.ERROR_KEY_CORRUPTED)) },
+            33 to
+                {
+                    initFailure = InvalidKeyException("Keystore operation failed", FakeKeystore.gone(KeyStoreException.ERROR_KEY_CORRUPTED))
+                },
         )
-        for (breakKey in breakages) {
+        for ((sdk, breakKey) in gone) {
             val disk = FakeDisk()
-            val keystore = FakeKeystore()
+            val keystore = FakeKeystore(sdk)
             platform(disk, keystore).workAs(alice)
             val oldId = platform(disk, keystore).deviceIds.current()
             val oldKey = keystore.key
@@ -189,24 +199,78 @@ class AndroidTrackerPlatformTest {
 
     @Test
     fun aKeystoreFaultFailsTheCallAndErasesNothing() = runTest {
-        val disk = FakeDisk()
-        val keystore = FakeKeystore()
-        val platform = platform(disk, keystore)
-        platform.workAs(alice)
-        val deviceId = platform.deviceIds.current()
-        val onDisk = disk.copy().files
+        // (API, fault): a busy keystore2, a cause that names neither, an API without the cause's codes, no cause at all.
+        val faults = listOf<Pair<Int, FakeKeystore.() -> Exception>>(
+            36 to { unrecoverable(FakeKeystore.busy()).also { entryFailure = it } },
+            36 to { InvalidKeyException("Keystore operation failed", FakeKeystore.busy()).also { initFailure = it } },
+            36 to { unrecoverable(FakeKeystore.busy(KeyStoreException.ERROR_KEY_DOES_NOT_EXIST)).also { entryFailure = it } },
+            36 to { unrecoverable(FakeKeystore.gone(KeyStoreException.ERROR_PERMISSION_DENIED)).also { entryFailure = it } },
+            32 to { unrecoverable(FakeKeystore.gone()).also { entryFailure = it } },
+            24 to
+                {
+                    InvalidKeyException("Keystore operation failed", FakeKeystore.gone(KeyStoreException.ERROR_KEY_CORRUPTED)).also {
+                        initFailure =
+                            it
+                    }
+                },
+            36 to { UnrecoverableKeyException("Failed to obtain information about key").also { entryFailure = it } },
+            36 to { InvalidKeyException("Keystore operation failed").also { initFailure = it } },
+        )
+        for ((sdk, fail) in faults) {
+            val disk = FakeDisk()
+            val keystore = FakeKeystore(sdk)
+            val platform = platform(disk, keystore)
+            platform.workAs(alice)
+            val deviceId = platform.deviceIds.current()
+            val key = keystore.key
+            val onDisk = disk.copy().files
 
-        keystore.failure = KeyStoreException("keystore2 busy")
-        assertFailsWith<KeyStoreException> { platform.deviceIds.current() }
-        assertFailsWith<KeyStoreException> { platform.vault.readSteamCredential() }
-        assertFailsWith<KeyStoreException> { platform.stores(alice) }
-        assertEquals(onDisk, disk.files)
+            val fault = keystore.fail()
+            assertSame<Throwable>(fault, assertFails { platform.deviceIds.current() })
+            assertSame<Throwable>(fault, assertFails { platform.vault.readSteamCredential() })
+            assertSame<Throwable>(fault, assertFails { platform.vault.writeSteamCredential(credential) })
+            assertSame<Throwable>(fault, assertFails { platform.stores(alice) })
+            assertEquals(onDisk, disk.files)
+            assertSame(key, keystore.key)
 
-        keystore.failure = null
-        assertEquals(deviceId, platform.deviceIds.current())
-        assertEquals(credential, platform.vault.readSteamCredential())
-        assertEquals(setOf(DirectiveId("directive-1")), platform.stores(alice).progress.loadHandledDirectives())
+            keystore.entryFailure = null
+            keystore.initFailure = null
+            assertEquals(deviceId, platform.deviceIds.current())
+            assertEquals(credential, platform.vault.readSteamCredential())
+            assertEquals(setOf(DirectiveId("directive-1")), platform.stores(alice).progress.loadHandledDirectives())
+        }
     }
+
+    @Test
+    fun aKeyThatCannotBeGeneratedFailsTheFirstWriteAndStoresNothing() = runTest {
+        val disk = FakeDisk()
+        val fault = ProviderException("Keystore key generation failed", FakeKeystore.busy())
+        val keystore = FakeKeystore().apply { generateFailure = fault }
+        val platform = platform(disk, keystore)
+
+        assertSame<Throwable>(fault, assertFails { platform.vault.writeSteamCredential(credential) })
+        assertTrue(disk.allValues().isEmpty())
+
+        keystore.generateFailure = null
+        platform.vault.writeSteamCredential(credential)
+        assertEquals(credential, platform.vault.readSteamCredential())
+    }
+
+    @Test
+    fun aCommitThatDoesNotWriteFailsTheCall() = runTest {
+        val disk = FakeDisk()
+        val store = SharedPreferencesKeyValueStore(disk.prefs("file"), Dispatchers.Unconfined)
+        store.set("kept", "value")
+        disk.commitFails = true
+
+        assertFailsWith<IllegalStateException> { store.set("key", "value") }
+        assertFailsWith<IllegalStateException> { store.remove("kept") }
+        assertFailsWith<IllegalStateException> { store.clear() }
+        assertEquals(mapOf("kept" to "value"), disk.files.getValue("file"))
+    }
+
+    private fun unrecoverable(cause: Throwable) =
+        UnrecoverableKeyException("Failed to obtain information about key").apply { initCause(cause) }
 
     @Test
     fun anotherAccountStartsFromCleanStateAndThePreviousOneIsErased() = runTest {

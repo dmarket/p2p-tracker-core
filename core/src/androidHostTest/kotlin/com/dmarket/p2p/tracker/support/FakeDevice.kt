@@ -1,6 +1,8 @@
 package com.dmarket.p2p.tracker.support
 
 import android.content.SharedPreferences
+import android.security.KeyStoreException
+import android.security.Keystore2Failure
 import com.dmarket.p2p.tracker.adapter.KeystoreAesGcmCipher
 import com.dmarket.p2p.tracker.adapter.SealKeyStore
 import com.dmarket.p2p.tracker.adapter.SecretCipher
@@ -12,7 +14,10 @@ import javax.crypto.SecretKey
  * transfer carries over.
  */
 class FakeDisk(val files: MutableMap<String, MutableMap<String, String>> = mutableMapOf()) {
-    fun prefs(name: String): SharedPreferences = FakePreferences(files.getOrPut(name) { mutableMapOf() })
+    /** While true, `commit()` writes nothing and answers `false`, as for a full or read-only disk. */
+    var commitFails = false
+
+    fun prefs(name: String): SharedPreferences = FakePreferences(files.getOrPut(name) { mutableMapOf() }) { !commitFails }
 
     fun copy(): FakeDisk = FakeDisk(files.mapValuesTo(mutableMapOf()) { (_, file) -> file.toMutableMap() })
 
@@ -20,33 +25,50 @@ class FakeDisk(val files: MutableMap<String, MutableMap<String, String>> = mutab
 }
 
 /**
- * The Android Keystore of one device under [KeystoreAesGcmCipher]: no key until the first encrypt, kept on the device,
- * never copied. While [failure] is set, every call throws it, as a busy or restarting Keystore does; [entryFailure] is
- * what reading the entry throws (an entry that never opens again) until a new key replaces it.
+ * The Android Keystore of one device on API [sdkInt] under [KeystoreAesGcmCipher]: no key until the first encrypt, kept
+ * on the device, never copied. Until a new key replaces the entry, [entryFailure] is what `KeyStore.getEntry` throws and
+ * [initFailure] what `Cipher.init` throws for the key; [generateFailure] is what generating a key throws. keystore2 uses
+ * the same wrappers for a key that is gone and for a busy service, so build them with [gone] and [busy].
  */
-class FakeKeystore : SealKeyStore {
+class FakeKeystore(var sdkInt: Int = 36) : SealKeyStore {
     override val alias = "fake"
     var key: SecretKey? = null
-    var failure: Exception? = null
     var entryFailure: Exception? = null
+    var initFailure: Exception? = null
+    var generateFailure: Exception? = null
 
     override fun find(): SecretKey? {
-        failure?.let { throw it }
         entryFailure?.let { throw it }
-        return key
+        return initFailure?.let(::RefusedKey) ?: key
     }
 
     override fun replace(): SecretKey {
-        failure?.let { throw it }
+        generateFailure?.let { throw it }
         entryFailure = null
+        initFailure = null
         return KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { key = it }
     }
 
-    fun cipher(): SecretCipher = KeystoreAesGcmCipher(this)
+    fun cipher(): SecretCipher = KeystoreAesGcmCipher(this, sdkInt)
+
+    companion object {
+        fun gone(code: Int = KeyStoreException.ERROR_KEY_DOES_NOT_EXIST) = Keystore2Failure(code, transient = false)
+
+        fun busy(code: Int = KeyStoreException.ERROR_INTERNAL_SYSTEM_ERROR) = Keystore2Failure(code, transient = true)
+    }
+}
+
+/** A key handle `Cipher.init` refuses: the JCE rethrows what [getEncoded] throws when no provider takes the key. */
+private class RefusedKey(private val failure: Exception) : SecretKey {
+    override fun getAlgorithm() = "AES"
+
+    override fun getFormat() = "RAW"
+
+    override fun getEncoded(): ByteArray = throw failure
 }
 
 /** A string-only [SharedPreferences] over [values]; `commit()` applies `clear()` first, as Android does. */
-private class FakePreferences(private val values: MutableMap<String, String>) : SharedPreferences {
+private class FakePreferences(private val values: MutableMap<String, String>, private val writes: () -> Boolean) : SharedPreferences {
     override fun getAll(): Map<String, *> = values.toMap()
 
     override fun getString(key: String, defValue: String?): String? = values[key] ?: defValue
@@ -80,6 +102,7 @@ private class FakePreferences(private val values: MutableMap<String, String>) : 
         override fun clear() = apply { clear = true }
 
         override fun commit(): Boolean {
+            if (!writes()) return false
             if (clear) values.clear()
             puts.forEach { (key, value) -> if (value == null) values.remove(key) else values[key] = value }
             return true

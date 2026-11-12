@@ -1,6 +1,9 @@
 package com.dmarket.p2p.tracker.adapter
 
+import android.annotation.TargetApi
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import java.security.GeneralSecurityException
 import java.security.InvalidKeyException
@@ -47,12 +50,15 @@ internal interface SealKeyStore {
  * it). The key never enters process memory and is never backed up or transferred, which is what makes everything
  * sealed with it install-scoped. Output is `ivLength || iv || ciphertext+tag`; the cipher draws a fresh IV per call.
  *
- * Only [encrypt] creates the key, and it replaces one that no longer works (`UnrecoverableKeyException`,
- * `KeyPermanentlyInvalidatedException` or another `InvalidKeyException`), since nothing sealed with it opens again.
+ * Only [encrypt] creates the key, and it replaces one that no longer works, since nothing sealed with it opens again.
  * [decrypt] with no usable key fails instead: a fresh key could not open the value anyway, and the caller treats the
- * failure as "not there". `KeyStoreException` and `ProviderException` pass through untouched.
+ * failure as "not there". A key counts as gone only when there is none, when `Cipher.init` throws
+ * `KeyPermanentlyInvalidatedException`, or (API 33+) when keystore2's cause under `UnrecoverableEntryException` or
+ * `InvalidKeyException` is a non-transient `KEY_DOES_NOT_EXIST` or `KEY_CORRUPTED`. keystore2 throws the same wrappers
+ * for a busy or restarting service, so every other failure passes through untouched and erases nothing.
  */
-class KeystoreAesGcmCipher internal constructor(private val keys: SealKeyStore) : SecretCipher {
+class KeystoreAesGcmCipher internal constructor(private val keys: SealKeyStore, private val sdkInt: Int = Build.VERSION.SDK_INT) :
+    SecretCipher {
     constructor(keyAlias: String = DEFAULT_KEY_ALIAS) : this(AndroidSealKeyStore(keyAlias))
 
     override fun encrypt(plaintext: ByteArray): ByteArray {
@@ -79,22 +85,37 @@ class KeystoreAesGcmCipher internal constructor(private val keys: SealKeyStore) 
     private fun usableKey(): SecretKey? = try {
         keys.find()
     } catch (e: UnrecoverableEntryException) {
-        throw SealKeyMissingException(keys.alias, e)
+        throw goneOr(e)
     }
 
     private fun cipherFor(mode: Int, key: SecretKey, spec: GCMParameterSpec? = null): Cipher = Cipher.getInstance(TRANSFORMATION).apply {
         try {
             if (spec == null) init(mode, key) else init(mode, key, spec)
         } catch (e: InvalidKeyException) {
-            throw SealKeyMissingException(keys.alias, e)
+            throw goneOr(e)
         }
     }
+
+    private fun goneOr(e: GeneralSecurityException): GeneralSecurityException = when {
+        e is KeyPermanentlyInvalidatedException -> SealKeyMissingException(keys.alias, e)
+        sdkInt >= Build.VERSION_CODES.TIRAMISU && isKeyGone(e.cause) -> SealKeyMissingException(keys.alias, e)
+        else -> e
+    }
+
+    @TargetApi(Build.VERSION_CODES.TIRAMISU)
+    private fun isKeyGone(cause: Throwable?): Boolean = cause is android.security.KeyStoreException &&
+        !cause.isTransientFailure &&
+        cause.numericErrorCode in GONE_KEY_CODES
 
     companion object {
         const val DEFAULT_KEY_ALIAS: String = "com.dmarket.p2p.tracker.install"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val GCM_TAG_BITS = 128
         private val IV_BYTES = 12..16
+        private val GONE_KEY_CODES = setOf(
+            android.security.KeyStoreException.ERROR_KEY_DOES_NOT_EXIST,
+            android.security.KeyStoreException.ERROR_KEY_CORRUPTED,
+        )
     }
 }
 
