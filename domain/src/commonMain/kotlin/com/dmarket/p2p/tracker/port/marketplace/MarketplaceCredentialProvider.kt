@@ -43,13 +43,16 @@ interface MarketplaceCredentialProvider {
     suspend fun current(): MarketplaceCredential?
 
     /**
-     * Re-acquire regardless of how fresh the current credential looks. Called once after an HTTP 401 from
-     * DMarket, via `MarketplaceAuthenticator.refreshOnUnauthorized()`.
+     * Re-acquire after DMarket refused [rejectedToken] with an HTTP 401, via
+     * `MarketplaceAuthenticator.refreshOnUnauthorized(rejectedToken)`. A host-owned implementation passes
+     * [rejectedToken] on, so the host refreshes only while that token is still its current one and otherwise
+     * answers with the token it already holds; the library's own one refreshes regardless. `null` when the
+     * refused request carried no token.
      *
      * Returns `null` to let the 401 propagate — which is the right answer both when the user is logged out
      * and when the implementation has already established that refreshing cannot currently succeed.
      */
-    suspend fun forceRefresh(): MarketplaceCredential?
+    suspend fun forceRefresh(rejectedToken: String? = null): MarketplaceCredential?
 
     /**
      * `true` when the implementation knows there is no DMarket session a silent background refresh could

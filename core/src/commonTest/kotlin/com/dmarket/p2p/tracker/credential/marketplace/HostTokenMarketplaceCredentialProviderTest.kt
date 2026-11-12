@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.credential.marketplace
 
+import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
 import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
@@ -18,20 +19,60 @@ import kotlin.test.assertTrue
  */
 class HostTokenMarketplaceCredentialProviderTest {
 
+    /** The app's token layer as both apps run it: a refused token is refreshed only while it is still current. */
+    private class AppTokens(var current: String? = "t1") : MarketplaceTokenSupplier {
+        var refreshes = 0
+
+        override suspend fun supply(rejectedToken: String?): MarketplaceCredential? {
+            val now = current ?: return null
+            if (rejectedToken == now) {
+                refreshes++
+                current = "t${refreshes + 1}"
+            }
+            return current?.let(::fakeMarketplaceCredential)
+        }
+    }
+
     @Test
-    fun the_force_flag_reaches_the_host() = runTest {
-        // The host's own API takes exactly this flag (Android: `getToken(forceRefresh)`), so the 401 path must
-        // arrive there as a forced refresh and the ordinary path must not.
-        val forces = mutableListOf<Boolean>()
-        val p = HostTokenMarketplaceCredentialProvider { force ->
-            forces += force
+    fun current_asks_with_no_refused_token_and_the_401_path_passes_it_on() = runTest {
+        val asked = mutableListOf<String?>()
+        val p = HostTokenMarketplaceCredentialProvider { rejected ->
+            asked += rejected
             fakeMarketplaceCredential()
         }
 
         p.current()
-        p.forceRefresh()
+        p.forceRefresh("refused-jwt")
 
-        assertContentEquals(listOf(false, true), forces)
+        assertContentEquals(listOf(null, "refused-jwt"), asked)
+    }
+
+    @Test
+    fun a_refused_token_the_app_already_replaced_brings_its_new_token_without_a_refresh() = runTest {
+        val app = AppTokens(current = "t2")
+        val p = HostTokenMarketplaceCredentialProvider(supplier = app)
+
+        assertEquals("t2", p.forceRefresh("t1")?.token)
+        assertEquals(0, app.refreshes)
+    }
+
+    @Test
+    fun a_refused_current_token_asks_the_app_for_exactly_one_refresh() = runTest {
+        val app = AppTokens(current = "t1")
+        val p = HostTokenMarketplaceCredentialProvider(supplier = app)
+
+        assertEquals("t2", p.forceRefresh("t1")?.token)
+        assertEquals(1, app.refreshes)
+        assertEquals("t2", p.current()?.token)
+        assertEquals(1, app.refreshes, "reading the token does not refresh it")
+    }
+
+    @Test
+    fun an_app_with_no_session_reads_as_logged_out_on_the_401_path_too() = runTest {
+        val p = HostTokenMarketplaceCredentialProvider(supplier = AppTokens(current = null))
+
+        assertNull(p.forceRefresh("t1"))
+        assertTrue(p.lastRefreshFailedLoggedOut)
     }
 
     @Test

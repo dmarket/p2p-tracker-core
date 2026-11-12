@@ -77,7 +77,7 @@ class TradingApiAuthenticator(
         return TradingApiSignature.headers(key, signerOf(key), request, clock.now().epochSeconds)
     }
 
-    override suspend fun refreshOnUnauthorized(): Boolean = false
+    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean = false
 
     private suspend fun signerOf(key: TradingApiKey): Ed25519Signer = mutex.withLock {
         cached?.takeIf { it.first == key }?.second ?: signerFor(key).also { cached = key to it }

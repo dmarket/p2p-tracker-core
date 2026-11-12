@@ -734,12 +734,18 @@ a token-less 200 may mean "sign in again").
 **A host that already refreshes DMarket tokens must not use any of it.** Two authorities rotating one shared
 credential is strictly worse than either alone. Such a host replaces `MarketplaceCredentialProvider` outright:
 
+The app supplies a `MarketplaceTokenSupplier`, the same contract on Android and iOS. `supply(null)` asks for the
+token to use now; the app refreshes first by its own expiry rule. `supply(rejected)` comes after DMarket answered 401
+to a request carrying `rejected`: the app refreshes only if `rejected` is still its current token, and otherwise
+returns the token it already holds. `null` (or a throw) means no session; the library then sends nothing and refreshes
+nothing itself. It keeps no DMarket token and never calls the refresh endpoint on mobile.
+
 ```kotlin
 // Android: the app's own :token_manager already does storage, single-flight, rotation and 401 handling.
 // AndroidTrackerPlatform wraps it in HostTokenMarketplaceCredentialProvider and CredentialMarketplaceAuthenticator.
-val platform = AndroidTrackerPlatform(applicationContext, tokens = { force ->
+val platform = AndroidTrackerPlatform(applicationContext, tokens = { rejected ->
     // TokenException (no usable pair) → null + lastRefreshFailedLoggedOut, i.e. "show the sign-in prompt".
-    val data = tokenManager.getTokenData(forceRefresh = force)
+    val data = tokenManager.getTokenData(forceRefresh = rejected != null, failedToken = rejected)
     MarketplaceCredential(
         token = data.authorizationToken,
         expiresAt = Instant.fromEpochSeconds(data.authorizationTokenExpirationTimestamp),
@@ -751,7 +757,7 @@ val notaryTokens = platform.notaryTokens // the same live token, for the notary
 ```
 
 The app attaches `Authorization` per Retrofit method and its `OkHttpClient` carries no auth interceptor, so the
-library attaches the token itself (raw, no `Bearer `) and asks `TokenManager` for one forced refresh on a 401. There is
+library attaches the token itself (raw, no `Bearer `) and on a 401 hands the app the token that was refused. There is
 no transport-managed auth path on Android.
 
 `null` from the provider is load-bearing, not advisory: the loop's pre-heartbeat guard and the 401

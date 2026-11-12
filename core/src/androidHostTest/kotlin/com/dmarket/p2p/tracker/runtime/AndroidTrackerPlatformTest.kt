@@ -168,19 +168,19 @@ class AndroidTrackerPlatformTest {
 
     @Test
     fun dmarketAuthGoesThroughTheHostTokenLayer() = runTest {
-        val forced = mutableListOf<Boolean>()
-        val platform = platform(FakeDisk(), FakeKeystore()) { force ->
-            forced += force
-            MarketplaceCredential(token = if (force) "fresh-jwt" else "host-jwt", expiresAt = now + 1.hours)
+        val asked = mutableListOf<String?>()
+        val platform = platform(FakeDisk(), FakeKeystore()) { rejected ->
+            asked += rejected
+            MarketplaceCredential(token = if (rejected != null) "fresh-jwt" else "host-jwt", expiresAt = now + 1.hours)
         }
 
         assertEquals(
             mapOf("Authorization" to "host-jwt"),
             platform.marketplaceAuthenticator.headersFor(MarketplaceRequest("GET", "/x", "")),
         )
-        assertTrue(platform.marketplaceAuthenticator.refreshOnUnauthorized())
+        assertTrue(platform.marketplaceAuthenticator.refreshOnUnauthorized("host-jwt"))
         assertEquals("host-jwt", platform.notaryTokens.notaryToken())
-        assertEquals(listOf(false, true, false), forced)
+        assertEquals(listOf(null, "host-jwt", null), asked)
     }
 
     @Test

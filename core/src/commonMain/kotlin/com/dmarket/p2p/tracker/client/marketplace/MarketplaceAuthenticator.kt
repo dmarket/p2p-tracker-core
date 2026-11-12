@@ -37,11 +37,12 @@ interface MarketplaceAuthenticator {
         tokenOrNull()?.let { mapOf(AUTHORIZATION_HEADER to it) }.orEmpty()
 
     /**
-     * Invoked once after an HTTP 401. Return `true` to retry the request a single time (the implementation
-     * has just refreshed the credential), or `false` to let the 401 propagate — the latter when the
-     * transport already refreshed+retried inside the engine, or when the user is logged out.
+     * Invoked after an HTTP 401 with [rejectedToken], the `Authorization` value of the refused request (`null` when
+     * it carried none). Return `true` to retry the request (the implementation now holds a credential to send), or
+     * `false` to let the 401 propagate — the latter when the transport already refreshed+retried inside the engine,
+     * or when the user is logged out.
      */
-    suspend fun refreshOnUnauthorized(): Boolean
+    suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean
 }
 
 /**
@@ -51,12 +52,12 @@ interface MarketplaceAuthenticator {
  */
 data class MarketplaceRequest(val method: String, val pathAndQuery: String, val body: String)
 
-private const val AUTHORIZATION_HEADER = "Authorization"
+internal const val AUTHORIZATION_HEADER = "Authorization"
 
 /**
  * Authenticator backed by a [MarketplaceCredentialProvider]: the token comes from whichever provider the
- * host wired (the library's own, or the host's own token layer), and a 401 asks it once for a forced
- * refresh. Surfacing of the logged-out state (`needsMarketplaceReLogin`) is unchanged — the provider owns
+ * host wired (the library's own, or the host's own token layer), and a 401 hands it the refused token, so a host
+ * that refreshed in the meantime answers with its newer token instead of refreshing a second time. Surfacing of the logged-out state (`needsMarketplaceReLogin`) is unchanged — the provider owns
  * that flag.
  *
  * Both methods are null checks on the provider's return value, which is why
@@ -66,7 +67,7 @@ private const val AUTHORIZATION_HEADER = "Authorization"
 class CredentialMarketplaceAuthenticator(private val provider: MarketplaceCredentialProvider) : MarketplaceAuthenticator {
     override suspend fun tokenOrNull(): String? = provider.current()?.token
 
-    override suspend fun refreshOnUnauthorized(): Boolean = provider.forceRefresh() != null
+    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean = provider.forceRefresh(rejectedToken) != null
 }
 
 /**
@@ -77,5 +78,5 @@ class CredentialMarketplaceAuthenticator(private val provider: MarketplaceCreden
 object TransportManagedMarketplaceAuthenticator : MarketplaceAuthenticator {
     override suspend fun tokenOrNull(): String? = null
 
-    override suspend fun refreshOnUnauthorized(): Boolean = false
+    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean = false
 }

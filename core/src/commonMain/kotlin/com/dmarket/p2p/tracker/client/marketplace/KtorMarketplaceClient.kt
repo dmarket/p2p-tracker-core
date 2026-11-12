@@ -249,20 +249,28 @@ class KtorMarketplaceClient(
      * other non-2xx (a deterministic 4xx like 404, or a 5xx) surfaces as [MarketplaceServerErrorException]
      * carrying the status, so the loop can tell a DMarket-side error apart from a transient transport blip.
      */
-    private suspend fun postJson(url: String, body: String, readErrorCode: Boolean = false): String = try {
-        send(url, body, readErrorCode)
-    } catch (e: HttpStatusException) {
-        mapStatus(e) { retryOrUnauthorized { send(url, body, readErrorCode) } }
-    } catch (e: ResponseException) {
-        // Only reachable if this client was built without sanitizeHttpFailures (the mobile host-supplied
-        // path). Degrade to the same domain error rather than letting Ktor's URL+body message escape.
-        throw MarketplaceServerErrorException(e.response.status.value)
+    private suspend fun postJson(url: String, body: String, readErrorCode: Boolean = false): String {
+        val sent = SentToken()
+        return try {
+            send(url, body, readErrorCode, sent)
+        } catch (e: HttpStatusException) {
+            mapStatus(e) { retryOrUnauthorized(sent) { send(url, body, readErrorCode, sent) } }
+        } catch (e: ResponseException) {
+            // Only reachable if this client was built without sanitizeHttpFailures (the mobile host-supplied
+            // path). Degrade to the same domain error rather than letting Ktor's URL+body message escape.
+            throw MarketplaceServerErrorException(e.response.status.value)
+        }
     }
 
-    private suspend fun send(url: String, body: String, readErrorCode: Boolean = false): String {
+    /** The `Authorization` value the latest attempt of one call carried: what a 401 refused. */
+    private class SentToken {
+        var token: String? = null
+    }
+
+    private suspend fun send(url: String, body: String, readErrorCode: Boolean, sent: SentToken): String {
         val response: HttpResponse = httpClient.post(url) {
             if (readErrorCode) captureErrorBody(ERROR_BODY_CHARS)
-            authorizeAndSet(body)
+            authorizeAndSet(body, sent)
         }
         heardDate(response.headers[HttpHeaders.Date])
         return response.bodyAsText()
@@ -275,12 +283,15 @@ class KtorMarketplaceClient(
     }
 
     /** GET [url] with bearer auth; same 401-refresh-and-retry / 429 / server-error handling as POST. */
-    private suspend fun getJson(url: String, block: HttpRequestBuilder.() -> Unit = {}): String = try {
-        sendGet(url, block)
-    } catch (e: HttpStatusException) {
-        mapStatus(e) { retryOrUnauthorized { sendGet(url, block) } }
-    } catch (e: ResponseException) {
-        throw MarketplaceServerErrorException(e.response.status.value)
+    private suspend fun getJson(url: String, block: HttpRequestBuilder.() -> Unit = {}): String {
+        val sent = SentToken()
+        return try {
+            sendGet(url, block, sent)
+        } catch (e: HttpStatusException) {
+            mapStatus(e) { retryOrUnauthorized(sent) { sendGet(url, block, sent) } }
+        } catch (e: ResponseException) {
+            throw MarketplaceServerErrorException(e.response.status.value)
+        }
     }
 
     /**
@@ -318,9 +329,9 @@ class KtorMarketplaceClient(
      * - every retry still returns 401 (the refreshed token is still invalid).
      * A non-401 error from a retry propagates unchanged.
      */
-    private suspend fun retryOrUnauthorized(send: suspend () -> String): String {
+    private suspend fun retryOrUnauthorized(sent: SentToken, send: suspend () -> String): String {
         repeat(retry.maxRetries) { i ->
-            if (!authenticator.refreshOnUnauthorized()) throw MarketplaceUnauthorizedException()
+            if (!authenticator.refreshOnUnauthorized(sent.token)) throw MarketplaceUnauthorizedException()
             delay(
                 ExponentialBackoff.fullJitterMillis(
                     attempt = i + 1,
@@ -343,17 +354,17 @@ class KtorMarketplaceClient(
         throw MarketplaceUnauthorizedException()
     }
 
-    private suspend fun sendGet(url: String, block: HttpRequestBuilder.() -> Unit): String {
+    private suspend fun sendGet(url: String, block: HttpRequestBuilder.() -> Unit, sent: SentToken): String {
         val response: HttpResponse = httpClient.get(url) {
             block()
-            authorize(HttpMethod.Get, body = "")
+            authorize(HttpMethod.Get, body = "", sent)
         }
         heardDate(response.headers[HttpHeaders.Date])
         return response.bodyAsText()
     }
 
-    private suspend fun HttpRequestBuilder.authorizeAndSet(body: String) {
-        authorize(HttpMethod.Post, body)
+    private suspend fun HttpRequestBuilder.authorizeAndSet(body: String, sent: SentToken) {
+        authorize(HttpMethod.Post, body, sent)
         contentType(ContentType.Application.Json)
         setBody(body)
     }
@@ -368,9 +379,11 @@ class KtorMarketplaceClient(
      * No header at all → sent unauthenticated: the transport authenticates itself or the user is
      * logged out (web), in which case the 401 path / re-login signal takes over.
      */
-    private suspend fun HttpRequestBuilder.authorize(method: HttpMethod, body: String) {
+    private suspend fun HttpRequestBuilder.authorize(method: HttpMethod, body: String, sent: SentToken) {
         val request = MarketplaceRequest(method.value, url.build().encodedPathAndQuery, body)
-        authenticator.headersFor(request).forEach { (name, value) -> header(name, value) }
+        val headers = authenticator.headersFor(request)
+        sent.token = headers[AUTHORIZATION_HEADER]
+        headers.forEach { (name, value) -> header(name, value) }
     }
 
     private companion object {

@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.client.marketplace
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.createHttpClient
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
+import com.dmarket.p2p.tracker.credential.marketplace.HostTokenMarketplaceCredentialProvider
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
@@ -21,6 +22,7 @@ import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.support.FakeMarketplaceAuthenticator
+import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.MockEngineConfig
@@ -90,7 +92,7 @@ class KtorMarketplaceClientTest {
     // Fast, deterministic retries by default so the 401-loop tests stay instant under runTest.
     private fun clientWith(
         engine: MockEngine,
-        auth: FakeMarketplaceAuthenticator,
+        auth: MarketplaceAuthenticator,
         retry: MarketplaceRetryConfig = MarketplaceRetryConfig(retryBaseDelayMs = 1, retryMaxDelayMs = 1),
         random: Random = Random(0),
     ) = KtorMarketplaceClient(createHttpClient(engine), baseUrl, auth, retry, random)
@@ -346,6 +348,33 @@ class KtorMarketplaceClientTest {
     }
 
     @Test
+    fun a_401_hands_the_host_the_token_it_refused_and_the_retry_carries_the_new_one() = runTest {
+        val sent = mutableListOf<String?>()
+        val engine = MockEngine { request ->
+            val token = request.headers[HttpHeaders.Authorization]
+            sent += token
+            if (token == "t1") {
+                respondError(HttpStatusCode.Unauthorized)
+            } else {
+                respond(content = """{"state":"P2P_DEAL_STATE_COMMITTED","applied":true}""", headers = jsonHeaders())
+            }
+        }
+        val asked = mutableListOf<String?>()
+        var current = "t1"
+        val tokens = HostTokenMarketplaceCredentialProvider { rejected ->
+            asked += rejected
+            if (rejected == current) current = "t2"
+            fakeMarketplaceCredential(current)
+        }
+        val client = clientWith(engine, CredentialMarketplaceAuthenticator(tokens))
+
+        assertTrue(client.acceptDeal(DealId("d-1")).applied)
+
+        assertEquals(listOf<String?>("t1", "t2"), sent)
+        assertEquals(listOf<String?>(null, "t1", null), asked, "the 401 path passes the refused token, the others none")
+    }
+
+    @Test
     fun unauthorized_recovers_on_a_later_retry_within_the_budget() = runTest {
         var calls = 0
         val engine = MockEngine {
@@ -503,7 +532,7 @@ class KtorMarketplaceClientTest {
             return mapOf("X-Api-Key" to "pub", "X-Request-Sign" to "sig-${seen.size}")
         }
 
-        override suspend fun refreshOnUnauthorized(): Boolean = refresh
+        override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean = refresh
     }
 
     @Test

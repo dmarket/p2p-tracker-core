@@ -488,6 +488,9 @@ class FakeMarketplaceCredentialProvider(var result: MarketplaceCredential? = fak
     var currentCalls = 0
     var forceRefreshCalls = 0
 
+    /** The refused token each [forceRefresh] was given. */
+    val rejectedTokens = mutableListOf<String?>()
+
     override var lastRefreshFailedLoggedOut: Boolean = loggedOut
         private set
 
@@ -497,8 +500,9 @@ class FakeMarketplaceCredentialProvider(var result: MarketplaceCredential? = fak
         return result
     }
 
-    override suspend fun forceRefresh(): MarketplaceCredential? {
+    override suspend fun forceRefresh(rejectedToken: String?): MarketplaceCredential? {
         forceRefreshCalls++
+        rejectedTokens += rejectedToken
         lastRefreshFailedLoggedOut = result == null
         return result
     }
@@ -608,8 +612,12 @@ class FakeMarketplaceAuthenticator(private val token: String? = "test-bearer-tok
         return token
     }
 
-    override suspend fun refreshOnUnauthorized(): Boolean {
+    /** The refused token each [refreshOnUnauthorized] was given. */
+    val rejectedTokens = mutableListOf<String?>()
+
+    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean {
         refreshCalls++
+        rejectedTokens += rejectedToken
         return refreshResult
     }
 }

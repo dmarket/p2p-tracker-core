@@ -92,7 +92,7 @@ class TradingApiAuthenticatorTest {
 
         assertTrue(authenticator.headersFor(MarketplaceRequest("GET", "/x", "")).isEmpty())
         assertNull(authenticator.tokenOrNull())
-        assertFalse(authenticator.refreshOnUnauthorized(), "there is nothing to refresh")
+        assertFalse(authenticator.refreshOnUnauthorized(rejectedToken = null), "there is nothing to refresh")
         assertEquals(0, built)
     }
 

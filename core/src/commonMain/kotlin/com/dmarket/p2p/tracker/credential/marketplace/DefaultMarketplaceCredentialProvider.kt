@@ -112,7 +112,9 @@ class DefaultMarketplaceCredentialProvider(
 
     override suspend fun current(): MarketplaceCredential? = acquire(force = false)
 
-    override suspend fun forceRefresh(): MarketplaceCredential? = acquire(force = true)
+    // The library owns refresh here, so which token was refused changes nothing: the store re-read under the lock
+    // already tells a rotation by the page apart.
+    override suspend fun forceRefresh(rejectedToken: String?): MarketplaceCredential? = acquire(force = true)
 
     // ---- acquisition -------------------------------------------------------------------------------
 

@@ -28,11 +28,18 @@ class CredentialMarketplaceAuthenticatorTest {
 
     @Test
     fun refresh_returns_true_when_a_session_is_available() = runTest {
-        assertTrue(authenticator(fakeMarketplaceCredential()).refreshOnUnauthorized())
+        assertTrue(authenticator(fakeMarketplaceCredential()).refreshOnUnauthorized("old"))
     }
 
     @Test
     fun refresh_returns_false_when_logged_out() = runTest {
-        assertFalse(authenticator(providerResult = null).refreshOnUnauthorized())
+        assertFalse(authenticator(providerResult = null).refreshOnUnauthorized("old"))
+    }
+
+    @Test
+    fun refresh_passes_the_refused_token_to_the_provider() = runTest {
+        val provider = FakeMarketplaceCredentialProvider(result = fakeMarketplaceCredential())
+        CredentialMarketplaceAuthenticator(provider).refreshOnUnauthorized("refused-jwt")
+        assertEquals(listOf<String?>("refused-jwt"), provider.rejectedTokens)
     }
 }
