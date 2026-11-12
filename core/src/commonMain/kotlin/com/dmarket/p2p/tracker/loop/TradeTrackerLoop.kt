@@ -1188,6 +1188,12 @@ class TradeTrackerLoop(
     var steamCredentialUnavailable: Boolean = false
         private set
 
+    /** The raw code the last watch pass read per deal, the history axis before the offer axis; untracked deals drop out. */
+    private val observedCodes = mutableMapOf<DealId, Int>()
+
+    /** What the last watch pass read for [dealId] on Steam, reported or not; `null` when it read nothing for it. */
+    fun observedCode(dealId: DealId): Int? = observedCodes[dealId]
+
     /**
      * Whether this host can prove at all — Firefox today, and any caller that passes no prover.
      *
@@ -2911,6 +2917,8 @@ class TradeTrackerLoop(
         val attributionRetriable = mutableSetOf<DealId>()
         val uncorrelated = mutableSetOf<DealId>()
         val observed = observeTracked(tracking, credential, seededBaseline, attributionRetriable, uncorrelated)
+        observedCodes.keys.retainAll(tracking.mapTo(HashSet()) { it.dealId })
+        observed.forEach { (id, trade) -> (trade.historyStatus ?: trade.offerState)?.let { observedCodes[id] = it } }
         // Keep the expedited window open while any watched deal is still in a transient (state-9) offer
         // state. Must run before the empty-plan return: a persisting state 9 is deduped to no report, but
         // we still want to keep fast-polling for the imminent confirmation.

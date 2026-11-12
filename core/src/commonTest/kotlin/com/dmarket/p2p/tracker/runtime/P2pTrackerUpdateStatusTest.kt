@@ -114,6 +114,18 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
+    fun the_code_is_what_the_run_read_even_when_its_report_was_refused() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { tradeStatusAccepted = false }
+        val tracker = tracker(Setup(mp, reader = FakeSteamReadClient(initialOffers = mapOf(offer to 2))))
+
+        val update = tracker.updateStatus(deal)
+
+        assertEquals(UpdateFailure.DMARKET, update.failure, "the report was refused")
+        assertNull(tracker.state.value.deals[deal]?.lastCode, "nothing was reported")
+        assertEquals(2, update.code, "but the run read the deal")
+    }
+
+    @Test
     fun a_dmarket_429_gives_its_retry_after_and_a_cooldown_that_sends_nothing() = runTest {
         val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(45) }
         val setup = Setup(mp)

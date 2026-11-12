@@ -178,7 +178,7 @@ class P2pTracker(
         val run = cycle(s, wake = null, manual = true, allowCellularProof) ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING)
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
-        return statusOf(dealId, failureOf(dealId, s.loop, run), retryAfter)
+        return statusOf(dealId, failureOf(dealId, s.loop, run), retryAfter, s.loop.observedCode(dealId))
     }
 
     /** The install's device id, for the app's device registry (DMA-540). */
@@ -301,9 +301,9 @@ class P2pTracker(
         }
     }
 
-    private fun statusOf(dealId: DealId, failure: UpdateFailure?, retryAfter: Duration? = null): StatusUpdate {
+    private fun statusOf(dealId: DealId, failure: UpdateFailure?, retryAfter: Duration? = null, observed: Int? = null): StatusUpdate {
         val deal = state.value.deals[dealId] ?: DealTrackingState()
-        return StatusUpdate(deal.checkedAt, deal.lastCode, deal.proofState, retryAfter, failure)
+        return StatusUpdate(deal.checkedAt, observed ?: deal.lastCode, deal.proofState, retryAfter, failure)
     }
 
     private fun track(event: LifecycleEvent) {

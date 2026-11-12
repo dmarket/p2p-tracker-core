@@ -66,7 +66,8 @@ enum class ProofState {
  * short when it did.
  *
  * @property checkedAt when a cycle last read the deal's Steam status.
- * @property code the last raw Steam status code reported for it; `null` when none was reported since the process started.
+ * @property code the raw Steam status code this run read for it (the history axis before the offer axis), else the last
+ *   one reported; `null` when neither exists, e.g. the read failed right after a cold start.
  * @property proofState where its proof stands; [ProofState.DEFERRED] when the gate held it (T-13 asks for permission).
  * @property retryAfter how long until a retry can go out; set with [UpdateFailure.RATE_LIMITED] only.
  * @property failure why the update fell short (T-16), or `null` when it ran through.
