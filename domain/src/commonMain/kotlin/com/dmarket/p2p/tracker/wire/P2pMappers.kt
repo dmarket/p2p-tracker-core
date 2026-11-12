@@ -220,10 +220,11 @@ fun DealDto.toDomain(): Deal = Deal(
     nextAction = nextAction?.takeIf { it.isNotBlank() },
     createOffer = createOffer?.toDirective(DealId(dealId)),
     cancelFee = cancelFee?.toDomain(),
-    cancelFeeEndTime = cancelFeeEndTime?.takeIf { it.isNotBlank() }?.let(Instant::parse),
-    counterparty = counterparty?.let { c ->
+    // A bad optional field costs itself, not the whole deal read.
+    cancelFeeEndTime = cancelFeeEndTime?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it) }.getOrNull() },
+    counterparty = counterparty?.takeIf { !it.accountId.isNullOrBlank() }?.let { c ->
         DealCounterparty(
-            accountId = AccountId(c.accountId),
+            accountId = AccountId(c.accountId!!),
             steamId = c.steamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
             name = c.name,
             avatar = c.avatar,

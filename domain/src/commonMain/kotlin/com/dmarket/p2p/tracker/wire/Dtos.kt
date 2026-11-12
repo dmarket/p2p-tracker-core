@@ -313,7 +313,7 @@ data class DealDto(
 /** [DealDto.counterparty]: the other party of the deal, relative to the caller. */
 @Serializable
 data class CounterpartyDto(
-    @SerialName("accountId") val accountId: String,
+    @SerialName("accountId") val accountId: String? = null,
     @SerialName("steamId") val steamId: String? = null,
     @SerialName("name") val name: String? = null,
     @SerialName("avatar") val avatar: String? = null,

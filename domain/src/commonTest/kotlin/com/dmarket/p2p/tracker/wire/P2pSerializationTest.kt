@@ -523,6 +523,32 @@ class P2pSerializationTest {
     }
 
     @Test
+    fun a_counterparty_without_an_account_id_is_dropped_not_fatal() {
+        fun read(counterparty: String) = TrackerJson.decodeFromString<DealDto>(
+            """{"dealId":"d1","state":"P2P_DEAL_STATE_AWAITING_TRADE","buyerAccountId":"b1",
+               "sellerAccountId":"s1","offerId":"of1","assetId":"a1","price":{"currency":"USD","amount":"1"},
+               "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T12:00:00Z",
+               "counterparty":$counterparty}""",
+        ).toDomain()
+
+        assertNull(read("""{"name":"x"}""").counterparty)
+        assertNull(read("""{"accountId":"","name":"x"}""").counterparty)
+        assertEquals("c1", read("""{"accountId":"c1"}""").counterparty?.accountId?.value)
+    }
+
+    @Test
+    fun a_malformed_cancel_fee_end_time_reads_as_absent() {
+        val deal = TrackerJson.decodeFromString<DealDto>(
+            """{"dealId":"d1","state":"P2P_DEAL_STATE_AWAITING_TRADE","buyerAccountId":"b1",
+               "sellerAccountId":"s1","offerId":"of1","assetId":"a1","price":{"currency":"USD","amount":"1"},
+               "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T12:00:00Z",
+               "cancelFeeEndTime":"soon"}""",
+        ).toDomain()
+
+        assertNull(deal.cancelFeeEndTime)
+    }
+
+    @Test
     fun the_create_trade_answer_carries_its_create_offer_directive() {
         // The gateway's own shape: the state with its `P2P_DEAL_STATE_` prefix dropped, and the pending create as
         // `createOffer`, mapped to a create_offer directive for the deal the call was made for.
