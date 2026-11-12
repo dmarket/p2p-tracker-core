@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
+import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.model.DirectiveId
@@ -26,6 +27,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
@@ -90,9 +92,30 @@ class MobileTrackerTest {
     private val platform = FakePlatform(clock)
     private var linked: SteamId? = alice
 
-    private fun TestScope.tracker(factory: MarketplaceClientFactory? = null): P2pTracker =
-        MobileTracker(platform, linkedAccount = { linked }, cellularProofs = { false }, hostMarketplaceClient = factory)
-            .tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
+    private fun TestScope.tracker(
+        factory: MarketplaceClientFactory? = null,
+        config: TrackerConfig = TrackerConfig.defaults(),
+    ): P2pTracker = MobileTracker(platform, linkedAccount = { linked }, cellularProofs = { false }, hostMarketplaceClient = factory)
+        .tracker(backgroundScope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
+
+    @Test
+    fun theHostClientFactoryGetsTheConfiguredRetry() = runTest {
+        val retry = MarketplaceRetryConfig(maxRetries = 7, retryBaseDelayMs = 11, retryMaxDelayMs = 99)
+        var seen: MarketplaceRetryConfig? = null
+
+        // The factory runs while the tracker is assembled; failing it there is enough to read what it got.
+        assertFailsWith<IllegalStateException> {
+            tracker(
+                factory = MarketplaceClientFactory { _, _, _, r ->
+                    seen = r
+                    error("captured")
+                },
+                config = TrackerConfig.defaults().copy(marketplaceRetry = retry),
+            )
+        }
+
+        assertEquals(retry, seen)
+    }
 
     /** What a session leaves behind: the Steam credential, and the account's loop state and progress. */
     private suspend fun workAsTheLinkedAccount() {
@@ -171,10 +194,12 @@ class MobileTrackerTest {
     @Test
     fun theHostsDmarketClientAuthenticatesThroughTheHostTokenLayer() = runTest {
         var given: MarketplaceAuthenticator? = null
-        tracker { _, authenticator, _ ->
-            given = authenticator
-            FakeMarketplaceClient()
-        }
+        tracker(
+            MarketplaceClientFactory { _, authenticator, _, _ ->
+                given = authenticator
+                FakeMarketplaceClient()
+            },
+        )
 
         assertSame(platform.marketplaceAuthenticator, given)
     }

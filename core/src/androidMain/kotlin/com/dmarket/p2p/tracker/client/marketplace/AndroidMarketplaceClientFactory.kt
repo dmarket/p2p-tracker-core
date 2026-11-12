@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.client.marketplace
 
 import com.dmarket.p2p.tracker.client.sanitizeHttpFailures
+import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
@@ -20,6 +21,7 @@ fun androidMarketplaceClient(
     baseUrl: String,
     authenticator: MarketplaceAuthenticator,
     requestTimeoutMs: Long = 30_000L,
+    retry: MarketplaceRetryConfig = MarketplaceRetryConfig(),
 ): KtorMarketplaceClient {
     val httpClient = HttpClient(OkHttp) {
         engine { preconfigured = hostOkHttp }
@@ -29,5 +31,5 @@ fun androidMarketplaceClient(
         sanitizeHttpFailures()
         install(HttpTimeout) { requestTimeoutMillis = requestTimeoutMs }
     }
-    return KtorMarketplaceClient(httpClient = httpClient, baseUrl = baseUrl, authenticator = authenticator)
+    return KtorMarketplaceClient(httpClient = httpClient, baseUrl = baseUrl, authenticator = authenticator, retry = retry)
 }

@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
+import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
@@ -23,7 +24,12 @@ import kotlinx.coroutines.CoroutineScope
  * authenticate through [authenticator]; the host's stack adds no auth of its own.
  */
 fun interface MarketplaceClientFactory {
-    fun create(baseUrl: String, authenticator: MarketplaceAuthenticator, requestTimeoutMs: Long): MarketplaceClient
+    fun create(
+        baseUrl: String,
+        authenticator: MarketplaceAuthenticator,
+        requestTimeoutMs: Long,
+        retry: MarketplaceRetryConfig,
+    ): MarketplaceClient
 }
 
 /**
@@ -60,7 +66,7 @@ class MobileTracker(
     ): P2pTracker {
         val timeoutMs = config.http.requestTimeoutMs.toLong()
         val steamHttp = createSteamHttpClient(platform.steamEngine(), timeoutMs, networkObserver)
-        val marketplace = hostMarketplaceClient?.create(baseUrl, platform.marketplaceAuthenticator, timeoutMs)
+        val marketplace = hostMarketplaceClient?.create(baseUrl, platform.marketplaceAuthenticator, timeoutMs, config.marketplaceRetry)
             ?: KtorMarketplaceClient(
                 httpClient = createMarketplaceHttpClient(platform.dmarketEngine(), timeoutMs, networkObserver),
                 baseUrl = baseUrl,

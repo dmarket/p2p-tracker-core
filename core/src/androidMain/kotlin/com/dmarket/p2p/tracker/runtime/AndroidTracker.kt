@@ -54,8 +54,8 @@ object AndroidTracker {
             cellularProofs = cellularProofs,
             clientVersion = clientVersion,
             hostMarketplaceClient = hostOkHttp?.let { okHttp ->
-                MarketplaceClientFactory { baseUrl, authenticator, timeoutMs ->
-                    androidMarketplaceClient(okHttp, baseUrl, authenticator, timeoutMs)
+                MarketplaceClientFactory { baseUrl, authenticator, timeoutMs, retry ->
+                    androidMarketplaceClient(okHttp, baseUrl, authenticator, timeoutMs, retry)
                 }
             },
         )
