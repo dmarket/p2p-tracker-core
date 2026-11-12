@@ -185,7 +185,7 @@ class ProverStandTest {
             http(
                 "POST",
                 "${env.SDK_PROVER_BACKEND}/exchange/v1/p2p/ext/notary",
-                """{"dealId":"deal-e2e","proofPayload":"${(outcome as HostedProofOutcome.Proved).presentation}"}""",
+                """{"dealId":"deal-e2e","proofPayload":"${outcome.presentation}"}""",
             )
         assertTrue("\"valid\":true" in verdict, verdict)
     }
