@@ -119,18 +119,46 @@ class P2pTracker(
         val reportFailed = mutableSetOf<String>()
     }
 
-    /** A run of 429s per surface: DMarket's ends on a heartbeat that came back, Steam's on a cycle that read it. */
-    private val dmarketBackoff = RateLimitBackoff(random)
-    private val steamBackoff = RateLimitBackoff(random)
+    /**
+     * One surface's 429s, whichever cycle or deal ran into them: until when the server's own `Retry-After` asks to wait,
+     * and until when the backoff's wait runs. An answer from the surface ends the run of 429s and the backoff's wait;
+     * the server's `Retry-After` holds to its end.
+     */
+    private class SurfaceCooldown(random: Random) {
+        private val backoff = RateLimitBackoff(random)
 
-    /** Until when each surface's last 429 asks to wait, whichever cycle or deal ran into it. */
-    @Volatile
-    private var dmarketCooldownUntil: Instant? = null
+        @Volatile
+        private var retryAfterUntil: Instant? = null
 
-    @Volatile
-    private var steamCooldownUntil: Instant? = null
+        @Volatile
+        private var backoffUntil: Instant? = null
 
-    /** Whose DMarket 429s [dmarketCooldownUntil] counts: another account or a logout starts it over; Steam's stays. */
+        val until: Instant? get() = listOfNotNull(retryAfterUntil, backoffUntil).maxOrNull()
+
+        /** A 429 at [now]; returns the wait it asks for. */
+        fun refused(now: Instant, retryAfterSeconds: Long?): Duration {
+            val wait = backoff.refused(retryAfterSeconds)
+            backoffUntil = now + wait
+            retryAfterSeconds?.coerceAtLeast(0)?.let { retryAfterUntil = listOfNotNull(retryAfterUntil, now + it.seconds).max() }
+            return wait
+        }
+
+        fun answered() {
+            backoff.answered()
+            backoffUntil = null
+        }
+
+        fun reset() {
+            answered()
+            retryAfterUntil = null
+        }
+    }
+
+    /** DMarket's run of 429s ends on a heartbeat that came back, Steam's on a cycle that read it. */
+    private val dmarketCooldown = SurfaceCooldown(random)
+    private val steamCooldown = SurfaceCooldown(random)
+
+    /** Whose DMarket 429s [dmarketCooldown] counts: another account or a logout starts it over; Steam's stays. */
     private var dmarketAccount: SteamId? = null
 
     private class CycleRun(val next: Duration, val completed: Boolean, val probe: CycleProbe)
@@ -209,7 +237,7 @@ class P2pTracker(
      */
     suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false): StatusUpdate {
         val now = clock.now()
-        listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldownUntil, steamCooldownUntil)
+        listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldown.until, steamCooldown.until)
             .maxOrNull()
             ?.takeIf { it > now }
             ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, retryAfter = it - now) }
@@ -320,8 +348,7 @@ class P2pTracker(
 
     private fun resetDmarketCooldown(account: SteamId?) {
         dmarketAccount = account
-        dmarketBackoff.answered()
-        dmarketCooldownUntil = null
+        dmarketCooldown.reset()
     }
 
     private suspend fun stopLocked() {
@@ -393,7 +420,7 @@ class P2pTracker(
         } finally {
             if (onScreen) s.loop.mode = modeOf(foreground)
         }
-        if (watchedAt != null && !cycleProbe.steamRateLimited) steamBackoff.answered()
+        if (watchedAt != null && !cycleProbe.steamRateLimited) steamCooldown.answered()
         refresh(s)
         CycleRun(s.loop.nextWakeDelay(), completed, cycleProbe)
     }
@@ -402,13 +429,17 @@ class P2pTracker(
     private fun refresh(s: Session) {
         val tracked = s.loop.trackedDealIds
         val checked = watchedAt
+        // A deal's cooldown is its surfaces' wait: it ends no later than theirs, which an answer may have cut short.
+        val surfaces = listOfNotNull(dmarketCooldown.until, steamCooldown.until).maxOrNull()
         mutableState.update { state ->
             state.copy(
                 block = s.loop.blockingState,
                 linkedSteamId = s.loop.linkedSteamId,
                 accountMismatch = s.loop.linkedSteamIdMismatch,
                 deals = tracked.associateWith { id ->
-                    val deal = state.deals[id] ?: DealTrackingState()
+                    val deal = (state.deals[id] ?: DealTrackingState()).let {
+                        it.copy(cooldownUntil = it.cooldownUntil?.let { until -> surfaces?.let { minOf(until, it) } })
+                    }
                     if (checked != null) deal.copy(checkedAt = checked) else deal
                 },
             )
@@ -449,7 +480,7 @@ class P2pTracker(
         when (event) {
             is LifecycleEvent.HeartbeatSent -> {
                 probe.heartbeat = true
-                dmarketBackoff.answered()
+                dmarketCooldown.answered()
                 mutableState.update { it.copy(lastSyncAt = clock.now()) }
             }
             is LifecycleEvent.CycleCompleted -> if (event.watching > 0) watchedAt = clock.now()
@@ -457,10 +488,8 @@ class P2pTracker(
             is LifecycleEvent.RateLimited -> {
                 val steam = event.surface == "steam"
                 if (steam) probe.steamRateLimited = true
-                val wait = (if (steam) steamBackoff else dmarketBackoff).refused(event.retryAfterSeconds)
+                val wait = (if (steam) steamCooldown else dmarketCooldown).refused(clock.now(), event.retryAfterSeconds)
                 probe.retryAfter = maxOf(probe.retryAfter ?: Duration.ZERO, wait)
-                val until = clock.now() + wait
-                if (steam) steamCooldownUntil = until else dmarketCooldownUntil = until
             }
             is LifecycleEvent.SteamReadFailed -> if (event.axis == "offer" || event.axis == "history") probe.steamReadFailed = true
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {

@@ -246,6 +246,76 @@ class P2pTrackerUpdateStatusTest {
         assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "the ladder starts over")
     }
 
+    private val wakeAll = """{"type":"wake_all","reason":"new_deal"}"""
+
+    @Test
+    fun an_answer_from_dmarket_ends_the_backoffs_wait_but_not_the_servers_retry_after() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(300) }
+        val tracker = tracker(Setup(mp))
+        tracker.updateStatus(deal)
+        mp.heartbeatThrowable = null
+        tracker.onPush(wakeAll)
+        val attempts = mp.heartbeatAttempts
+
+        clock.advance(299.seconds)
+        val held = tracker.updateStatus(deal)
+        assertEquals(UpdateFailure.RATE_LIMITED, held.failure, "the server asked for 300 s")
+        assertEquals(1.seconds, held.retryAfter)
+        assertEquals(attempts, mp.heartbeatAttempts)
+
+        clock.advance(1.seconds)
+        assertNull(tracker.updateStatus(deal).failure)
+        assertEquals(attempts + 1, mp.heartbeatAttempts)
+    }
+
+    @Test
+    fun an_answer_from_dmarket_ends_a_wait_the_server_did_not_ask_for() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(null) }
+        val tracker = tracker(Setup(mp))
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter)
+        mp.heartbeatThrowable = null
+        tracker.onPush(wakeAll)
+        assertNull(tracker.state.value.deals[deal]?.cooldownUntil, "the deal's cooldown ends with its surface's")
+        val attempts = mp.heartbeatAttempts
+
+        assertNull(tracker.updateStatus(deal).failure)
+        assertEquals(attempts + 1, mp.heartbeatAttempts, "the update goes out at once")
+    }
+
+    @Test
+    fun steam_and_dmarket_answers_end_only_their_own_waits() = runTest {
+        var steamLimited = true
+        val reader = object : SteamReadClient by FakeSteamReadClient(initialOffers = mapOf(offer to 3)) {
+            override suspend fun offerSnapshots(credential: SteamCredential, offerIds: Set<OfferId>): Map<OfferId, SteamOfferSnapshot> {
+                if (steamLimited) throw SteamRateLimitedException(null)
+                return FakeSteamReadClient(initialOffers = mapOf(offer to 3)).offerSnapshots(credential, offerIds)
+            }
+        }
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(300) }
+        val tracker = tracker(Setup(mp, reader = reader))
+        tracker.updateStatus(deal) // DMarket asks for 300 s
+        mp.heartbeatThrowable = null
+        clock.advance(300.seconds)
+
+        tracker.onPush(wakeAll) // DMarket answers, Steam refuses
+        assertEquals(30.seconds, tracker.updateStatus(deal).retryAfter, "Steam's first step: DMarket's answer leaves it")
+
+        steamLimited = false
+        mp.heartbeatThrowable = RateLimitedException(120)
+        tracker.onPush(wakeAll) // DMarket asks for 120 s, so the cycle reads no Steam
+        mp.heartbeatThrowable = null
+        steamLimited = true
+        clock.advance(120.seconds)
+        tracker.onPush(wakeAll) // DMarket answers, Steam refuses again: the second step of its own run
+        assertEquals(60.seconds, tracker.updateStatus(deal).retryAfter, "DMarket's 429 did not end Steam's run")
+
+        steamLimited = false
+        tracker.onPush(wakeAll) // both answer
+        val attempts = mp.heartbeatAttempts
+        assertNull(tracker.updateStatus(deal).failure, "Steam's answer ends its wait at once")
+        assertEquals(attempts + 1, mp.heartbeatAttempts)
+    }
+
     @Test
     fun a_logout_or_another_account_starts_the_dmarket_429s_over_and_keeps_steams() = runTest {
         val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(300) }

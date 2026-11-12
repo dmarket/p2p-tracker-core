@@ -37,8 +37,9 @@ data class TrackerState(
  * @property lastCode the last raw Steam status code reported for it.
  * @property proofState whether its report waits on a proof.
  * @property cooldownUntil until when a manual "Update status" is not available: set by [P2pTracker.updateStatus] after a
- *   429, to the longer of its `Retry-After` and a backoff that doubles with each 429 in a row ([RateLimitBackoff]). The
- *   server's own permit (DMA-660) is the app's.
+ *   429, to the longer of its `Retry-After` and a backoff that doubles with each 429 in a row ([RateLimitBackoff]). Once
+ *   the surface answers again, the backoff's part ends and only the `Retry-After` still holds. The server's own permit
+ *   (DMA-660) is the app's.
  */
 data class DealTrackingState(
     val checkedAt: Instant? = null,
