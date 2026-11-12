@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
@@ -94,8 +95,10 @@ class P2pTracker(
     /** What the tracker shows the app; see [TrackerState]. */
     val state: StateFlow<TrackerState> = mutableState.asStateFlow()
 
-    /** Guards [session] and [foreground]: start, stop and the mode switch. */
+    /** Guards [session] and [foreground]: start, stop and the mode switch. [close] only cancels, without it. */
     private val lifecycle = Mutex()
+
+    @Volatile
     private var session: Session? = null
     private var foreground = false
 
@@ -118,6 +121,13 @@ class P2pTracker(
     /** A run of 429s per surface: DMarket's ends on a heartbeat that came back, Steam's on a cycle that read it. */
     private val dmarketBackoff = RateLimitBackoff(random)
     private val steamBackoff = RateLimitBackoff(random)
+
+    /** Until when each surface's last 429 asks to wait, whichever cycle or deal ran into it. */
+    @Volatile
+    private var dmarketCooldownUntil: Instant? = null
+
+    @Volatile
+    private var steamCooldownUntil: Instant? = null
 
     private class CycleRun(val next: Duration, val completed: Boolean, val probe: CycleProbe)
 
@@ -186,17 +196,18 @@ class P2pTracker(
     /**
      * The manual "Update status" (T-12): a sync, the deal's Steam status read, its report and, when the deal needs one,
      * its proof — one cycle under the same lock as every other, forced to heartbeat. It watches every tracked deal, this
-     * one included. Within the cooldown a 429 left ([DealTrackingState.cooldownUntil]) it sends nothing and answers
-     * [UpdateFailure.RATE_LIMITED] at once.
+     * one included. Within the cooldown a 429 left ([DealTrackingState.cooldownUntil], or any cycle's 429 on DMarket or
+     * Steam, for every deal) it sends nothing and answers [UpdateFailure.RATE_LIMITED] at once.
      *
      * @param allowCellularProof the user allowed a proof on mobile data for this update (T-13); the gate stays as it is
      *   for every other cycle.
      */
     suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false): StatusUpdate {
         val now = clock.now()
-        state.value.deals[dealId]?.cooldownUntil?.takeIf { it > now }?.let {
-            return statusOf(dealId, UpdateFailure.RATE_LIMITED, retryAfter = it - now)
-        }
+        listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldownUntil, steamCooldownUntil)
+            .maxOrNull()
+            ?.takeIf { it > now }
+            ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
         val run = cycle(s, wake = null, manual = true, allowCellularProof) ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING)
         val retryAfter = run.probe.retryAfter
@@ -215,12 +226,13 @@ class P2pTracker(
      *
      * Waits up to `deliveryTimeout`, then answers [CreateOfferResult.CreateInFlight]; a later call answers with the
      * created offer. A run that ends without a directive says why in [DeliveryOutcome.reasonCode] (the backend
-     * refused) or [DeliveryOutcome.error] (the last call failed).
+     * refused) or [DeliveryOutcome.error] (the last call failed). The work runs as one cycle, under the same lock and
+     * proof gate, so the wait includes a cycle already running.
      */
     suspend fun startDelivery(dealId: DealId): DeliveryOutcome {
         val s = sessionOrStart()
             ?: return DeliveryOutcome(CreateOfferResult.Failed(NOT_RUNNING_ERROR), error = NOT_RUNNING_CALL)
-        val result = s.loop.awaitDirectiveOutcome(dealId, deliveryTimeout, s.scope)
+        val result = s.loop.awaitDirectiveOutcome(dealId, deliveryTimeout, s.scope) { work -> locked(s) { work() } }
         if (result !is CreateOfferResult.Failed) return DeliveryOutcome(result)
         val call = s.loop.lastDeliveryCall(dealId)
         return DeliveryOutcome(
@@ -263,22 +275,24 @@ class P2pTracker(
     /** The install's device id, for the app's device registry (DMA-540). */
     suspend fun deviceId(): DeviceId = deviceIds.current()
 
-    /** Cancels the loop without waiting for it; the tracker can be started again. */
+    /**
+     * Cancels the loop without waiting for it; the tracker can be started again. The next start, logout or stop waits
+     * for the cancelled loop to end before it goes on, so a new loop never opens the account's stores while it writes.
+     */
     fun close() {
         session?.job?.cancel()
-        session = null
         mutableState.update { TrackerState(foreground = it.foreground) }
     }
 
     /** The running session, or the one [linkedAccount] starts; `null` when the app's user links no account. */
-    private suspend fun sessionOrStart(): Session? = lifecycle.withLock { session ?: startLocked() }
+    private suspend fun sessionOrStart(): Session? = lifecycle.withLock { session?.takeIf { it.job.isActive } ?: startLocked() }
 
     private suspend fun startLocked(): Session? {
         val account = linkedAccount() ?: run {
             stopLocked()
             return null
         }
-        session?.takeIf { it.account == account }?.let { return it }
+        session?.takeIf { it.account == account && it.job.isActive }?.let { return it }
         // Before the new account's stores open: the old loop's in-memory state must not reach them.
         stopLocked()
         val loop = loopFor(account, observer)
@@ -315,30 +329,18 @@ class P2pTracker(
         onScreen: Boolean = false,
     ): CycleRun? {
         val run = s.scope.async {
-            s.cycleLock.withLock {
-                watchedAt = null
-                val cycleProbe = CycleProbe()
-                probe = cycleProbe
-                s.loop.proofsDeferred = !proofsAllowed(allowCellularProof)
-                if (onScreen) s.loop.mode = TrackerMode.Foreground
-                val completed = withTimeoutOrNull(cycleDeadline) {
-                    when {
-                        wake != null -> {
-                            s.loop.forceHeartbeatNow()
-                            s.loop.wakeFromPush(wake.signal)
-                        }
-                        manual -> {
-                            s.loop.forceHeartbeatNow()
-                            s.loop.runOnceReporting()
-                        }
-                        else -> s.loop.runOnceReporting()
+            locked(s, allowCellularProof, onScreen) {
+                when {
+                    wake != null -> {
+                        s.loop.forceHeartbeatNow()
+                        s.loop.wakeFromPush(wake.signal)
                     }
-                    true
-                } ?: false
-                if (onScreen) s.loop.mode = modeOf(foreground)
-                if (watchedAt != null && !cycleProbe.steamRateLimited) steamBackoff.answered()
-                refresh(s)
-                CycleRun(s.loop.nextWakeDelay(), completed, cycleProbe)
+                    manual -> {
+                        s.loop.forceHeartbeatNow()
+                        s.loop.runOnceReporting()
+                    }
+                    else -> s.loop.runOnceReporting()
+                }
             }
         }
         return try {
@@ -349,6 +351,31 @@ class P2pTracker(
             currentCoroutineContext().ensureActive()
             null
         }
+    }
+
+    /** [body] as one cycle: under [s]'s lock, with a fresh probe and the proof gate set, within [cycleDeadline]. */
+    private suspend fun locked(
+        s: Session,
+        allowCellularProof: Boolean = false,
+        onScreen: Boolean = false,
+        body: suspend () -> Unit,
+    ): CycleRun = s.cycleLock.withLock {
+        watchedAt = null
+        val cycleProbe = CycleProbe()
+        probe = cycleProbe
+        s.loop.proofsDeferred = !proofsAllowed(allowCellularProof)
+        if (onScreen) s.loop.mode = TrackerMode.Foreground
+        val completed = try {
+            withTimeoutOrNull(cycleDeadline) {
+                body()
+                true
+            } ?: false
+        } finally {
+            if (onScreen) s.loop.mode = modeOf(foreground)
+        }
+        if (watchedAt != null && !cycleProbe.steamRateLimited) steamBackoff.answered()
+        refresh(s)
+        CycleRun(s.loop.nextWakeDelay(), completed, cycleProbe)
     }
 
     /** What only the loop knows, read after each cycle; deals the last heartbeat no longer tracks drop out. */
@@ -412,6 +439,8 @@ class P2pTracker(
                 if (steam) probe.steamRateLimited = true
                 val wait = (if (steam) steamBackoff else dmarketBackoff).refused(event.retryAfterSeconds)
                 probe.retryAfter = maxOf(probe.retryAfter ?: Duration.ZERO, wait)
+                val until = clock.now() + wait
+                if (steam) steamCooldownUntil = until else dmarketCooldownUntil = until
             }
             is LifecycleEvent.SteamReadFailed -> if (event.axis == "offer" || event.axis == "history") probe.steamReadFailed = true
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {

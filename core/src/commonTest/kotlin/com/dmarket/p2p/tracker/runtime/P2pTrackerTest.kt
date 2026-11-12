@@ -31,6 +31,7 @@ import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
 import com.dmarket.p2p.tracker.support.RecordingEventObserver
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -40,6 +41,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -321,6 +323,41 @@ class P2pTrackerTest {
 
         assertEquals(listOf("stores of ${accountA.value}", "A ended", "stores of ${accountB.value}"), log)
         assertEquals(accountB, tracker.state.value.account)
+    }
+
+    @Test
+    fun a_start_after_close_waits_for_the_closed_loop_to_end_before_its_stores_open() = runTest {
+        val log = mutableListOf<String>()
+        val held = SlowMarketplace(FakeMarketplaceClient(), hold = {
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) { delay(5.seconds) }
+                log += "closed loop ended"
+            }
+        })
+        val tracker = P2pTracker(
+            scope = backgroundScope,
+            clock = clock,
+            deviceIds = FakeDeviceIdStore(),
+            linkedAccount = { accountA },
+            loopFor = { _, observer ->
+                log += "stores opened"
+                loop(held, observer)
+            },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
+        )
+        launch { tracker.onPush(wakeAll) }
+        runCurrent()
+        assertEquals(1, held.running, "the cycle is in flight")
+
+        tracker.close()
+        assertFalse(tracker.state.value.running)
+        assertTrue(tracker.start())
+
+        assertEquals(listOf("stores opened", "closed loop ended", "stores opened"), log)
+        assertTrue(tracker.state.value.running)
     }
 
     @Test

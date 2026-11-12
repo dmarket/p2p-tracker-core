@@ -40,7 +40,9 @@ import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
 import com.dmarket.p2p.tracker.support.delivered
 import com.dmarket.p2p.tracker.support.fakeDeal
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -232,6 +234,38 @@ class P2pTrackerDealActionsTest {
     }
 
     @Test
+    fun start_delivery_waits_for_the_running_cycle_before_it_calls_anything() = runTest {
+        val fake = FakeMarketplaceClient(sellerHeartbeat).apply { deliveries = listOf(delivered(createDirective())) }
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var hold = false
+        val held = object : MarketplaceClient by fake {
+            override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse {
+                if (hold) {
+                    hold = false
+                    entered.complete(Unit)
+                    release.await()
+                }
+                return fake.heartbeat(request)
+            }
+        }
+        val tracker = tracker(held).tracker
+        tracker.updateStatus(deal) // the loop has its tracking list: the create goes straight to its call
+        hold = true
+        val update = async { tracker.updateStatus(deal) }
+        entered.await()
+
+        val delivery = async { tracker.startDelivery(deal) }
+        runCurrent()
+        assertEquals(0, fake.startDeliveryCalls, "the create waits for the cycle's lock")
+
+        release.complete(Unit)
+        assertIs<CreateOfferResult.NeedsConfirmation>(delivery.await().result)
+        update.await()
+        assertEquals(1, fake.startDeliveryCalls)
+    }
+
+    @Test
     fun start_delivery_without_a_linked_account_calls_nothing() = runTest {
         val mp = FakeMarketplaceClient(sellerHeartbeat).apply { deliveries = listOf(delivered(createDirective())) }
 
@@ -256,6 +290,28 @@ class P2pTrackerDealActionsTest {
         assertTrue(mp.fake.heartbeatsSent.single().foreground, "the sync heartbeats as on screen")
         assertEquals(TrackerMode.Background, built.loops.single().mode, "the app's own mode is back after the sync")
         assertEquals(listOf(deal), mp.fake.acceptedDeals)
+    }
+
+    @Test
+    fun a_cancelled_accept_puts_the_apps_mode_back() = runTest {
+        val fake = FakeMarketplaceClient(sellerHeartbeat)
+        val entered = CompletableDeferred<Unit>()
+        val held = object : MarketplaceClient by fake {
+            override suspend fun heartbeat(request: HeartbeatRequest): HeartbeatResponse {
+                entered.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        val built = tracker(held)
+
+        val accept = async { built.tracker.acceptDeal(deal) }
+        entered.await()
+        assertEquals(TrackerMode.Foreground, built.loops.single().mode, "the sync runs as on screen")
+        accept.cancel()
+        runCurrent()
+
+        assertEquals(TrackerMode.Background, built.loops.single().mode, "the app's own mode is back")
+        assertTrue(fake.acceptedDeals.isEmpty())
     }
 
     @Test

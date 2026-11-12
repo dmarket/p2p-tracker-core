@@ -515,8 +515,16 @@ class TradeTrackerLoop(
      * `createOffer` nor a reason code means the offer is already bound to the deal, or another of the seller's installs
      * holds the directive: the retry does not change that, and only this device's claim turns it into an answer other
      * than [CreateOfferResult.Failed].
+     *
+     * [exclusive] runs the work (the calls, the create, the heartbeats around it) for a host that serialises its own
+     * cycles: the mobile facade runs it under its cycle lock, with its proof gate set. The wait counts from the call.
      */
-    suspend fun awaitDirectiveOutcome(dealId: DealId, timeout: Duration, cycleScope: CoroutineScope): CreateOfferResult {
+    suspend fun awaitDirectiveOutcome(
+        dealId: DealId,
+        timeout: Duration,
+        cycleScope: CoroutineScope,
+        exclusive: suspend (work: suspend () -> Unit) -> Unit = { it() },
+    ): CreateOfferResult {
         val (waiter, owner) = createWaitersLock.withLock {
             // A completed waiter belongs to a run that is still finishing; a new call asks again rather than
             // being handed that run's answer.
@@ -530,7 +538,7 @@ class TradeTrackerLoop(
         if (owner) {
             cycleScope.launch {
                 try {
-                    createFromDelivery(dealId, waiter)
+                    exclusive { createFromDelivery(dealId, waiter) }
                 } finally {
                     withContext(NonCancellable) {
                         createWaitersLock.withLock { if (createWaiters[dealId] === waiter) createWaiters.remove(dealId) }

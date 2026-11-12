@@ -159,6 +159,39 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
+    fun a_429_in_any_cycle_holds_every_deals_update() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat()).apply { heartbeatThrowable = RateLimitedException(45) }
+        val tracker = tracker(Setup(mp))
+
+        tracker.onPush("""{"type":"wake_all","reason":"new_deal"}""")
+        clock.advance(15.seconds)
+        val attempts = mp.heartbeatAttempts
+
+        for (id in listOf(deal, DealId("d2"))) {
+            val update = tracker.updateStatus(id)
+            assertEquals(UpdateFailure.RATE_LIMITED, update.failure, "$id")
+            assertEquals(30.seconds, update.retryAfter, "$id: the rest of the push's window")
+        }
+        assertEquals(attempts, mp.heartbeatAttempts, "nothing goes out inside the window")
+    }
+
+    @Test
+    fun a_steam_429_in_a_cycle_holds_the_update_for_its_own_wait() = runTest {
+        val limited = object : SteamReadClient by FakeSteamReadClient() {
+            override suspend fun offerSnapshots(credential: SteamCredential, offerIds: Set<OfferId>): Map<OfferId, SteamOfferSnapshot> =
+                throw SteamRateLimitedException(120)
+        }
+        val mp = FakeMarketplaceClient(heartbeat())
+        val tracker = tracker(Setup(mp, reader = limited))
+
+        tracker.onPush("""{"type":"wake_all","reason":"new_deal"}""")
+        val attempts = mp.heartbeatAttempts
+
+        assertEquals(120.seconds, tracker.updateStatus(deal).retryAfter, "Steam's own wait, not DMarket's")
+        assertEquals(attempts, mp.heartbeatAttempts)
+    }
+
+    @Test
     fun a_steam_429_gives_its_retry_after() = runTest {
         val limited = object : SteamReadClient by FakeSteamReadClient() {
             override suspend fun offerSnapshots(credential: SteamCredential, offerIds: Set<OfferId>): Map<OfferId, SteamOfferSnapshot> =
@@ -307,6 +340,17 @@ class P2pTrackerUpdateStatusTest {
         tracker.onPush("""{"type":"wake_deal","dealId":"d1","reason":"buyer_accepted"}""")
         assertTrue(setup.marketplace.tradeStatusReports.isEmpty())
         assertEquals(ProofState.DEFERRED, tracker.state.value.deals[deal]?.proofState)
+    }
+
+    @Test
+    fun start_delivery_runs_behind_the_proof_gate() = runTest {
+        val setup = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true)
+
+        tracker(setup).startDelivery(deal) // a fresh loop heartbeats and watches its deals before the create
+
+        assertTrue(setup.marketplace.heartbeatsSent.isNotEmpty(), "the create's own sync ran")
+        assertTrue(setup.notary.proven.isEmpty(), "no proof on mobile data")
+        assertTrue(events.events.contains(LifecycleEvent.ProofDeferred(deal.value, "offer")))
     }
 
     @Test
