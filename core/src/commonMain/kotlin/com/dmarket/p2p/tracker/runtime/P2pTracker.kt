@@ -103,6 +103,9 @@ class P2pTracker(
     private var session: Session? = null
     private var foreground = false
 
+    /** The last start failed on a fault (not on a missing account): coming on screen tries it again. */
+    private var startFailed = false
+
     /** Set when a cycle watched its deals; read under the session's cycle lock. */
     private var watchedAt: Instant? = null
 
@@ -195,7 +198,10 @@ class P2pTracker(
     suspend fun setForeground(foreground: Boolean) = lifecycle.withLock {
         this.foreground = foreground
         mutableState.update { it.copy(foreground = foreground) }
-        val s = session ?: return@withLock
+        val s = session ?: run {
+            if (foreground && startFailed) startLocked()
+            return@withLock
+        }
         s.cycleLock.withLock { s.loop.mode = modeOf(foreground) }
         if (foreground) {
             if (s.driver?.isActive != true) s.driver = s.scope.launch { drive(s) }
@@ -321,7 +327,13 @@ class P2pTracker(
     private suspend fun sessionOrStart(): Session? = lifecycle.withLock { session?.takeIf { it.job.isActive } ?: startLocked() }
 
     private suspend fun startLocked(): Session? {
-        val account = linkedAccount() ?: run {
+        val account = try {
+            linkedAccount()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            return startFault(e)
+        } ?: run {
             stopLocked()
             return null
         }
@@ -334,9 +346,7 @@ class P2pTracker(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
-            // A store that does not open now (a Keystore fault) may open on the next call, which starts again.
-            emitQuietly(LifecycleEvent.CycleFailed(e.redactedSummary()))
-            return null
+            return startFault(e)
         }
         loop.mode = modeOf(foreground)
         val s = Session(account, loop)
@@ -346,12 +356,20 @@ class P2pTracker(
         return s
     }
 
+    /** A start that failed on [e] (the host's account read, a store that does not open): the next call starts again. */
+    private suspend fun startFault(e: Throwable): Session? {
+        emitQuietly(LifecycleEvent.CycleFailed(e.redactedSummary()))
+        startFailed = true
+        return null
+    }
+
     private fun resetDmarketCooldown(account: SteamId?) {
         dmarketAccount = account
         dmarketCooldown.reset()
     }
 
     private suspend fun stopLocked() {
+        startFailed = false
         val s = session ?: return
         session = null
         s.job.cancelAndJoin()

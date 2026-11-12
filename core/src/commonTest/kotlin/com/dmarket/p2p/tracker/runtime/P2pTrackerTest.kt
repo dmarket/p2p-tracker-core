@@ -415,4 +415,69 @@ class P2pTrackerTest {
         assertEquals(1, mp.heartbeatsSent.size, "the next call starts the loop")
         assertTrue(tracker.state.value.running)
     }
+
+    @Test
+    fun an_account_read_that_throws_answers_not_running_says_why_and_the_next_start_reads_again() = runTest {
+        var fault: Throwable? = IllegalStateException("token store locked")
+        val tracker = P2pTracker(
+            scope = backgroundScope,
+            clock = clock,
+            deviceIds = FakeDeviceIdStore(),
+            linkedAccount = { fault?.let { throw it } ?: accountA },
+            loopFor = { _, observer -> loop(FakeMarketplaceClient(), observer) },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
+            eventObserver = events,
+        )
+
+        assertFalse(tracker.start())
+        assertEquals(StatusUpdate(failure = UpdateFailure.NOT_RUNNING), tracker.updateStatus(DealId("d1")))
+        assertEquals(2, events.events.count { it == LifecycleEvent.CycleFailed("IllegalStateException: token store locked") })
+
+        fault = null
+        assertTrue(tracker.start())
+        assertEquals(accountA, tracker.state.value.account)
+    }
+
+    @Test
+    fun coming_on_screen_after_a_failed_start_starts_again_but_not_after_a_logout_a_stop_or_without_an_account() = runTest {
+        var fault: Throwable? = IllegalStateException("Keystore busy")
+        var linked: SteamId? = accountA
+        val tracker = P2pTracker(
+            scope = backgroundScope,
+            clock = clock,
+            deviceIds = FakeDeviceIdStore(),
+            linkedAccount = { linked },
+            loopFor = { _, observer ->
+                fault?.let { throw it }
+                loop(FakeMarketplaceClient(), observer)
+            },
+            network = NetworkConditions.Unmetered,
+            cellularProofs = { false },
+        )
+
+        suspend fun failThenComeOnScreen(between: suspend () -> Unit): Boolean {
+            fault = IllegalStateException("Keystore busy")
+            tracker.setForeground(false)
+            assertFalse(tracker.start())
+            fault = null
+            between()
+            tracker.setForeground(true)
+            return tracker.state.value.running
+        }
+
+        assertTrue(failThenComeOnScreen {}, "a failed start is tried again on screen")
+        tracker.stop()
+        assertFalse(failThenComeOnScreen { tracker.onLogout() }, "after a logout")
+        assertFalse(failThenComeOnScreen { tracker.stop() }, "after a stop")
+        val unlinked = failThenComeOnScreen {
+            linked = null
+            assertFalse(tracker.start())
+        }
+        assertFalse(unlinked, "without an account")
+        linked = accountA
+        tracker.setForeground(false)
+        tracker.setForeground(true)
+        assertFalse(tracker.state.value.running, "coming on screen with nothing failed starts nothing")
+    }
 }
