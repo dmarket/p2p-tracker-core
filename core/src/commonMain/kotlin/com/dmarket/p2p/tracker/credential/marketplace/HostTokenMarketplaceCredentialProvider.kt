@@ -14,17 +14,19 @@ import kotlinx.coroutines.CancellationException
  * - [forceRefresh] runs after DMarket refused a token with a 401 and passes that token on (`supply(rejected)`); the
  *   host refreshes only while it is still its current token, and otherwise answers with the newer one it holds.
  *
- * The host's "no session" signal is `null` or a throw (`TokenException` on Android). Per the
- * [MarketplaceCredentialProvider] contract either becomes `null` plus [lastRefreshFailedLoggedOut] = `true`, and the
- * tracker stops sending DMarket requests until a later call gets a token.
+ * The host's "no session" signal is `null`: it becomes `null` plus [lastRefreshFailedLoggedOut] = `true`, and the
+ * tracker stops sending DMarket requests until a later call gets a token. A *throw* is read by
+ * [treatFailureAsLoggedOut]: the mobile tracker (`MobileTrackerPlatform`) sets it `false`, so there a throw is a
+ * temporary failure (retry later, no logout) that returns `null` for this call and leaves
+ * [lastRefreshFailedLoggedOut] `false`. On iOS the Keychain on a locked phone throws instead of returning `null`.
  *
  * @param supplier the host's token layer. A [MarketplaceTokenSupplier] rather than a bare lambda type so a host can
  *   implement it with a small class holding only its token manager — this object lives as long as the tracker, and a
  *   lambda written inline in a DI module pins that whole enclosing scope for the same lifetime.
- * @param treatFailureAsLoggedOut whether a *thrown* failure means "signed out" (the default, matching a host
- *   whose token API throws only when it has no usable token pair) or merely "try again later". Set this
- *   `false` for a host that also throws on transient IO, and have the supplier return `null` for the signed-out
- *   case instead — otherwise a network blip shows the user a sign-in prompt.
+ * @param treatFailureAsLoggedOut whether a *thrown* failure means "signed out" (this class's default, for a host whose
+ *   token API throws only when it has no usable token pair) or merely "try again later". The mobile tracker passes
+ *   `false`: its hosts return `null` for the signed-out case and throw on anything transient, so a network blip
+ *   never shows the user a sign-in prompt.
  */
 class HostTokenMarketplaceCredentialProvider(
     private val treatFailureAsLoggedOut: Boolean = true,
@@ -63,17 +65,18 @@ class HostTokenMarketplaceCredentialProvider(
  * current token without refreshing. If the app's own rule says a refused token ends the session (Android: a current
  * token no 2xx ever confirmed), end it and return `null`.
  *
- * Return `null` (or throw) when there is no session; the tracker then stops and refreshes nothing itself. Never block
- * on user interaction.
+ * Return `null` when there is no session; the tracker then stops and refreshes nothing itself. On mobile a throw is
+ * not "no session" but a temporary failure (network, a locked Keychain): the tracker keeps the session, treats this
+ * call as having no token and asks again on its next cycle. Never block on user interaction.
  *
  * Mapping on each app:
  * - **Android**: `TokenDataHolder.getTokenData(forceRefresh = rejected != null, failedToken = rejected)`, which already
  *   holds the rule above. The public `TokenManager.getTokenData(forceRefresh)` passes no `failedToken`, so the app
- *   exposes one that does (DMA-663 2/4) and wraps it here, mapping `TokenException` to a throw or `null`.
+ *   exposes one that does (DMA-663 2/4) and wraps it here, mapping a `TokenException` for a missing session to `null` and an IO failure to a throw.
  * - **iOS**: a new `async` method on `AuthHandler` that reuses its single-flight refresh (`pendingRequests` /
  *   `performRefreshToken`): with no rejected token it returns the current one, refreshing first when
  *   `shouldUpdateToken`; with one it refreshes only if `rejected` equals the current access token, as its own retry
- *   check does; a 401 from `/refresh-token` logs out and returns `nil`. Kotlin/Native exports this interface as an
+ *   check does; a 401 from `/refresh-token` logs out and returns `nil`; a Keychain read refused on a locked phone throws. Kotlin/Native exports this interface as an
  *   Objective-C protocol whose `supply` Swift implements as `async` (not built here: the iOS target is deferred).
  */
 fun interface MarketplaceTokenSupplier {

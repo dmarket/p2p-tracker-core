@@ -31,6 +31,7 @@ GitHub Release.
 ### Changed
 
 - The mobile tracker is assembled in common code: `MobileTracker` over a `MobileTrackerPlatform`, which `AndroidTrackerPlatform` now extends. `AndroidTrackerStores` is renamed `MobileTrackerStores`; `AndroidTracker.install` is unchanged (DMA-661).
+- Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary failure, no longer a logout; return `null` when there is no DMarket session (DMA-663).
 
 ## [1.3.0-beta] - 2026-11-10
 

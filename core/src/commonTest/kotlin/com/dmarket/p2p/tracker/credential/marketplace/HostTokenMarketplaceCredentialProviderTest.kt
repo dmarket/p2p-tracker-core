@@ -105,6 +105,27 @@ class HostTokenMarketplaceCredentialProviderTest {
     }
 
     @Test
+    fun a_throw_is_a_temporary_failure_and_the_next_call_with_a_token_works() = runTest {
+        var failing = true
+        val p = HostTokenMarketplaceCredentialProvider(treatFailureAsLoggedOut = false) {
+            if (failing) error("keychain locked") else fakeMarketplaceCredential("back")
+        }
+        assertNull(p.current())
+        assertFalse(p.lastRefreshFailedLoggedOut)
+
+        failing = false
+        assertNotNull(p.current())
+        assertFalse(p.lastRefreshFailedLoggedOut)
+    }
+
+    @Test
+    fun null_is_logged_out_when_a_throw_is_a_temporary_failure() = runTest {
+        val p = HostTokenMarketplaceCredentialProvider(treatFailureAsLoggedOut = false) { null }
+        assertNull(p.current())
+        assertTrue(p.lastRefreshFailedLoggedOut)
+    }
+
+    @Test
     fun cancellation_propagates_and_is_not_a_session_verdict() = runTest {
         val p = HostTokenMarketplaceCredentialProvider { throw CancellationException("scope torn down") }
         assertFailsWith<CancellationException> { p.current() }

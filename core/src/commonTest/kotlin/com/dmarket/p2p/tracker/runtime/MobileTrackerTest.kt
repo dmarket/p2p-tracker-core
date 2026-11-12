@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
@@ -20,6 +21,7 @@ import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
+import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
 import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respondError
@@ -37,6 +39,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -76,7 +79,8 @@ class MobileTrackerTest {
         }
     }
 
-    private class FakePlatform(override val clock: Clock) : MobileTrackerPlatform(MarketplaceTokenSupplier { null }) {
+    private class FakePlatform(override val clock: Clock, tokens: MarketplaceTokenSupplier = MarketplaceTokenSupplier { null }) :
+        MobileTrackerPlatform(tokens) {
         val account = FakeStore()
         val marker = FakeInstallMarker()
         val credentials = InMemoryCredentialVault()
@@ -105,6 +109,23 @@ class MobileTrackerTest {
         scope: CoroutineScope = backgroundScope,
     ): P2pTracker = MobileTracker(platform, linkedAccount = { linked }, cellularProofs = { false }, hostMarketplaceClient = factory)
         .tracker(scope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
+
+    @Test
+    fun aThrowFromTheHostSupplierIsATemporaryFailureAndNullIsALogout() = runTest {
+        var answer: () -> MarketplaceCredential? = { error("keychain locked") }
+        val credentials = FakePlatform(clock, tokens = { answer() }).marketplaceCredentials
+
+        assertNull(credentials.current())
+        assertFalse(credentials.lastRefreshFailedLoggedOut)
+
+        answer = { fakeMarketplaceCredential("back") }
+        assertNotNull(credentials.current())
+        assertFalse(credentials.lastRefreshFailedLoggedOut)
+
+        answer = { null }
+        assertNull(credentials.current())
+        assertTrue(credentials.lastRefreshFailedLoggedOut)
+    }
 
     @Test
     fun theHostClientFactoryGetsTheConfiguredRetry() = runTest {

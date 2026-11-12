@@ -105,7 +105,11 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     }
 
     /** DMarket credentials straight from the host's token layer. */
-    val marketplaceCredentials: MarketplaceCredentialProvider = HostTokenMarketplaceCredentialProvider(supplier = tokens)
+    val marketplaceCredentials: MarketplaceCredentialProvider = HostTokenMarketplaceCredentialProvider(
+        supplier = tokens,
+        // A throw from the host is a transient failure, never a logout: "no session" is `null` (same on iOS).
+        treatFailureAsLoggedOut = false,
+    )
 
     /** Attaches the host's token raw in `Authorization` and asks it for one forced refresh on a 401. */
     val marketplaceAuthenticator: MarketplaceAuthenticator = CredentialMarketplaceAuthenticator(marketplaceCredentials)

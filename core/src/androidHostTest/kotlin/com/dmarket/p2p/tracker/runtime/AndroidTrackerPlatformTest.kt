@@ -331,10 +331,18 @@ class AndroidTrackerPlatformTest {
 
     @Test
     fun aHostWithNoSessionReadsAsLoggedOut() = runTest {
-        val platform = platform(FakeDisk(), FakeKeystore()) { error("TokenException") }
+        val platform = platform(FakeDisk(), FakeKeystore()) { null }
 
         assertTrue(platform.marketplaceAuthenticator.headersFor(MarketplaceRequest("GET", "/x", "")).isEmpty())
         assertTrue(platform.marketplaceCredentials.lastRefreshFailedLoggedOut)
+    }
+
+    @Test
+    fun aThrowFromTheHostIsATemporaryFailureNotALogout() = runTest {
+        val platform = platform(FakeDisk(), FakeKeystore()) { error("IOException") }
+
+        assertTrue(platform.marketplaceAuthenticator.headersFor(MarketplaceRequest("GET", "/x", "")).isEmpty())
+        assertFalse(platform.marketplaceCredentials.lastRefreshFailedLoggedOut)
     }
 
     private fun decodedOrEmpty(value: String): String = runCatching { Base64.decode(value).decodeToString() }.getOrDefault("")
