@@ -222,10 +222,14 @@ fun DealDto.toDomain(): Deal = Deal(
     cancelFee = cancelFee?.toDomain(),
     // A bad optional field costs itself, not the whole deal read.
     cancelFeeEndTime = cancelFeeEndTime?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it) }.getOrNull() },
-    counterparty = counterparty?.takeIf { !it.accountId.isNullOrBlank() }?.let { c ->
+    // A counterparty without an account id still names the other party; one with nothing to show is dropped.
+    counterparty = counterparty?.let { c ->
+        val accountId = c.accountId?.takeIf { it.isNotBlank() }?.let(::AccountId)
+        val steamId = c.steamId?.takeIf { it.isNotBlank() }?.let(::SteamId)
+        if (accountId == null && steamId == null && c.name.isNullOrBlank()) return@let null
         DealCounterparty(
-            accountId = AccountId(c.accountId!!),
-            steamId = c.steamId?.takeIf { it.isNotBlank() }?.let(::SteamId),
+            accountId = accountId,
+            steamId = steamId,
             name = c.name,
             avatar = c.avatar,
             badges = c.badges?.let { CounterpartyBadges(it.steamLevel, it.tradingStatus, it.profilePrivate, it.validTradeUrl) },

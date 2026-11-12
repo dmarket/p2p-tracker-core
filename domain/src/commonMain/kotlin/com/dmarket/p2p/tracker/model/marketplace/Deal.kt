@@ -123,10 +123,11 @@ data class Deal(
 /**
  * The other party of a deal, relative to the caller: the buyer sees the seller, the seller the buyer. [name] is the
  * Steam persona only when [steamId] is set (the gateway starts from the DMarket username); an account lookup that
- * failed leaves [accountId] alone, so an absent [steamId] means no Steam-derived identity.
+ * failed leaves [accountId] alone, so an absent [steamId] means no Steam-derived identity. [accountId] is `null` when
+ * the gateway sent none; the rest still names the other party.
  */
 data class DealCounterparty(
-    val accountId: AccountId,
+    val accountId: AccountId? = null,
     val steamId: SteamId? = null,
     val name: String? = null,
     val avatar: String? = null,

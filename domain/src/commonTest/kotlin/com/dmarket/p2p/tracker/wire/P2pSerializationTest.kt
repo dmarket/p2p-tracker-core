@@ -8,6 +8,7 @@ import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.marketplace.DealCounterparty
 import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
@@ -523,7 +524,7 @@ class P2pSerializationTest {
     }
 
     @Test
-    fun a_counterparty_without_an_account_id_is_dropped_not_fatal() {
+    fun a_counterparty_without_an_account_id_keeps_the_rest_and_one_with_nothing_is_dropped() {
         fun read(counterparty: String) = TrackerJson.decodeFromString<DealDto>(
             """{"dealId":"d1","state":"P2P_DEAL_STATE_AWAITING_TRADE","buyerAccountId":"b1",
                "sellerAccountId":"s1","offerId":"of1","assetId":"a1","price":{"currency":"USD","amount":"1"},
@@ -531,8 +532,13 @@ class P2pSerializationTest {
                "counterparty":$counterparty}""",
         ).toDomain()
 
-        assertNull(read("""{"name":"x"}""").counterparty)
-        assertNull(read("""{"accountId":"","name":"x"}""").counterparty)
+        assertEquals(
+            DealCounterparty(steamId = SteamId("76561198000000002"), name = "Buyer", avatar = "https://a/1.png"),
+            read("""{"accountId":"","steamId":"76561198000000002","name":"Buyer","avatar":"https://a/1.png"}""").counterparty,
+        )
+        assertEquals(DealCounterparty(name = "x"), read("""{"name":"x"}""").counterparty)
+        assertNull(read("""{"accountId":"","steamId":"","name":" ","avatar":"https://a/1.png"}""").counterparty)
+        assertNull(read("{}").counterparty)
         assertEquals("c1", read("""{"accountId":"c1"}""").counterparty?.accountId?.value)
     }
 
