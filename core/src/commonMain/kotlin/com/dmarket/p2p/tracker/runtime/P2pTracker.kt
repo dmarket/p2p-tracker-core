@@ -178,7 +178,7 @@ class P2pTracker(
             false
         }
         emitQuietly(LifecycleEvent.WakeReceived(wake.type, wake.dealId?.value, wake.proveAfter?.toString(), acknowledged))
-        val s = lifecycle.withLock { session ?: startLocked() } ?: return true
+        val s = sessionOrStart() ?: return true
         cycle(s, wake)
         return true
     }
@@ -197,7 +197,7 @@ class P2pTracker(
         state.value.deals[dealId]?.cooldownUntil?.takeIf { it > now }?.let {
             return statusOf(dealId, UpdateFailure.RATE_LIMITED, retryAfter = it - now)
         }
-        val s = lifecycle.withLock { session ?: startLocked() } ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
+        val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
         val run = cycle(s, wake = null, manual = true, allowCellularProof) ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING)
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
@@ -218,8 +218,8 @@ class P2pTracker(
      * refused) or [DeliveryOutcome.error] (the last call failed).
      */
     suspend fun startDelivery(dealId: DealId): DeliveryOutcome {
-        val s = lifecycle.withLock { session ?: startLocked() }
-            ?: return DeliveryOutcome(CreateOfferResult.Failed(NOT_RUNNING_ERROR), error = DealCallError(DealCallErrorKind.NOT_RUNNING))
+        val s = sessionOrStart()
+            ?: return DeliveryOutcome(CreateOfferResult.Failed(NOT_RUNNING_ERROR), error = NOT_RUNNING_CALL)
         val result = s.loop.awaitDirectiveOutcome(dealId, deliveryTimeout, s.scope)
         if (result !is CreateOfferResult.Failed) return DeliveryOutcome(result)
         val call = s.loop.lastDeliveryCall(dealId)
@@ -236,8 +236,8 @@ class P2pTracker(
      * DMarket unreachable), the accept is not sent and the block is the answer.
      */
     suspend fun acceptDeal(dealId: DealId): AcceptOutcome {
-        val s = lifecycle.withLock { session ?: startLocked() } ?: return AcceptOutcome.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
-        cycle(s, wake = null, manual = true, onScreen = true) ?: return AcceptOutcome.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
+        val s = sessionOrStart() ?: return AcceptOutcome.Failed(NOT_RUNNING_CALL)
+        cycle(s, wake = null, manual = true, onScreen = true) ?: return AcceptOutcome.Failed(NOT_RUNNING_CALL)
         s.loop.blockingState.takeIf { it != TrackerBlock.NONE }?.let { return AcceptOutcome.Blocked(it) }
         return try {
             AcceptOutcome.Done(s.loop.marketplace.acceptDeal(dealId))
@@ -250,7 +250,7 @@ class P2pTracker(
 
     /** The deal's detail, `GET /p2p/deals/{id}`; its state reads with or without the `P2P_DEAL_STATE_` prefix. */
     suspend fun getDeal(dealId: DealId): DealRead {
-        val s = lifecycle.withLock { session ?: startLocked() } ?: return DealRead.Failed(DealCallError(DealCallErrorKind.NOT_RUNNING))
+        val s = sessionOrStart() ?: return DealRead.Failed(NOT_RUNNING_CALL)
         return try {
             DealRead.Found(s.loop.marketplace.getDeal(dealId))
         } catch (e: CancellationException) {
@@ -269,6 +269,9 @@ class P2pTracker(
         session = null
         mutableState.update { TrackerState(foreground = it.foreground) }
     }
+
+    /** The running session, or the one [linkedAccount] starts; `null` when the app's user links no account. */
+    private suspend fun sessionOrStart(): Session? = lifecycle.withLock { session ?: startLocked() }
 
     private suspend fun startLocked(): Session? {
         val account = linkedAccount() ?: run {
@@ -457,6 +460,7 @@ class P2pTracker(
          */
         val DEFAULT_DELIVERY_TIMEOUT: Duration = 60.seconds
 
+        private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
         private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account"
     }
 }
