@@ -30,6 +30,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
@@ -109,6 +110,7 @@ fun DirectiveDto.toDomain(): Directive = Directive(
     // does not know is reported back, and the report has to name what the backend asked for.
     rawAction = action.takeIf { it.isNotBlank() },
     deadline = deadlineTime.toFreshnessMark(),
+    leaseTtl = leaseTtlSeconds?.takeIf { it > 0 }?.seconds,
 )
 
 fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(
@@ -248,6 +250,7 @@ fun CreateOfferDto.toDirective(dealId: DealId): Directive? = directiveId.takeIf 
         assetIds = assetIds,
         tradeToken = tradeToken,
         contextId = contextId,
+        leaseTtlSeconds = leaseTtlSeconds,
     ).toDomain()
 }
 

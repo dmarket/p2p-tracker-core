@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.runtime
 
+import com.dmarket.p2p.tracker.adapter.MonotonicElapsedClock
 import com.dmarket.p2p.tracker.adapter.host.InMemoryCredentialVault
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
@@ -24,6 +25,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
@@ -65,6 +67,9 @@ class MobileSteamSessionTest {
     private inner class Platform : MobileTrackerPlatform(MarketplaceTokenSupplier { fakeMarketplaceCredential("dm-token") }) {
         private val account = mutableMapOf<String, String>()
         override val clock: Clock = this@MobileSteamSessionTest.clock
+
+        // The Android actual reads android.os.SystemClock, which the host tests do not stub.
+        override val elapsedClock: ElapsedClock = MonotonicElapsedClock()
         override val surface: RuntimeSurface = RuntimeSurface.AndroidNative
         override val network: NetworkConditions = NetworkConditions.Unmetered
         override val installStore: DeviceKeyValueStore = InMemoryDeviceKeyValueStore()

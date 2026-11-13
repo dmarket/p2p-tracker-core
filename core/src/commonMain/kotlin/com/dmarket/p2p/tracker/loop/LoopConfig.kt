@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -83,6 +84,10 @@ import kotlin.time.Duration.Companion.seconds
  *   wrong-account guard and the session's state judge the vault's session against this account, so a session imported
  *   for another account before the start sends nothing to Steam on the first cycle either. The heartbeat's value
  *   replaces it once one comes back. `null` (web, headless): the first cycle waits for the heartbeat, as before.
+ * @param leaseTtl How long this device's lease on a directive lasts when the backend does not say
+ *   (`leaseTtlSeconds`): the backend's `DefaultLeaseTTL`, 2 min. Read only by a loop given a lease clock (mobile).
+ * @param leaseRenewBefore With less than this left of a directive's lease, the loop heartbeats before the Steam write,
+ *   and writes only if that heartbeat leaves at least this much. 30 s by default.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -102,4 +107,6 @@ data class LoopConfig(
     val steamSessionInVault: Boolean = false,
     val reportEachWrite: Boolean = false,
     val hostLinkedSteamId: SteamId? = null,
+    val leaseTtl: Duration = 2.minutes,
+    val leaseRenewBefore: Duration = 30.seconds,
 )

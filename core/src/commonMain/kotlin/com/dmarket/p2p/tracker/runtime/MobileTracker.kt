@@ -179,6 +179,7 @@ class MobileTracker(
                 loopState = stores.loopState,
                 eventObserver = observer,
                 directivesEnabled = true,
+                leaseClock = platform.elapsedClock,
             )
         }
         return P2pTracker(

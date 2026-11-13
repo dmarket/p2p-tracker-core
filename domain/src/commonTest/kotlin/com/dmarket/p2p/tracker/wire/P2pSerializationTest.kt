@@ -30,6 +30,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 class P2pSerializationTest {
@@ -268,6 +269,34 @@ class P2pSerializationTest {
         assertEquals(deal, roundTrip(deal))
         val directive = DirectiveDto(directiveId = "dir-1", action = "create_offer", dealId = "d1", deadlineTime = "2026-10-16T14:00:00Z")
         assertEquals(directive, roundTrip(directive))
+    }
+
+    // ---- lease duration (ahead of the contract) ----------------------------------------------------
+
+    @Test
+    fun a_directive_carries_its_lease_duration_and_anything_but_a_positive_one_is_none() {
+        val json = """
+            {
+              "directives": [
+                {"directiveId":"dir-1","action":"create_offer","leaseTtlSeconds":300},
+                {"directiveId":"dir-2","action":"cancel_offer"},
+                {"directiveId":"dir-3","action":"cancel_offer","leaseTtlSeconds":0},
+                {"directiveId":"dir-4","action":"cancel_offer","leaseTtlSeconds":-5},
+                {"directiveId":"dir-5","action":"cancel_offer","leaseTtlSeconds":null}
+              ]
+            }
+        """.trimIndent()
+        val leases = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain().directives.map { it.leaseTtl }
+
+        assertEquals(listOf(300.seconds, null, null, null, null), leases)
+    }
+
+    @Test
+    fun a_create_trade_directive_carries_its_lease_duration() {
+        val json = """{"state":"COMMITTED","createOffer":{"directiveId":"dir-9","leaseTtlSeconds":120}}"""
+        val result = TrackerJson.decodeFromString<DealActionResponseDto>(json).toDomain(DealId("d1"))
+
+        assertEquals(120.seconds, result.createOffer?.leaseTtl)
     }
 
     // ---- asset id -------------------------------------------------------------------------------

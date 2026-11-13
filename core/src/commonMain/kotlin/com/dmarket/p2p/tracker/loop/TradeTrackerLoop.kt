@@ -93,6 +93,7 @@ import com.dmarket.p2p.tracker.policy.SteamWriteThrottle
 import com.dmarket.p2p.tracker.policy.WriteGate
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
@@ -218,6 +219,13 @@ internal const val CANCEL_UNANSWERED_UNREAD = "unanswered: steam did not answer 
 
 /** Defer reason for the creates left in a chain that stopped part-way through. */
 private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stopped earlier this cycle"
+
+/**
+ * Why a leased write was not run: the lease fence (`TradeTrackerLoop`'s `leaseClock`) found less than
+ * [LoopConfig.leaseRenewBefore] of the directive's lease left, and the heartbeat sent to renew it did not leave more.
+ * Unreported: the lease is not this device's to answer for any more.
+ */
+internal const val LEASE_LAPSED_DROP_REASON = "lease lapsed before the Steam write"
 
 /**
  * The `SteamWriteDeferred` reason of a create held back by `LoopConfig.minWriteTokenLifetime`: the token, not
@@ -461,6 +469,12 @@ class TradeTrackerLoop(
      * `TrackerConfig.receivedOfferNameCheck` is on. `null` means no answer for any offer, so no name-based warning.
      */
     private val offerVerifier: DmarketOfferVerifier? = null,
+    /**
+     * The lease fence's clock (mobile: `elapsedRealtime` / `mach_continuous_time`, which run through sleep). With it, a
+     * Steam write starts only inside its directive's lease, counted from when the request that served the directive
+     * was sent. `null` (web, headless) turns the fence off.
+     */
+    private val leaseClock: ElapsedClock? = null,
 ) {
     init {
         // A proven write is a write the PROVER performs — TLSN requires the prover to be the TLS client, so
@@ -581,9 +595,12 @@ class TradeTrackerLoop(
             // A failed call is repeated like an empty answer: it says nothing about the deal. A 401 has already been
             // refreshed and retried inside the client. The last call is kept for the mobile facade, which tells the
             // user why the run ended without a directive.
+            val sentAt = leaseClock?.elapsed()
             val call = runCatching { marketplace.startDelivery(dealId) }.onFailure { if (it is CancellationException) throw it }
             createWaitersLock.withLock { deliveryCalls[dealId] = call }
             val delivery = call.getOrNull()
+            // `create-trade` leases the create to this device, as a heartbeat does (DMA-610).
+            if (sentAt != null) recordLeases(listOfNotNull(delivery?.createOffer), sentAt)
             delivery?.reasonCode?.takeIf { it.isNotBlank() }?.let { code ->
                 waiter.complete(CreateOfferResult.Failed("$DELIVERY_REFUSED_ERROR: $code"))
                 return
@@ -2016,7 +2033,73 @@ class TradeTrackerLoop(
             deviceId = deviceId.current(),
             steamSession = if (config.steamSessionInVault) steamSessionState() else null,
         )
-        return marketplace.heartbeat(request)
+        // Read before the request leaves: a lease the backend takes while answering cannot have started earlier, so a
+        // slow answer shortens the window this device counts and never stretches it.
+        val sentAt = leaseClock?.elapsed()
+        val response = marketplace.heartbeat(request)
+        if (sentAt != null) recordLeases(response.directives, sentAt)
+        return response
+    }
+
+    /** One directive's lease as this device counts it: from [leasedAt] on the lease clock, for [ttl]. */
+    private class LeaseWindow(val leasedAt: Duration, val ttl: Duration) {
+        fun left(now: Duration): Duration = leasedAt + ttl - now
+    }
+
+    /** The lease windows of the directives served to this device, by directive; guarded by [leaseLock]. */
+    private val leases = mutableMapOf<DirectiveId, LeaseWindow>()
+    private val leaseLock = Mutex()
+
+    /** One renewal heartbeat at a time: the create chains run concurrently and would each send their own. */
+    private val leaseRenewal = Mutex()
+
+    /**
+     * Starts the lease window of each of [directives] at [sentAt], when the request that served them was sent: a
+     * directive served again (the backend serves a directive only while it is unleased or leased to this device) gets
+     * a new window. A directive not served again keeps its old one. Windows already over are dropped.
+     */
+    private suspend fun recordLeases(directives: List<Directive>, sentAt: Duration) = leaseLock.withLock {
+        leases.entries.removeAll { it.value.left(sentAt) <= Duration.ZERO }
+        directives.forEach { leases[it.directiveId] = LeaseWindow(sentAt, it.leaseTtl ?: config.leaseTtl) }
+    }
+
+    /** What is left of [directive]'s lease now, on the lease clock; zero when none was recorded. */
+    private suspend fun leaseLeft(directive: Directive, clock: ElapsedClock): Duration = leaseLock.withLock {
+        leases[directive.directiveId]?.left(clock.elapsed())?.coerceAtLeast(Duration.ZERO) ?: Duration.ZERO
+    }
+
+    /**
+     * The lease fence, checked right before each Steam write (create and cancel). Off without a [leaseClock].
+     *
+     * With at least [LoopConfig.leaseRenewBefore] of the lease left the write goes. With less, or with the window
+     * already over, one heartbeat goes first: a heartbeat that serves the directive again renews its lease, and the
+     * write goes only if that leaves at least [LoopConfig.leaseRenewBefore]. Otherwise it does not go: another device
+     * may hold the lease by now, and two writes are two Steam offers. The window counts from when the request was
+     * sent, on a clock that runs through sleep and that no wall clock moves.
+     */
+    private suspend fun leaseAllowsWrite(directive: Directive, credential: SteamCredential): Boolean {
+        val clock = leaseClock ?: return true
+        val margin = config.leaseRenewBefore
+        if (leaseLeft(directive, clock) >= margin) return true
+        leaseRenewal.withLock {
+            // A sibling chain may have renewed it while this one waited.
+            if (leaseLeft(directive, clock) >= margin) return true
+            renewLeases(credential)
+        }
+        return leaseLeft(directive, clock) >= margin
+    }
+
+    /**
+     * The heartbeat the lease fence sends to renew this device's leases ([sendHeartbeat] records them). Its tracking
+     * list and new directives wait for the next cycle. An answer that names another Steam account than [credential]'s
+     * renews nothing: the next cycle blocks on it.
+     */
+    private suspend fun renewLeases(credential: SteamCredential) {
+        val heartbeat = heartbeatOrNull(credential.subjectSteamId, foregroundFor(credential)) ?: return
+        emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
+        if (AccountBinding.evaluate(heartbeat.linkedSteamId, credential.subjectSteamId) == AccountBindingStatus.MISMATCH) {
+            leaseLock.withLock { heartbeat.directives.forEach { leases.remove(it.directiveId) } }
+        }
     }
 
     private suspend fun scheduleNextHeartbeat(ttlSeconds: Int) {
@@ -2688,6 +2771,12 @@ class TradeTrackerLoop(
                 resolveCreateWaiter(directive, CreateOfferResult.CreatesPaused)
                 return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
             }
+            // Last before the POST. The rest of the chain was leased with this create, so it stops here too.
+            if (!leaseAllowsWrite(directive, credential)) {
+                emitDropped(directive, LEASE_LAPSED_DROP_REASON)
+                resolveCreateWaiter(directive, CreateOfferResult.Failed(LEASE_LAPSED_DROP_REASON))
+                return@withDealClaim WriteAttempt(stopChain = true, reason = LEASE_LAPSED_DROP_REASON) to ClaimEnd.Released
+            }
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
@@ -2783,6 +2872,10 @@ class TradeTrackerLoop(
                 WriteAttempt(countedOutOfBand = resendClaimedOutcome(verdict.claim, directive.directiveId) != null)
             },
         ) {
+            if (!leaseAllowsWrite(directive, credential)) {
+                emitDropped(directive, LEASE_LAPSED_DROP_REASON)
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
             // Steam's own (redacted) refusal travels with the FAILED outcome, exactly as it does on the
             // create surface — the port goes out of its way to produce it (`failOnRefusal` throws
             // "Steam cancel refused with EResult <n>", and a non-OK HTTP status throws its own sanitized

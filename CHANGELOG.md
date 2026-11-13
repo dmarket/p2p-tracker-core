@@ -30,6 +30,7 @@ GitHub Release.
 - Android: the Steam session lives in the core's vault. Call `AndroidTracker.importSteamSession()` right after the user signs in to Steam in the app's WebView, a Steam sign-in to DMarket included, once `install(...)` ran and whether or not the tracker is built, never on start; `MobileTracker.importSteamSession(cookies)` is the same call for other hosts. `P2pTracker.checkSteamSession()` renews the session from the vault for ON_START, and `onLogout()` erases it (DMA-662).
 - `TrackerState.steamSession` reports the Steam session as `ALIVE`, `NEEDS_REFRESH`, `GONE` or `OTHER_ACCOUNT`; on `OTHER_ACCOUNT` the tracker sends no request to Steam. Read the session's state from this field alone, not combined with `block` (DMA-662).
 - Android: the tracker runs the directives the backend leases, and creates and cancels Steam offers on the session in its vault when `AndroidTracker.install(steamWrites = true)`. `steamWrites` is off by default; `reportUnsentCreates` sets whether a create that never reached Steam is reported `failed` (DMA-662).
+- Android: a Steam offer create or cancel starts only inside its directive's lease (2 min unless the backend sends `leaseTtlSeconds`), counted on a clock that runs through sleep; with under 30 s left the tracker heartbeats first, and a lease that heartbeat does not renew gets no write. `MobileTrackerPlatform.elapsedClock` is that clock (DMA-662).
 
 ### Changed
 

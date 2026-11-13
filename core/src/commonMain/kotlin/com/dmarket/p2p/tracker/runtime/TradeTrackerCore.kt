@@ -33,6 +33,7 @@ import com.dmarket.p2p.tracker.loop.UnprovenClaimStore
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.PushChannel
 import com.dmarket.p2p.tracker.port.host.Scheduler
@@ -131,6 +132,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         random: Random = Random.Default,
         scanReceivedOffers: Boolean = false,
         offerVerifier: DmarketOfferVerifier? = null,
+        leaseClock: ElapsedClock? = null,
     ): TradeTrackerLoop {
         val provider = SteamCredentialProvider(
             vault = vault,
@@ -167,6 +169,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             random = random,
             scanReceivedOffers = scanReceivedOffers,
             offerVerifier = offerVerifier,
+            leaseClock = leaseClock,
         )
     }
 

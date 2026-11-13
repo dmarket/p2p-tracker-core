@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
+import kotlin.time.Duration
 import kotlin.time.Instant
 
 /**
@@ -69,6 +70,11 @@ data class Directive(
      * that is also what a malformed or zero value degrades to. Informational: nothing in the loop acts on it.
      */
     val deadline: Instant? = null,
+    /**
+     * How long this device's lease on the directive lasts, from when the request that served it was sent; `null`
+     * when the backend does not say, and the loop's default applies. See `TradeTrackerLoop`'s lease fence.
+     */
+    val leaseTtl: Duration? = null,
 ) {
     /** Redacted: [tradeToken] is a bearer capability — see [com.dmarket.p2p.tracker.model.steam.TradeDraft]. */
     override fun toString(): String = "Directive(directiveId=$directiveId, action=$action, dealId=$dealId, " +

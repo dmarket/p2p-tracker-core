@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
+import com.dmarket.p2p.tracker.adapter.platformElapsedClock
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.TrackerConfig
@@ -31,6 +32,7 @@ import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.host.SteamCookieVault
@@ -59,6 +61,9 @@ import kotlinx.coroutines.sync.withLock
 abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     /** The time the tracker runs on. */
     abstract val clock: Clock
+
+    /** The lease fence's clock (`TradeTrackerLoop`): one that runs through sleep, from the platform by default. */
+    open val elapsedClock: ElapsedClock = platformElapsedClock()
 
     /** The surface the heartbeat names. */
     abstract val surface: RuntimeSurface

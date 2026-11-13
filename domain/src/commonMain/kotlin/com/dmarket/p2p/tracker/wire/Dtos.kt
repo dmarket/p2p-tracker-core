@@ -116,6 +116,12 @@ data class DirectiveDto(
     @SerialName("steamOfferId") val steamOfferId: String? = null,
     /** RFC3339: a `create_offer`'s create deadline. Absent on every other action, and from an older backend. */
     @SerialName("deadlineTime") val deadlineTime: String? = null,
+    /**
+     * Ahead of the contract (DMA-662 Q14): how long this device's lease on the directive lasts, counted by the client
+     * from when it sent the request that served it. A duration, so no device clock is compared with the server's.
+     * Absent (today's backend), zero or negative: the client's default (`LoopConfig.leaseTtl`, 2 min).
+     */
+    @SerialName("leaseTtlSeconds") val leaseTtlSeconds: Int? = null,
 ) {
     /**
      * Redacted: [tradeToken] is a bearer capability. This is also what `HeartbeatResponseDto.toString()`
@@ -125,7 +131,8 @@ data class DirectiveDto(
     override fun toString(): String = "DirectiveDto(directiveId=$directiveId, dealId=$dealId, action=$action, " +
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +
         "tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, " +
-        "contextId=$contextId, steamOfferId=$steamOfferId, deadlineTime=$deadlineTime)"
+        "contextId=$contextId, steamOfferId=$steamOfferId, deadlineTime=$deadlineTime, " +
+        "leaseTtlSeconds=$leaseTtlSeconds)"
 }
 
 @Serializable
@@ -342,10 +349,13 @@ data class CreateOfferDto(
     @SerialName("assetIds") val assetIds: List<String> = emptyList(),
     @SerialName("tradeToken") val tradeToken: String? = null,
     @SerialName("contextId") val contextId: Int = 0,
+    /** Ahead of the contract, as [DirectiveDto.leaseTtlSeconds]: the lease `create-trade` parks under this device. */
+    @SerialName("leaseTtlSeconds") val leaseTtlSeconds: Int? = null,
 ) {
     /** Redacted: [tradeToken] is a bearer capability, as on [DirectiveDto]. */
     override fun toString(): String = "CreateOfferDto(directiveId=$directiveId, partnerSteamId=$partnerSteamId, " +
-        "assetIds=$assetIds, tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, contextId=$contextId)"
+        "assetIds=$assetIds, tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, contextId=$contextId, " +
+        "leaseTtlSeconds=$leaseTtlSeconds)"
 }
 
 @Serializable
