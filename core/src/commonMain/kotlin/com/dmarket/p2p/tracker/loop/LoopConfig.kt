@@ -72,6 +72,11 @@ import kotlin.time.Duration.Companion.seconds
  *   previous verdict named), the cycle sends no Steam request at all (no scrape, refresh, mint, re-check, read, write
  *   or proof) and only heartbeats with the session's steamid. And the heartbeat carries the session's state
  *   (`steamSession`, ahead of the contract). `false` (web, headless): neither.
+ * @param reportEachWrite Each `create_offer` / `cancel_offer` is reported on `/trade-actions` in a call of its own right
+ *   after Steam answers, before the next write and before any proof (mobile: a wake can end at any moment, and a write
+ *   the backend has not heard of keeps its lease held). An accepted report is pruned at once and left out of the
+ *   cycle's batch; one that was refused or lost to the network goes in that batch again, and after that its stored
+ *   outcome waits for the re-lease, as before. `false` (web, headless): one batch per cycle.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -89,4 +94,5 @@ data class LoopConfig(
     val reportNotActionable: Boolean = false,
     val createDirectiveRetryDelays: List<Duration> = listOf(2.seconds),
     val steamSessionInVault: Boolean = false,
+    val reportEachWrite: Boolean = false,
 )

@@ -130,6 +130,7 @@ class MobileTracker(
                     steamWrites = steamWrites,
                     reportUnsentCreates = reportUnsentCreates,
                     steamSessionInVault = true,
+                    reportEachWrite = true,
                 ),
                 marketplace = marketplace,
                 steamReader = KtorSteamReadClient(steamHttp, config.steamEndpoints),

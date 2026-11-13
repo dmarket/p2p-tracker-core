@@ -296,7 +296,7 @@ private fun DirectiveOutcome?.claimEnd(): ClaimEnd = this?.let(ClaimEnd::Complet
 
 /**
  * What one attempt at a Steam **write** directive (`create_offer` / `cancel_offer`) left behind: the [outcome]
- * to report in this cycle's single batched `/trade-actions` call (`null` when there is nothing to report),
+ * to report in this cycle's single batched `/trade-actions` call (`null` when there is nothing left to report),
  * whether it reached Steam ([wroteToSteam] — which is what makes its stored outcome prunable once acked), and,
  * for a create, whether the rest of that counterparty's chain should be abandoned ([stopChain], with [reason]
  * for the event that says so).
@@ -309,7 +309,10 @@ private data class WriteAttempt(
     val wroteToSteam: Boolean = false,
     val stopChain: Boolean = false,
     val reason: String? = null,
-    /** Set when the attempt was already reported and tallied on its own, outside the batch (a replayed duplicate). */
+    /**
+     * Set when the attempt was already reported and tallied on its own, outside the batch: a replayed duplicate, or a
+     * write whose own report the backend accepted ([LoopConfig.reportEachWrite]).
+     */
     val countedOutOfBand: Boolean = false,
     /** A settled cancel's offer code, read off Steam, for `/trade-events` — see [LoopConfig.reportNotActionable]. */
     val offerReport: TradeStatusReport? = null,
@@ -2106,11 +2109,13 @@ class TradeTrackerLoop(
         val tracking = heartbeat.activeTracking
         // BOTH Steam write surfaces buffer their outcomes here and are reported in ONE /trade-actions call: a
         // heartbeat can lease many creates AND many cancels, and answering each with its own POST made the
-        // report volume scale with the write volume. `report_inventory` is not here — it answers on its own
-        // endpoint (/inventory), which is already one call per directive by contract.
+        // report volume scale with the write volume. With [LoopConfig.reportEachWrite] each write has already
+        // reported itself ([reportWrite]) and the batch carries only what the backend did not accept.
+        // `report_inventory` is not here — it answers on its own endpoint (/inventory), which is already one call
+        // per directive by contract.
         val attempts = mutableListOf<WriteAttempt>()
         attempts += executeCreateChains(plan.creates, credential, heartbeat.linkedSteamId, tracking)
-        plan.cancels.forEach { attempts += runCancel(it, credential, heartbeat.linkedSteamId, tracking) }
+        plan.cancels.forEach { attempts += reportWrite(runCancel(it, credential, heartbeat.linkedSteamId, tracking)) }
         done += flushWriteOutcomes(attempts)
         reportCancelledOfferCodes(attempts.mapNotNull { it.offerReport })
         plan.inventoryScans.forEach { if (runInventory(it, credential)) done++ }
@@ -2398,7 +2403,9 @@ class TradeTrackerLoop(
      * volume scale with the write volume. Deferring is safe on the axis that matters: each outcome was already
      * `markHandled` + persisted at the moment its Steam write succeeded, so a worker that dies before this flush
      * cannot re-execute the write — the backend re-leases the directive and [resendHandledOutcomes] re-sends the
-     * stored outcome instead.
+     * stored outcome instead. With [LoopConfig.reportEachWrite] the writes reported themselves ([reportWrite]): an
+     * accepted one carries no outcome here, so this call holds only the ones the backend did not accept (often none,
+     * and then no request is made).
      */
     private suspend fun flushWriteOutcomes(attempts: List<WriteAttempt>): Int {
         if (attempts.isEmpty()) return 0
@@ -2407,6 +2414,21 @@ class TradeTrackerLoop(
         // map on every platform, so pruning per id would cost one of those per accepted write.
         pruneOutcomes(attempts.mapNotNullTo(mutableSetOf()) { it.prunableId(accepted) })
         return attempts.count { it.counted(accepted) }
+    }
+
+    /**
+     * Reports [attempt]'s outcome in a `/trade-actions` call of its own, right after its Steam write answered
+     * ([LoopConfig.reportEachWrite]; otherwise [attempt] is returned as it is, for the batch). Accepted: its stored
+     * outcome is pruned now and the attempt leaves the batch, still counted ([WriteAttempt.countedOutOfBand]). Refused,
+     * absent from the response or lost to the network: unchanged, so [flushWriteOutcomes] sends it again, and after
+     * that its stored outcome waits for the re-lease ([resendHandledOutcomes]).
+     */
+    private suspend fun reportWrite(attempt: WriteAttempt): WriteAttempt {
+        val outcome = attempt.outcome
+        if (!config.reportEachWrite || outcome == null) return attempt
+        val accepted = mapOf(outcome.directiveId to reportOutcome(outcome))
+        attempt.prunableId(accepted)?.let { pruneOutcome(it) }
+        return if (accepted.getValue(outcome.directiveId)) attempt.copy(outcome = null, countedOutOfBand = true) else attempt
     }
 
     /**
@@ -2551,7 +2573,7 @@ class TradeTrackerLoop(
                 abandonChain(chain, directive, throttled.deferReason(), index, throttled.retryAfterSeconds)
                 return attempts
             }
-            val attempt = runCreate(directive, credential, linkedSteamId, tracking)
+            val attempt = reportWrite(runCreate(directive, credential, linkedSteamId, tracking))
             attempts += attempt
             if (attempt.stopChain) {
                 // This create did run (and failed), so the abandoned tail starts after it.
@@ -2585,8 +2607,8 @@ class TradeTrackerLoop(
     /**
      * `create_offer`: POST the Steam trade, stopping at NeedsConfirmation.
      *
-     * Does **not** report: it returns its [DirectiveOutcome] inside a [WriteAttempt] and
-     * [flushCreateOutcomes] reports the whole cycle's worth in one call. It also tells its chain whether to
+     * Does **not** report: it returns its [DirectiveOutcome] inside a [WriteAttempt] for [reportWrite] and
+     * [flushWriteOutcomes] to report. It also tells its chain whether to
      * stop, which is a different question from whether this directive is done with. See [executeCreateChains].
      */
     private suspend fun runCreate(
@@ -2711,8 +2733,8 @@ class TradeTrackerLoop(
     /**
      * `cancel_offer`: cancel the dangling Steam offer.
      *
-     * Like [runCreate], it does **not** report — it returns its [DirectiveOutcome] inside a [WriteAttempt] and
-     * [flushWriteOutcomes] reports the cycle's creates and cancels together in one call.
+     * Like [runCreate], it does **not** report — it returns its [DirectiveOutcome] inside a [WriteAttempt] for
+     * [reportWrite] and [flushWriteOutcomes], which reports the cycle's creates and cancels together in one call.
      */
     private suspend fun runCancel(
         directive: Directive,
