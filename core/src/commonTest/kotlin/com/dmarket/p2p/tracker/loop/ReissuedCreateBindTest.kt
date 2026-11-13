@@ -358,6 +358,21 @@ class ReissuedCreateBindTest {
     }
 
     @Test
+    fun the_creates_of_one_cycle_share_one_read() = runTest {
+        // Three deals, two partners: two chains, one of them with two creates.
+        fun deal(n: Int, to: String) = """{"directiveId":"dir-$n","action":"create_offer","dealId":"deal-$n",
+               "partnerSteamId":"$to","assetIds":["x$n"],"tradeToken":"tok","contextId":2}"""
+        directive = listOf(deal(1, partner), deal(2, partner), deal(3, "76561198000000003")).joinToString(",")
+        sentOffers = listOf("9:$partnerAccountId:x2:bound-x2")
+
+        loop().runOnce()
+
+        assertEquals(1, log.count { it == "read" }, "$log")
+        assertEquals(2, log.count { it == "create" }, "$log")
+        assertEquals(setOf("bound-x2/needs_confirmation", "new-offer/needs_confirmation"), reported.toSet())
+    }
+
+    @Test
     fun the_read_asks_for_active_offers_and_those_changed_since_the_lease_before_this_one() = runTest {
         directive = create(""","leaseDuration":"300s"""")
 

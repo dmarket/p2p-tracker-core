@@ -309,8 +309,19 @@ private sealed interface ClaimEnd {
     data class Held(val unanswered: UnansweredCreate) : ClaimEnd
 }
 
-/** What one cycle's creates bind against: [cancelling] are the offers that cycle's `cancel_offer`s target. */
-private class CreateBindScope(val cancelling: Set<OfferId>)
+/**
+ * What one cycle's [creates] bind against: [cancelling] are the offers that cycle's `cancel_offer`s target, and
+ * [sentOffers] is the account's sent offers, read once for every chain of the cycle. An offer a create of the same cycle
+ * makes is not in it, and needs not be: that deal's claim already stops a second create for it.
+ */
+private class CreateBindScope(val creates: List<Directive>, val cancelling: Set<OfferId>) {
+    private val mutex = Mutex()
+    private var read: Result<List<SteamSentOffer>>? = null
+
+    /** The cycle's one read: [load] runs for the first caller, every later one gets its result, failure included. */
+    suspend fun sentOffers(load: suspend () -> Result<List<SteamSentOffer>>): Result<List<SteamSentOffer>> =
+        mutex.withLock { read ?: load().also { read = it } }
+}
 
 /** [ClaimEnd.Completed] for a real write's outcome, [ClaimEnd.Released] when there is none. */
 private fun DirectiveOutcome?.claimEnd(): ClaimEnd = this?.let(ClaimEnd::Completed) ?: ClaimEnd.Released
@@ -2160,6 +2171,7 @@ class TradeTrackerLoop(
      * nothing is created. [Result.success] of `null`: no
      * such offer, or no read to make (no [leaseClock]: web and headless run as before). A failed read is a
      * [Result.failure]: the caller creates nothing this cycle, and the read runs again when the directive is served again.
+     * The read is the cycle's one ([CreateBindScope.sentOffers]), made by the first create that gets here.
      */
     private suspend fun boundOffer(
         directive: Directive,
@@ -2169,7 +2181,18 @@ class TradeTrackerLoop(
         bind: CreateBindScope,
     ): Result<CreateOfferResult?> {
         val lease = leaseClock ?: return Result.success(null)
-        return runCatching { steamReader.sentOffers(credential, bindCutoff(directive, lease)) }.map { offers ->
+        val read = bind.sentOffers {
+            // One read covers every create of the cycle, so it reaches back to the earliest cutoff among them.
+            val cutoff = (bind.creates + directive).minOf { bindCutoff(it, lease) }
+            runCatching { steamReader.sentOffers(credential, cutoff) }.onFailure {
+                // Once per cycle, into the throttle before anything awaits, as a refused POST is: chains re-gate on
+                // every step.
+                recordBindReadFailure(partner, it)
+                emitIfRateLimited(it)
+                emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
+            }
+        }
+        return read.map { offers ->
             val excluded = offersOfOtherDeals(directive.dealId, tracking) + bind.cancelling
             CreateOfferMatch.bindable(offers, partner, directive.assetIds.toSet(), excluded)?.createResult()
         }
@@ -2304,7 +2327,7 @@ class TradeTrackerLoop(
         // per directive by contract.
         val attempts = mutableListOf<WriteAttempt>()
         // Creates run before cancels: an offer a cancel of this cycle targets is another deal's, never one to bind.
-        val bind = CreateBindScope(cancelling = plan.cancels.mapNotNullTo(mutableSetOf()) { it.steamOfferId })
+        val bind = CreateBindScope(plan.creates, cancelling = plan.cancels.mapNotNullTo(mutableSetOf()) { it.steamOfferId })
         attempts += executeCreateChains(plan.creates, credential, heartbeat.linkedSteamId, tracking, bind)
         plan.cancels.forEach { attempts += reportWrite(runCancel(it, credential, heartbeat.linkedSteamId, tracking)) }
         done += flushWriteOutcomes(attempts)
@@ -2885,10 +2908,6 @@ class TradeTrackerLoop(
             directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
             // An unread offer list is no proof there is no offer: creating now could make the deal's second one.
             val bound = boundOffer(directive, partner, credential, activeTracking, bind).getOrElse {
-                // Into the throttle before anything awaits, as a refused POST is: sibling chains re-gate on every step.
-                recordBindReadFailure(partner, it)
-                emitIfRateLimited(it)
-                emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
                 emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))
                 return@withDealClaim WriteAttempt(stopChain = true, reason = BIND_READ_FAILED_DROP_REASON) to ClaimEnd.Released
