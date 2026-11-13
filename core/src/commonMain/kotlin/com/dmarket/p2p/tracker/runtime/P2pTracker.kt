@@ -16,7 +16,6 @@ import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
-import com.dmarket.p2p.tracker.port.host.SteamCookieVault
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -79,10 +78,8 @@ import kotlin.time.Instant
  * @param random the draws behind the 429 backoff's jitter.
  * @param clearAccountState what [onLogout] erases: the account's state, the Steam credential and the Steam session's
  *   cookies, never the device id.
- * @param steamCookies the core's vault of Steam session cookies (mobile), which [importSteamSession] fills; `null` when
- *   the host keeps the session itself.
- * @param clearSteamCredential drops the token scraped from the previous session when [importSteamSession] brings a new
- *   one.
+ * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
+ *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -98,8 +95,7 @@ class P2pTracker(
     random: Random = Random.Default,
     private val deliveryTimeout: Duration = DEFAULT_DELIVERY_TIMEOUT,
     private val clearAccountState: suspend () -> Unit = {},
-    private val steamCookies: SteamCookieVault? = null,
-    private val clearSteamCredential: suspend () -> Unit = {},
+    private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -206,31 +202,22 @@ class P2pTracker(
 
     /**
      * The app's user signed in to Steam in the app (`steamSignedIn`): [cookies] become the Steam session, in place of
-     * whatever the vault held. Only the cookies of `steamcommunity.com`, `store.steampowered.com` and
-     * `login.steampowered.com` are kept. Call it once per sign-in, never on start: the web view's store keeps the
-     * `steamLoginSecure` the core has since refreshed in the vault, and a second import would put the stale one back.
+     * whatever the vault held ([MobileTrackerPlatform.importSteamSession]). A host calls
+     * [MobileTracker.importSteamSession], which comes here once the tracker is built; see the contract there.
      *
-     * Drops the token scraped from the previous session and forces the next cycle's heartbeat, so the account binding is
-     * judged again on the new session. Returns the session's state, or `null` when no loop runs (it is read on start).
+     * With a loop running, the import waits for its cycle and forces the next cycle's heartbeat, so the account binding
+     * is judged again on the new session. Returns the session's state, or `null` when no loop runs: the vault is written
+     * all the same, and the first cycle after the start reads it.
      */
     suspend fun importSteamSession(cookies: List<SteamCookie>): SteamWebSessionState? {
-        val vault = steamCookies ?: return null
-        val kept = cookies.mapNotNull { cookie ->
-            val domain = cookie.domain.trim().trimStart('.').lowercase()
-            cookie.copy(domain = domain, path = cookie.path.ifBlank { "/" })
-                .takeIf { domain in SteamCookie.SESSION_DOMAINS && cookie.name.isNotBlank() && cookie.value.isNotEmpty() }
-        }
+        val import = importSteamCookies ?: return null
         val s = session?.takeIf { it.job.isActive }
-        val write: suspend () -> Unit = {
-            vault.writeSteamCookies(kept)
-            clearSteamCredential()
-        }
         if (s == null) {
-            write()
+            import(cookies)
             return null
         }
         return s.cycleLock.withLock {
-            write()
+            import(cookies)
             s.loop.forceHeartbeatNow()
             publishSteamSession(s)
         }
@@ -406,7 +393,7 @@ class P2pTracker(
         loop.mode = modeOf(foreground)
         val s = Session(account, loop)
         session = s
-        mutableState.value = TrackerState(running = true, foreground = foreground, account = account)
+        mutableState.value = TrackerState(running = true, foreground = foreground, account = account).withSteamSessionFromBlock()
         if (foreground) s.driver = s.scope.launch { drive(s) }
         return s
     }
@@ -501,7 +488,7 @@ class P2pTracker(
     /** Reads [s]'s Steam session state into [state]; under [s]'s cycle lock. */
     private suspend fun publishSteamSession(s: Session): SteamWebSessionState {
         val steamSession = s.loop.steamSessionState()
-        mutableState.update { it.copy(steamSession = steamSession) }
+        mutableState.update { it.copy(steamSession = steamSession).withSteamSessionFromBlock() }
         return steamSession
     }
 
@@ -524,7 +511,7 @@ class P2pTracker(
                     }
                     if (checked != null) deal.copy(checkedAt = checked) else deal
                 },
-            )
+            ).withSteamSessionFromBlock()
         }
     }
 

@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.loop
 
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.model.RuntimeSurface
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -68,8 +69,8 @@ import kotlin.time.Duration.Companion.seconds
  *   Defaults to one retry after 2 s.
  * @param steamSessionInVault The Steam session lives in the core's own cookie vault (mobile), so its cookie is the whole
  *   truth about whose session it is. Two effects. The wrong-account guard runs before the credential is acquired: when
- *   the session belongs to another account than the last heartbeat's `linkedSteamId` (or is still the account a
- *   previous verdict named), the cycle sends no Steam request at all (no scrape, refresh, mint, re-check, read, write
+ *   the session belongs to another account than the last heartbeat's `linkedSteamId` (before one, [hostLinkedSteamId];
+ *   without either, the account a previous verdict named), the cycle sends no Steam request at all (no scrape, refresh, mint, re-check, read, write
  *   or proof) and only heartbeats with the session's steamid. And the heartbeat carries the session's state
  *   (`steamSession`, ahead of the contract). `false` (web, headless): neither.
  * @param reportEachWrite Each `create_offer` / `cancel_offer` is reported on `/trade-actions` in a call of its own right
@@ -77,6 +78,11 @@ import kotlin.time.Duration.Companion.seconds
  *   the backend has not heard of keeps its lease held). An accepted report is pruned at once and left out of the
  *   cycle's batch; one that was refused or lost to the network goes in that batch again, and after that its stored
  *   outcome waits for the re-lease, as before. `false` (web, headless): one batch per cycle.
+ * @param hostLinkedSteamId The Steam account the host says its user links (mobile: the app's `linkedAccount()`, the
+ *   account this loop serves). Only with [steamSessionInVault]: until a heartbeat names `linkedSteamId`, the
+ *   wrong-account guard and the session's state judge the vault's session against this account, so a session imported
+ *   for another account before the start sends nothing to Steam on the first cycle either. The heartbeat's value
+ *   replaces it once one comes back. `null` (web, headless): the first cycle waits for the heartbeat, as before.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -95,4 +101,5 @@ data class LoopConfig(
     val createDirectiveRetryDelays: List<Duration> = listOf(2.seconds),
     val steamSessionInVault: Boolean = false,
     val reportEachWrite: Boolean = false,
+    val hostLinkedSteamId: SteamId? = null,
 )

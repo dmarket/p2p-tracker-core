@@ -20,13 +20,16 @@ import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.host.Scheduler
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlin.concurrent.Volatile
 import kotlin.time.Duration
 
 /**
@@ -60,7 +63,7 @@ private object NoWakeScheduler : Scheduler {
  * contract.
  *
  * The Steam session lives in the core's vault ([MobileTrackerPlatform.steamCookies]): imported once after a Steam
- * sign-in ([P2pTracker.importSteamSession]), sent from there in an explicit `Cookie` header, refreshed from
+ * sign-in ([importSteamSession]), sent from there in an explicit `Cookie` header, refreshed from
  * `steamRefresh_steam` and written back. The loop runs the directives the backend leases; the offer writes
  * (`create_offer` / `cancel_offer`) go out on that session ([HeaderSessionSteamOfferCreator] /
  * [HeaderSessionSteamOfferCanceller] over the vault) only with [steamWrites] on.
@@ -85,6 +88,28 @@ class MobileTracker(
     private val steamWrites: Boolean = false,
     private val reportUnsentCreates: Boolean = true,
 ) {
+    /** The tracker [tracker] built last; the host's [importSteamSession] goes through it once there is one. */
+    @Volatile private var built: P2pTracker? = null
+
+    /**
+     * The host's Steam import, the same on Android and iOS. **Contract:** the host calls it right after its user signs
+     * in to Steam in the app (a Steam sign-in to DMarket included), whatever the tracker's state: not built yet, built
+     * and stopped, or running. Never on start or on coming on screen: the web view keeps the `steamLoginSecure` the core
+     * has since refreshed in the vault, and a second import would put the stale one back. Android reads [cookies] from
+     * the WebView's `CookieManager` (`AndroidTracker.importSteamSession()`); iOS reads them from `WKHTTPCookieStore`
+     * (DMA-715) and calls this same point.
+     *
+     * The vault is written in every case ([MobileTrackerPlatform.importSteamSession]). With a tracker built, it goes
+     * through [P2pTracker.importSteamSession]: a running loop also heartbeats and publishes the session's state, which
+     * is returned. Otherwise `null`; the first cycle after the start reads the vault and publishes
+     * [TrackerState.steamSession].
+     */
+    suspend fun importSteamSession(cookies: List<SteamCookie>): SteamWebSessionState? {
+        built?.let { return it.importSteamSession(cookies) }
+        platform.importSteamSession(cookies)
+        return null
+    }
+
     /**
      * A new [P2pTracker] in [scope]. The loop is never scheduled: the tracker drives it, on screen by polling and in
      * the background only on a push. [P2pTracker.onLogout] erases the account state and the Steam credential.
@@ -130,6 +155,7 @@ class MobileTracker(
                     steamWrites = steamWrites,
                     reportUnsentCreates = reportUnsentCreates,
                     steamSessionInVault = true,
+                    hostLinkedSteamId = account,
                     reportEachWrite = true,
                 ),
                 marketplace = marketplace,
@@ -165,8 +191,7 @@ class MobileTracker(
             cellularProofs = cellularProofs,
             eventObserver = eventObserver,
             clearAccountState = platform::clearAccountState,
-            steamCookies = platform.steamCookies,
-            clearSteamCredential = platform.vault::clearSteamCredential,
-        )
+            importSteamCookies = platform::importSteamSession,
+        ).also { built = it }
     }
 }

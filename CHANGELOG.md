@@ -27,8 +27,8 @@ GitHub Release.
 - Android: `P2pTracker.acceptDeal(dealId)` syncs, then accepts the deal; it returns `AcceptOutcome` with the backend's `DealActionResult`, the `TrackerBlock` that kept it from being sent, or a `DealCallError` with the HTTP status and the P2P code (DMA-661).
 - `P2pTracker.onLogout()` stops the tracker and erases the Steam credential and the account's state; the device id stays. Call it when the user logs out of DMarket (DMA-661).
 - Android: `P2pTracker.getDeal(dealId)` returns the deal as `DealRead`. `Deal` gains `cancellable`, `nextAction`, `createOffer`, `cancelFee`, `cancelFeeEndTime` and `counterparty` (DMA-661).
-- Android: the Steam session lives in the core's vault. Call `AndroidTracker.importSteamSession()` right after the user signs in to Steam in the app's WebView, never on start; `P2pTracker.checkSteamSession()` renews the session from the vault for ON_START, and `onLogout()` erases it (DMA-662).
-- `TrackerState.steamSession` reports the Steam session as `ALIVE`, `NEEDS_REFRESH`, `GONE` or `OTHER_ACCOUNT`; on `OTHER_ACCOUNT` the tracker sends no request to Steam (DMA-662).
+- Android: the Steam session lives in the core's vault. Call `AndroidTracker.importSteamSession()` right after the user signs in to Steam in the app's WebView, a Steam sign-in to DMarket included, once `install(...)` ran and whether or not the tracker is built, never on start; `MobileTracker.importSteamSession(cookies)` is the same call for other hosts. `P2pTracker.checkSteamSession()` renews the session from the vault for ON_START, and `onLogout()` erases it (DMA-662).
+- `TrackerState.steamSession` reports the Steam session as `ALIVE`, `NEEDS_REFRESH`, `GONE` or `OTHER_ACCOUNT`; on `OTHER_ACCOUNT` the tracker sends no request to Steam. Read the session's state from this field alone, not combined with `block` (DMA-662).
 - Android: the tracker runs the directives the backend leases, and creates and cancels Steam offers on the session in its vault when `AndroidTracker.install(steamWrites = true)`. `steamWrites` is off by default; `reportUnsentCreates` sets whether a create that never reached Steam is reported `failed` (DMA-662).
 
 ### Changed

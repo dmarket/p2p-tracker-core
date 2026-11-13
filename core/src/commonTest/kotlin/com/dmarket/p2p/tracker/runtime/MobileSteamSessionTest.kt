@@ -20,6 +20,7 @@ import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
+import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
@@ -47,6 +48,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -119,13 +121,19 @@ class MobileSteamSessionTest {
     private val platform = Platform()
     private val marketplace = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60, linkedSteamId = alice))
 
-    private fun TestScope.tracker(steamWrites: Boolean = false): P2pTracker = MobileTracker(
+    /** The Steam account the app says its user links. */
+    private var linked = alice
+
+    private fun TestScope.mobile(steamWrites: Boolean = false): MobileTracker = MobileTracker(
         platform.also { it.dispatcher = StandardTestDispatcher(testScheduler) },
-        linkedAccount = { alice },
+        linkedAccount = { linked },
         cellularProofs = { false },
         hostMarketplaceClient = MarketplaceClientFactory { _, _, _, _ -> marketplace },
         steamWrites = steamWrites,
-    ).tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
+    )
+
+    private fun TestScope.tracker(steamWrites: Boolean = false, mobile: MobileTracker = mobile(steamWrites)): P2pTracker =
+        mobile.tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
 
     private fun loginSecure(owner: SteamId, left: Duration) = "${owner.value}%7C%7C${steamAccessToken(owner.value, clock.now() + left)}"
 
@@ -329,5 +337,77 @@ class MobileSteamSessionTest {
         assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.state.value.steamSession)
         assertEquals(emptyList(), steamRequests.map { "${it.method.value} ${it.url.host}${it.url.encodedPath}" })
         assertEquals(CreateOfferResult.AccountMismatch(alice, bob), delivery.result)
+    }
+
+    @Test
+    fun anImportBeforeTheTrackerIsBuiltIsReadByTheFirstCycleAfterTheStart() = runTest {
+        val mobile = mobile()
+        platform.vault.writeSteamCredential(SteamCredential("old-token", alice, clock.now() + 20.hours))
+
+        assertNull(mobile.importSteamSession(session(alice)), "no tracker: the vault is written, no state to give")
+        assertEquals(
+            setOf("steamcommunity.com", "store.steampowered.com", "login.steampowered.com"),
+            platform.steamCookies.readSteamCookies().map {
+                it.domain
+            }.toSet(),
+        )
+        assertNull(platform.vault.readSteamCredential(), "the previous session's token is dropped")
+
+        val tracker = tracker(mobile = mobile)
+        assertTrue(tracker.start())
+        assertNull(tracker.state.value.steamSession, "running, not read yet, nothing blocks")
+        tracker.onPush(push)
+
+        assertEquals(SteamWebSessionState.ALIVE, tracker.state.value.steamSession)
+        assertEquals(TrackerBlock.NONE, tracker.state.value.block)
+        assertEquals(SteamWebSessionState.ALIVE, marketplace.heartbeatsSent.last().steamSession)
+    }
+
+    @Test
+    fun anImportOfAnotherAccountBeforeTheStartSendsNoSteamRequestOnTheFirstCycle() = runTest {
+        val mobile = mobile()
+        mobile.importSteamSession(session(bob))
+        val tracker = tracker(mobile = mobile)
+
+        tracker.onPush(push)
+
+        assertEquals(emptyList(), steamRequests.map { "${it.url.host}${it.url.encodedPath}" })
+        assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.state.value.steamSession)
+        assertEquals(TrackerBlock.STEAM_ACCOUNT_MISMATCH, tracker.state.value.block)
+        assertEquals(bob, marketplace.heartbeatsSent.single().steamId)
+        assertEquals(SteamWebSessionState.OTHER_ACCOUNT, marketplace.heartbeatsSent.single().steamSession)
+    }
+
+    @Test
+    fun logoutErasesASessionImportedBeforeTheStart() = runTest {
+        val mobile = mobile()
+        mobile.importSteamSession(session(alice))
+        val tracker = tracker(mobile = mobile)
+
+        tracker.onLogout()
+
+        assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
+    }
+
+    @Test
+    fun anotherLinkedAccountKeepsTheVaultAndTheGuardReadsOtherAccount() = runTest {
+        val tracker = tracker()
+        tracker.importSteamSession(session(alice))
+        tracker.onPush(push)
+        assertEquals(SteamWebSessionState.ALIVE, tracker.state.value.steamSession)
+        val vault = platform.steamCookies.readSteamCookies()
+
+        // The DMarket user now links bob: his loop opens his own stores, the Steam session stays alice's.
+        linked = bob
+        marketplace.heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, linkedSteamId = bob)
+        steamRequests.clear()
+        assertTrue(tracker.start())
+        tracker.onPush(push)
+
+        assertEquals(bob, tracker.state.value.account)
+        assertEquals(vault, platform.steamCookies.readSteamCookies(), "storageFor another account leaves the vault")
+        assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.state.value.steamSession)
+        assertEquals(TrackerBlock.STEAM_ACCOUNT_MISMATCH, tracker.state.value.block)
+        assertEquals(emptyList(), steamRequests.map { "${it.url.host}${it.url.encodedPath}" })
     }
 }

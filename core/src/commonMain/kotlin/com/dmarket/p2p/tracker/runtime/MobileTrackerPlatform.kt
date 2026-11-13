@@ -92,6 +92,7 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
 
     private val mutex = Mutex()
     private val ids by lazy { PersistedDeviceIdStore(sealedStore) }
+    private val sealedCookies by lazy { SealedSteamCookieVault(sealedStore) }
 
     /** The Steam credential. Each call settles the install first, like [deviceIds]. */
     val vault: CredentialVault = object : CredentialVault {
@@ -107,13 +108,22 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
      * sign-in, the only source of Steam cookies. Each call settles the install first, like [vault].
      */
     val steamCookies: SteamCookieVault = object : SteamCookieVault {
-        private val sealed by lazy { SealedSteamCookieVault(sealedStore) }
+        override suspend fun readSteamCookies(): List<SteamCookie> = inInstall { sealedCookies.readSteamCookies() }
 
-        override suspend fun readSteamCookies(): List<SteamCookie> = inInstall { sealed.readSteamCookies() }
+        override suspend fun writeSteamCookies(cookies: List<SteamCookie>) = inInstall { sealedCookies.writeSteamCookies(cookies) }
 
-        override suspend fun writeSteamCookies(cookies: List<SteamCookie>) = inInstall { sealed.writeSteamCookies(cookies) }
+        override suspend fun clearSteamCookies() = inInstall { sealedCookies.clearSteamCookies() }
+    }
 
-        override suspend fun clearSteamCookies() = inInstall { sealed.clearSteamCookies() }
+    /**
+     * The import that follows a Steam sign-in in the app, whether or not a tracker is built or runs: the cookies of
+     * `steamcommunity.com`, `store.steampowered.com` and `login.steampowered.com` ([SteamCookie.SESSION_DOMAINS]) replace
+     * whatever [steamCookies] held, and the Steam credential scraped from the previous session is dropped. Both in one
+     * step of the install. A host calls [MobileTracker.importSteamSession], which comes here.
+     */
+    suspend fun importSteamSession(cookies: List<SteamCookie>) = inInstall {
+        sealedCookies.writeSteamCookies(sessionCookies(cookies))
+        sealedVault.clearSteamCredential()
     }
 
     /** The install's device id; another install gets a new one. */
@@ -193,6 +203,13 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     private companion object {
         const val ACTIVE_ACCOUNT = "active_account"
         val STEAM_ID_64 = Regex("^[0-9]{1,20}$")
+
+        /** The session hosts' cookies, each on its bare host (no leading dot, lower case), a blank path read as `/`. */
+        fun sessionCookies(cookies: List<SteamCookie>): List<SteamCookie> = cookies.mapNotNull { cookie ->
+            val domain = cookie.domain.trim().trimStart('.').lowercase()
+            cookie.copy(domain = domain, path = cookie.path.ifBlank { "/" })
+                .takeIf { domain in SteamCookie.SESSION_DOMAINS && cookie.name.isNotBlank() && cookie.value.isNotEmpty() }
+        }
     }
 }
 

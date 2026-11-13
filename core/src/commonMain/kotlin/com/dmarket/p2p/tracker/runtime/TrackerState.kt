@@ -17,11 +17,15 @@ import kotlin.time.Instant
  * @property block the one reason the tracker is blocked, by [TrackerBlock]'s precedence.
  * @property linkedSteamId the Steam account the last heartbeat named as linked to the DMarket account.
  * @property accountMismatch whether that account and the Steam token's disagree; every Steam request stops.
- * @property steamSession the state of the Steam session in the core's vault, read after every cycle, import and check:
+ * @property steamSession the state of the Steam session in the core's vault, and the one field the app reads for it on
+ *   Android and iOS (never combined with [block]). Read after every cycle, import and check:
  *   [SteamWebSessionState.ALIVE], [SteamWebSessionState.NEEDS_REFRESH] (renewed on the next cycle or check),
  *   [SteamWebSessionState.GONE] (sign in to Steam again, T-20) or [SteamWebSessionState.OTHER_ACCOUNT] (the session or
  *   the token belongs to another account than the linked one; no Steam request goes out). Ranked like [block]: a gone
- *   session reads `GONE` whoever it belonged to. `null` while no loop runs.
+ *   session reads `GONE` whoever it belonged to. While a loop runs and the session is not read yet, it says what [block]
+ *   says of the session: [TrackerBlock.STEAM_SESSION_MISSING] reads `GONE`, [TrackerBlock.STEAM_ACCOUNT_MISMATCH] reads
+ *   `OTHER_ACCOUNT`, any other block `null`. `null` while no loop runs. An import before the start (even before the
+ *   tracker is built) is read by the first cycle after it.
  * @property lastSyncAt when the last heartbeat came back.
  * @property deals per tracked deal; a deal the last heartbeat no longer tracks is dropped.
  */
@@ -36,6 +40,19 @@ data class TrackerState(
     val lastSyncAt: Instant? = null,
     val deals: Map<DealId, DealTrackingState> = emptyMap(),
 )
+
+/** This state with [TrackerState.steamSession] filled from [TrackerState.block] while a loop runs and it is not read yet. */
+internal fun TrackerState.withSteamSessionFromBlock(): TrackerState = if (!running || steamSession != null) {
+    this
+} else {
+    copy(
+        steamSession = when (block) {
+            TrackerBlock.STEAM_SESSION_MISSING -> SteamWebSessionState.GONE
+            TrackerBlock.STEAM_ACCOUNT_MISMATCH -> SteamWebSessionState.OTHER_ACCOUNT
+            else -> null
+        },
+    )
+}
 
 /**
  * One deal as the tracker last saw it.

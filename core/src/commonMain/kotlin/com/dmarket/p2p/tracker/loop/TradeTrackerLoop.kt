@@ -1647,13 +1647,13 @@ class TradeTrackerLoop(
     /**
      * The steamid of a session the core holds itself that belongs to another account, or `null`: the session is the
      * linked account's, the binding is unknown, or the core does not hold the session ([LoopConfig.steamSessionInVault]
-     * off). With no `linkedSteamId` known yet (a new process) a session still naming the account of the persisted
-     * verdict counts. One cookie read, no network.
+     * off). With no `linkedSteamId` known yet (a new process) the host's account ([expectedSteamId]) stands in, and
+     * without that a session still naming the account of the persisted verdict counts. One cookie read, no network.
      */
     private suspend fun otherAccountSession(): SteamId? {
         if (!config.steamSessionInVault) return null
         val session = credentials.sessionSteamId() ?: return null
-        val linked = lastLinkedSteamId
+        val linked = expectedSteamId
         val other = if (linked != null) {
             credentials.sessionState(linked) == SteamWebSessionState.OTHER_ACCOUNT
         } else {
@@ -1683,6 +1683,13 @@ class TradeTrackerLoop(
     }
 
     /**
+     * The account the vault's session must belong to: the last heartbeat's `linkedSteamId`, else the host's
+     * ([LoopConfig.hostLinkedSteamId], with [LoopConfig.steamSessionInVault] only).
+     */
+    private val expectedSteamId: SteamId?
+        get() = lastLinkedSteamId ?: config.hostLinkedSteamId?.takeIf { config.steamSessionInVault }
+
+    /**
      * The Steam session's state as the app shows it (`TrackerState.steamSession`) and the mobile heartbeat sends it,
      * ranked like [TrackerBlock]: a session that is gone reads [SteamWebSessionState.GONE] whoever it belonged to;
      * otherwise a wrong-account verdict ([linkedSteamIdMismatch]) or a session not the linked account's reads
@@ -1690,7 +1697,7 @@ class TradeTrackerLoop(
      * session was imported since) does not count: the next cycle judges the new one. No network.
      */
     suspend fun steamSessionState(): SteamWebSessionState {
-        val state = credentials.sessionState(lastLinkedSteamId)
+        val state = credentials.sessionState(expectedSteamId)
         if (state == SteamWebSessionState.GONE || state == SteamWebSessionState.OTHER_ACCOUNT) return state
         val verdict = mismatchTokenSteamId ?: return state
         val replaced = config.steamSessionInVault && credentials.sessionSteamId()?.let { it != verdict } == true

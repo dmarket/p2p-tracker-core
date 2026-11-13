@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.client.marketplace.androidMarketplaceClient
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -60,9 +61,28 @@ object AndroidTracker {
         clientVersion: String = TradeTrackerCore.VERSION,
         steamWrites: Boolean = false,
         reportUnsentCreates: Boolean = true,
+    ) = install(
+        AndroidTrackerPlatform(context, tokens),
+        linkedAccount,
+        cellularProofs,
+        hostOkHttp,
+        clientVersion,
+        steamWrites,
+        reportUnsentCreates,
+    )
+
+    /** [install] over a ready [platform]; host tests build it over fake prefs and a fake Keystore. */
+    internal fun install(
+        platform: MobileTrackerPlatform,
+        linkedAccount: suspend () -> SteamId?,
+        cellularProofs: () -> Boolean,
+        hostOkHttp: OkHttpClient? = null,
+        clientVersion: String = TradeTrackerCore.VERSION,
+        steamWrites: Boolean = false,
+        reportUnsentCreates: Boolean = true,
     ) {
         installation = MobileTracker(
-            platform = AndroidTrackerPlatform(context, tokens),
+            platform = platform,
             linkedAccount = linkedAccount,
             cellularProofs = cellularProofs,
             clientVersion = clientVersion,
@@ -77,12 +97,18 @@ object AndroidTracker {
     }
 
     /**
-     * The app's user just signed in to Steam in the app's WebView (`steamSignedIn`): the WebView's Steam cookies become
-     * the core's Steam session ([P2pTracker.importSteamSession]). Call it after that sign-in only, never on start: the
-     * WebView keeps the `steamLoginSecure` the core has since refreshed in its vault. Returns the session's state, or
-     * `null` before [startTracker] or while no loop runs.
+     * The app's user just signed in to Steam in the app's WebView (`steamSignedIn`, a Steam sign-in to DMarket
+     * included): the WebView's Steam cookies become the core's Steam session ([MobileTracker.importSteamSession], whose
+     * contract this follows). Call it right after that sign-in, whether or not the tracker is built or runs; never on
+     * start: the WebView keeps the `steamLoginSecure` the core has since refreshed in its vault.
+     *
+     * After [install] the vault is always written. Returns the session's state when a loop runs, else `null` (the first
+     * cycle after the start reads it); before [install], `null` and nothing is read or written.
      */
-    suspend fun importSteamSession(): SteamWebSessionState? = tracker?.importSteamSession(WebViewSteamCookies().read())
+    suspend fun importSteamSession(): SteamWebSessionState? = importSteamSession { WebViewSteamCookies().read() }
+
+    /** [importSteamSession] over [read]; the WebView is read only once [install] ran. */
+    internal suspend fun importSteamSession(read: () -> List<SteamCookie>): SteamWebSessionState? = installation?.importSteamSession(read())
 
     /** The tracker, built on the first call; later calls return the same one, whatever they pass. */
     internal fun trackerFor(
