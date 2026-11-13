@@ -226,18 +226,22 @@ class AndroidTrackerPlatformTest {
             val onDisk = disk.copy().files
 
             val fault = keystore.fail()
-            assertSame<Throwable>(fault, assertFails { platform.deviceIds.current() })
-            assertSame<Throwable>(fault, assertFails { platform.vault.readSteamCredential() })
-            assertSame<Throwable>(fault, assertFails { platform.vault.writeSteamCredential(credential) })
-            assertSame<Throwable>(fault, assertFails { platform.stores(alice) })
+            // The running process settled its install: the device id is in memory.
+            assertEquals(deviceId, platform.deviceIds.current())
+            // A new process settles it on the Keystore.
+            val restarted = platform(disk, keystore)
+            assertSame<Throwable>(fault, assertFails { restarted.deviceIds.current() })
+            assertSame<Throwable>(fault, assertFails { restarted.vault.readSteamCredential() })
+            assertSame<Throwable>(fault, assertFails { restarted.vault.writeSteamCredential(credential) })
+            assertSame<Throwable>(fault, assertFails { restarted.stores(alice) })
             assertEquals(onDisk, disk.files)
             assertSame(key, keystore.key)
 
             keystore.entryFailure = null
             keystore.initFailure = null
-            assertEquals(deviceId, platform.deviceIds.current())
-            assertEquals(credential, platform.vault.readSteamCredential())
-            assertEquals(setOf(DirectiveId("directive-1")), platform.stores(alice).progress.loadHandledDirectives())
+            assertEquals(deviceId, restarted.deviceIds.current())
+            assertEquals(credential, restarted.vault.readSteamCredential())
+            assertEquals(setOf(DirectiveId("directive-1")), restarted.stores(alice).progress.loadHandledDirectives())
         }
     }
 

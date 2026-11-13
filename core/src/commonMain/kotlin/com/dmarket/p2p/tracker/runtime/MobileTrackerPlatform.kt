@@ -48,7 +48,8 @@ import kotlinx.coroutines.sync.withLock
  *
  * **Install scope.** The device id, the Steam credential and the Steam session's cookies belong to one install on one device ([installMarker]). On
  * another install (a fresh one, a reinstall, a restore or a transfer) the device id is made anew, the vault reads
- * empty, and the state that came along with them is erased before anything reads it.
+ * empty, and the state that came along with them is erased before anything reads it. The install is settled once per
+ * process, on the first call that needs it; a new process reads it from disk again.
  *
  * **Account scope.** State belongs to one Steam account at a time. [storageFor] another account erases the previous
  * one's state first, and [clearAccountState] (logout) erases it with the Steam credential and cookies, so a new account always
@@ -99,6 +100,12 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     private val ids by lazy { PersistedDeviceIdStore(sealedStore) }
     private val sealedCookies by lazy { SealedSteamCookieVault(sealedStore) }
 
+    /** The install's device id once settled in this process; under [mutex]. */
+    private var installId: DeviceId? = null
+
+    /** [sealedCookies] as last read or written in this process (`null` = not read yet); under [mutex], never logged. */
+    private var cookies: List<SteamCookie>? = null
+
     /** The Steam credential. Each call settles the install first, like [deviceIds]. */
     val vault: CredentialVault = object : CredentialVault {
         override suspend fun readSteamCredential(): SteamCredential? = inInstall { sealedVault.readSteamCredential() }
@@ -110,14 +117,17 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
 
     /**
      * The Steam session's cookies, sealed in [sealedStore] next to the device id: after the import that follows a Steam
-     * sign-in, the only source of Steam cookies. Each call settles the install first, like [vault].
+     * sign-in, the only source of Steam cookies. Read from the sealed store once per process and kept in memory, which
+     * every write, import and clear updates under the same lock; each call settles the install first, like [vault].
      */
     val steamCookies: SteamCookieVault = object : SteamCookieVault {
-        override suspend fun readSteamCookies(): List<SteamCookie> = inInstall { sealedCookies.readSteamCookies() }
+        override suspend fun readSteamCookies(): List<SteamCookie> = inInstall {
+            cookies ?: sealedCookies.readSteamCookies().also { cookies = it }
+        }
 
-        override suspend fun writeSteamCookies(cookies: List<SteamCookie>) = inInstall { sealedCookies.writeSteamCookies(cookies) }
+        override suspend fun writeSteamCookies(cookies: List<SteamCookie>) = inInstall { writeCookiesLocked(cookies) }
 
-        override suspend fun clearSteamCookies() = inInstall { sealedCookies.clearSteamCookies() }
+        override suspend fun clearSteamCookies() = inInstall { writeCookiesLocked(emptyList()) }
     }
 
     /**
@@ -127,7 +137,7 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
      * step of the install. A host calls [MobileTracker.importSteamSession], which comes here.
      */
     suspend fun importSteamSession(cookies: List<SteamCookie>) = inInstall {
-        sealedCookies.writeSteamCookies(sessionCookies(cookies))
+        writeCookiesLocked(sessionCookies(cookies))
         sealedVault.clearSteamCredential()
     }
 
@@ -184,20 +194,29 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
         clearAccountStore()
         installStore.remove(ACTIVE_ACCOUNT)
         sealedVault.clearSteamCredential()
-        sealedStore.remove(SealedSteamCookieVault.KEY)
+        writeCookiesLocked(emptyList())
     }
 
-    /** The device id, made on first use; what another install left is erased before anything reads it. */
-    private suspend fun currentInstallLocked(): DeviceId {
+    /**
+     * The device id, made on first use; what another install left is erased before anything reads it. Settled once per
+     * process: the install does not change while the process runs.
+     */
+    private suspend fun currentInstallLocked(): DeviceId = installId ?: run {
         if (!installMarker.isSameInstall()) {
             clearAccountStore()
             installStore.remove(ACTIVE_ACCOUNT)
             sealedVault.clearSteamCredential()
-            sealedStore.remove(SealedSteamCookieVault.KEY)
+            writeCookiesLocked(emptyList())
             sealedStore.remove(DeviceVaultKeys.DEVICE_ID)
             installMarker.markInstall()
         }
-        return ids.current()
+        ids.current().also { installId = it }
+    }
+
+    /** Seals [value] (none erases the key), then keeps it in memory: a failed write leaves the cache as it was. */
+    private suspend fun writeCookiesLocked(value: List<SteamCookie>) {
+        sealedCookies.writeSteamCookies(value)
+        cookies = value
     }
 
     private suspend fun <T> inInstall(block: suspend () -> T): T = mutex.withLock {

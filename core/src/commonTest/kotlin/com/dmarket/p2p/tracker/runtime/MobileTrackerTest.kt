@@ -2,7 +2,6 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.MonotonicElapsedClock
 import com.dmarket.p2p.tracker.adapter.host.InMemoryCredentialVault
-import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
@@ -14,6 +13,7 @@ import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
+import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
@@ -57,8 +57,9 @@ class MobileTrackerTest {
     /** A key-value store that can be emptied, as a platform's account store must be. */
     private class FakeStore : DeviceKeyValueStore {
         val entries = mutableMapOf<String, String>()
+        var reads = 0
 
-        override suspend fun get(key: String): String? = entries[key]
+        override suspend fun get(key: String): String? = entries[key].also { reads++ }
 
         override suspend fun set(key: String, value: String) {
             entries[key] = value
@@ -81,18 +82,25 @@ class MobileTrackerTest {
         }
     }
 
-    private class FakePlatform(override val clock: Clock, tokens: MarketplaceTokenSupplier = MarketplaceTokenSupplier { null }) :
-        MobileTrackerPlatform(tokens) {
-        val account = FakeStore()
-        val marker = FakeInstallMarker()
-        val credentials = InMemoryCredentialVault()
+    /** Its storage outlives it: [restarted] is the same device after a process restart. */
+    private class FakePlatform(
+        override val clock: Clock,
+        tokens: MarketplaceTokenSupplier = MarketplaceTokenSupplier { null },
+        val account: FakeStore = FakeStore(),
+        val marker: FakeInstallMarker = FakeInstallMarker(),
+        val credentials: InMemoryCredentialVault = InMemoryCredentialVault(),
+        val install: FakeStore = FakeStore(),
+        val sealed: FakeStore = FakeStore(),
+    ) : MobileTrackerPlatform(tokens) {
+        fun restarted() =
+            FakePlatform(clock, account = account, marker = marker, credentials = credentials, install = install, sealed = sealed)
 
         // The Android actual reads android.os.SystemClock, which the host tests do not stub.
         override val elapsedClock: ElapsedClock = MonotonicElapsedClock()
         override val surface: RuntimeSurface = RuntimeSurface.AndroidNative
         override val network: NetworkConditions = NetworkConditions.Unmetered
-        override val installStore: DeviceKeyValueStore = InMemoryDeviceKeyValueStore()
-        override val sealedStore: DeviceKeyValueStore = InMemoryDeviceKeyValueStore()
+        override val installStore: DeviceKeyValueStore = install
+        override val sealedStore: DeviceKeyValueStore = sealed
         override val sealedVault: CredentialVault = credentials
         override val accountStore: DeviceKeyValueStore = account
         override val installMarker: InstallMarker = marker
@@ -211,17 +219,56 @@ class MobileTrackerTest {
         val deviceId = tracker.deviceId()
         assertEquals(1, platform.marker.marks)
 
-        // A reinstall, or the app's data restored onto another device.
+        // A reinstall, or the app's data restored onto another device: the next process finds it.
         platform.marker.same = false
+        assertEquals(deviceId, tracker.deviceId())
+        val restarted = platform.restarted()
 
-        assertNotEquals(deviceId, tracker.deviceId())
+        assertNotEquals(deviceId, restarted.deviceIds.current())
         assertEquals(2, platform.marker.marks)
         assertNull(platform.credentials.readSteamCredential())
         assertTrue(platform.account.entries.isEmpty())
         // The account stores read empty even for the account they belonged to.
-        val stores = platform.stores(alice)
+        val stores = restarted.stores(alice)
         assertNull(stores.loopState.nextHeartbeatAt())
         assertTrue(stores.progress.loadHandledDirectives().isEmpty())
+    }
+
+    @Test
+    fun steamCookiesAreReadFromTheSealedStoreOncePerProcess() = runTest {
+        val cookie = SteamCookie("steamLoginSecure", "secret", "steamcommunity.com")
+        platform.steamCookies.writeSteamCookies(listOf(cookie))
+        val restarted = platform.restarted()
+        val readsBefore = platform.sealed.reads
+
+        repeat(10) { assertEquals(listOf(cookie), restarted.steamCookies.readSteamCookies()) }
+        // The install check (device id) and the cookies: one read each, then memory.
+        assertEquals(readsBefore + 2, platform.sealed.reads)
+
+        val other = SteamCookie("sessionid", "fresh", "steamcommunity.com")
+        restarted.steamCookies.writeSteamCookies(listOf(other))
+        assertEquals(listOf(other), restarted.steamCookies.readSteamCookies())
+        restarted.importSteamSession(listOf(cookie))
+        assertEquals(listOf(cookie), restarted.steamCookies.readSteamCookies())
+        restarted.steamCookies.clearSteamCookies()
+        assertEquals(emptyList(), restarted.steamCookies.readSteamCookies())
+        restarted.importSteamSession(listOf(cookie))
+        restarted.clearAccountState()
+        assertEquals(emptyList(), restarted.steamCookies.readSteamCookies())
+        assertEquals(readsBefore + 2, platform.sealed.reads)
+        // Every change reached the disk: a new process reads it there.
+        assertEquals(emptyList(), restarted.restarted().steamCookies.readSteamCookies())
+    }
+
+    @Test
+    fun logoutAlsoEmptiesTheCookiesKeptInMemory() = runTest {
+        val tracker = tracker()
+        platform.importSteamSession(listOf(SteamCookie("steamLoginSecure", "secret", "steamcommunity.com")))
+        assertTrue(platform.steamCookies.readSteamCookies().isNotEmpty())
+
+        tracker.onLogout()
+
+        assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
     }
 
     @Test
