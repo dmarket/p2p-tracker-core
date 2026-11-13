@@ -218,6 +218,25 @@ class MobileSteamSessionTest {
     }
 
     @Test
+    fun anExpiredSessionOfAnotherAccountIsNeitherRefreshedNorRead() = runTest {
+        // The linked account changed: its verdict went with the account store, bob's expired session stayed in the vault.
+        platform.steamCookies.writeSteamCookies(session(bob, left = (-1).hours))
+        val tracker = tracker()
+
+        tracker.onPush(push)
+        tracker.updateStatus(DealId("d1"))
+        tracker.startDelivery(DealId("d1"))
+        tracker.checkSteamSession()
+        tracker.onPush(push)
+
+        assertEquals(emptyList(), steamRequests.map { "${it.url.host}${it.url.encodedPath}" })
+        assertEquals(TrackerBlock.STEAM_ACCOUNT_MISMATCH, tracker.state.value.block)
+        // A gone session reads GONE whoever it belonged to: the user signs in again either way.
+        assertEquals(SteamWebSessionState.GONE, tracker.state.value.steamSession)
+        assertEquals(bob, marketplace.heartbeatsSent.last().steamId)
+    }
+
+    @Test
     fun signingBackInAsTheLinkedAccountLiftsTheBlock() = runTest {
         val tracker = tracker()
         tracker.importSteamSession(session(alice))

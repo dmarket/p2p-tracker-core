@@ -1579,7 +1579,7 @@ class TradeTrackerLoop(
         // passed so a session minted for somebody else is not mistaken for recovery either.
         if (acquired == null && credentials.sessionMissing && !steamMintAttemptedSticky && !linkedSteamIdMismatch) {
             setSteamMintAttempted(true)
-            if (credentials.mintSession(lastLinkedSteamId)) acquired = credentials.current()
+            if (credentials.mintSession(expectedSteamId)) acquired = credentials.current()
         }
         steamCredentialUnavailable = acquired == null
         acquired ?: run {
@@ -1675,18 +1675,15 @@ class TradeTrackerLoop(
     /**
      * The steamid of a session the core holds itself that belongs to another account, or `null`: the session is the
      * linked account's, the binding is unknown, or the core does not hold the session ([LoopConfig.steamSessionInVault]
-     * off). With no `linkedSteamId` known yet (a new process) the host's account ([expectedSteamId]) stands in, and
-     * without that a session still naming the account of the persisted verdict counts. One cookie read, no network.
+     * off). Judged on the cookie's steamid whatever its expiry. With no `linkedSteamId` known yet (a new process) the
+     * host's account ([expectedSteamId]) stands in, and without that a session still naming the account of the
+     * persisted verdict counts. One cookie read, no network.
      */
     private suspend fun otherAccountSession(): SteamId? {
         if (!config.steamSessionInVault) return null
         val session = credentials.sessionSteamId() ?: return null
-        val linked = expectedSteamId
-        val other = if (linked != null) {
-            credentials.sessionState(linked) == SteamWebSessionState.OTHER_ACCOUNT
-        } else {
-            session == mismatchTokenSteamId
-        }
+        // The steamid alone, expired or not: an expired session of another account is still not ours to refresh.
+        val other = expectedSteamId?.let { session != it } ?: (session == mismatchTokenSteamId)
         return session.takeIf { other }
     }
 
