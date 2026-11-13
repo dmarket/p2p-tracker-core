@@ -29,6 +29,8 @@ import io.ktor.client.plugins.HttpTimeout
  *   call. Defaults to [NoOpNetworkObserver] (no plugin, zero overhead).
  * @param origin Tags every observed exchange so Steam vs marketplace traffic is never conflated.
  * @param describeTransportCauses see [sanitizeHttpFailures]. Off by default.
+ * @param cookies when set, the client sends the vault's cookies and saves every `Set-Cookie` into it (see
+ *   [createSteamHttpClient]); `null` installs nothing.
  */
 fun createHttpClient(
     engine: HttpClientEngine = platformHttpEngine(),

@@ -8,9 +8,12 @@ import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
+import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
+import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
@@ -149,10 +152,24 @@ class MobileSteamSessionTest {
 
     @Test
     fun anotherAccountsSessionSendsNoSteamRequestAtAll() = runTest {
+        // A watched deal that needs a proof: every Steam read and the proof would run for it on alice's session.
+        marketplace.heartbeatResponse = HeartbeatResponse(
+            ttlSeconds = 60,
+            linkedSteamId = alice,
+            activeTracking = listOf(
+                TrackedDeal(
+                    dealId = DealId("d1"),
+                    steamOfferId = OfferId("7001"),
+                    watch = setOf(WatchTarget.GET_TRADE_OFFER, WatchTarget.GET_TRADE_HISTORY),
+                    proofRequired = true,
+                ),
+            ),
+        )
         val tracker = tracker()
         tracker.importSteamSession(session(alice))
         tracker.onPush(push)
         assertEquals(SteamWebSessionState.ALIVE, tracker.state.value.steamSession)
+        assertTrue(steamRequests.any { it.url.host == "api.steampowered.com" }, "alice's session reads the deal on Steam")
 
         // The user signs in to Steam as bob; DMarket links alice.
         tracker.importSteamSession(session(bob, left = 30.minutes))
