@@ -49,6 +49,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -391,6 +392,33 @@ class MobileSteamSessionTest {
 
         tracker.onLogout()
 
+        assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
+    }
+
+    @Test
+    fun aLogoutWithNoTrackerBuiltErasesTheImportedSessionAndKeepsTheDeviceId() = runTest {
+        val mobile = mobile()
+        val deviceId = platform.deviceIds.current()
+        mobile.importSteamSession(session(alice))
+        platform.vault.writeSteamCredential(SteamCredential("token", alice, clock.now() + 20.hours))
+
+        mobile.onLogout()
+
+        assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
+        assertNull(platform.vault.readSteamCredential())
+        assertEquals(deviceId, platform.deviceIds.current())
+    }
+
+    @Test
+    fun aLogoutWithATrackerBuiltStopsItAndErasesTheSession() = runTest {
+        val mobile = mobile()
+        val tracker = tracker(mobile = mobile)
+        assertTrue(tracker.start())
+        mobile.importSteamSession(session(alice))
+
+        mobile.onLogout()
+
+        assertFalse(tracker.state.value.running)
         assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
     }
 

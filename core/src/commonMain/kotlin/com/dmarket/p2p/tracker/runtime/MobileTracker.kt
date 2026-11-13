@@ -88,7 +88,7 @@ class MobileTracker(
     private val steamWrites: Boolean = false,
     private val reportUnsentCreates: Boolean = true,
 ) {
-    /** The tracker [tracker] built last; the host's [importSteamSession] goes through it once there is one. */
+    /** The tracker [tracker] built last; the host's [importSteamSession] and [onLogout] go through it once there is one. */
     @Volatile private var built: P2pTracker? = null
 
     /**
@@ -108,6 +108,20 @@ class MobileTracker(
         built?.let { return it.importSteamSession(cookies) }
         platform.importSteamSession(cookies)
         return null
+    }
+
+    /**
+     * The host's logout, the same on Android and iOS. **Contract:** the host calls it when its user logs out of DMarket,
+     * whatever the tracker's state: not built yet, built and stopped, or running. [importSteamSession] writes the vault
+     * before any tracker exists, so only this point is sure to erase what it wrote.
+     *
+     * With a tracker built it is [P2pTracker.onLogout] (stops the loop, then erases). Otherwise
+     * [MobileTrackerPlatform.clearAccountState]: the account's state, the Steam credential and the Steam session's
+     * cookies. The device id stays.
+     */
+    suspend fun onLogout() {
+        built?.let { return it.onLogout() }
+        platform.clearAccountState()
     }
 
     /**

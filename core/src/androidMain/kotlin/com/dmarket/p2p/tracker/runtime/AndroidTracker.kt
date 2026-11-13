@@ -110,6 +110,15 @@ object AndroidTracker {
     /** [importSteamSession] over [read]; the WebView is read only once [install] ran. */
     internal suspend fun importSteamSession(read: () -> List<SteamCookie>): SteamWebSessionState? = installation?.importSteamSession(read())
 
+    /**
+     * The user logged out of DMarket: erases the account's state, the Steam credential and the Steam session's cookies,
+     * whether or not the tracker is built or runs ([MobileTracker.onLogout], whose contract this follows); the device id
+     * stays. Before [install] it does nothing.
+     */
+    suspend fun onLogout() {
+        installation?.onLogout()
+    }
+
     /** The tracker, built on the first call; later calls return the same one, whatever they pass. */
     internal fun trackerFor(
         baseUrl: String,

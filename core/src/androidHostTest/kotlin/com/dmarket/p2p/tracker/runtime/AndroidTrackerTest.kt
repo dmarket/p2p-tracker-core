@@ -60,4 +60,23 @@ class AndroidTrackerTest {
         )
         assertNull(platform.vault.readSteamCredential(), "the previous session's token is dropped")
     }
+
+    @Test
+    fun a_logout_before_the_tracker_is_built_erases_the_imported_session_and_keeps_the_device_id() = runBlocking {
+        val platform = AndroidTrackerPlatform(
+            prefs = FakeDisk()::prefs,
+            cipher = FakeKeystore().cipher(),
+            tokens = MarketplaceTokenSupplier { null },
+            io = Dispatchers.Unconfined,
+        )
+        val deviceId = platform.deviceIds.current()
+        AndroidTracker.install(platform, linkedAccount = { null }, cellularProofs = { false })
+        AndroidTracker.importSteamSession { listOf(SteamCookie("steamLoginSecure", "login-secure", "steamcommunity.com")) }
+
+        AndroidTracker.onLogout()
+
+        assertNull(AndroidTracker.tracker)
+        assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
+        assertEquals(deviceId, platform.deviceIds.current())
+    }
 }
