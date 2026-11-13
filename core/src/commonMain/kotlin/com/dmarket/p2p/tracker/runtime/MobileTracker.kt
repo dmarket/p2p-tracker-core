@@ -4,6 +4,8 @@ import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
+import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCanceller
+import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
@@ -12,6 +14,7 @@ import com.dmarket.p2p.tracker.client.steam.VaultCookieJar
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
+import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
@@ -58,14 +61,20 @@ private object NoWakeScheduler : Scheduler {
  *
  * The Steam session lives in the core's vault ([MobileTrackerPlatform.steamCookies]): imported once after a Steam
  * sign-in ([P2pTracker.importSteamSession]), sent from there in an explicit `Cookie` header, refreshed from
- * `steamRefresh_steam` and written back. Offer writes are still to come (DMA-662 2/3): `create_offer` /
- * `cancel_offer` leases lapse.
+ * `steamRefresh_steam` and written back. The loop runs the directives the backend leases; the offer writes
+ * (`create_offer` / `cancel_offer`) go out on that session ([HeaderSessionSteamOfferCreator] /
+ * [HeaderSessionSteamOfferCanceller] over the vault) only with [steamWrites] on.
  *
  * @param linkedAccount the Steam account the logged-in user links, or `null` when none; read on every start.
  * @param cellularProofs the user's "proofs on mobile data" option, read before every cycle; the app owns its default.
  * @param clientVersion the app's version, for the heartbeat.
  * @param hostMarketplaceClient the DMarket client over the host's HTTP stack; `null` builds the core's own over
  *   [MobileTrackerPlatform.dmarketEngine].
+ * @param steamWrites whether this device writes Steam offers ([LoopConfig.steamWrites]). Off by default: offer
+ *   creation in production waits for DMarket's security sign-off, so the app turns it on per environment. Off, a
+ *   leased `create_offer` / `cancel_offer` is dropped unreported and its lease lapses.
+ * @param reportUnsentCreates [LoopConfig.reportUnsentCreates]: whether a `create_offer` that never reached Steam is
+ *   reported `failed`.
  */
 class MobileTracker(
     val platform: MobileTrackerPlatform,
@@ -73,6 +82,8 @@ class MobileTracker(
     private val cellularProofs: () -> Boolean,
     private val clientVersion: String = TradeTrackerCore.VERSION,
     private val hostMarketplaceClient: MarketplaceClientFactory? = null,
+    private val steamWrites: Boolean = false,
+    private val reportUnsentCreates: Boolean = true,
 ) {
     /**
      * A new [P2pTracker] in [scope]. The loop is never scheduled: the tracker drives it, on screen by polling and in
@@ -104,6 +115,10 @@ class MobileTracker(
                 authenticator = platform.marketplaceAuthenticator,
                 retry = config.marketplaceRetry,
             )
+        val community = config.steamEndpoints.communityBaseUrl
+        // The session is the vault's, through the client's jar: one `steamLoginSecure` and one `sessionid` per request.
+        val offerCreator = HeaderSessionSteamOfferCreator(steamHttp, cookies, community, Cs2GameAdapter(config.game))
+        val offerCanceller = HeaderSessionSteamOfferCanceller(steamHttp, cookies, community)
         val loopFor: suspend (SteamId, EventObserver) -> TradeTrackerLoop = { account, observer ->
             val stores = platform.stores(account, config)
             TradeTrackerCore(GameRegistry.v1(config.game)).createLoop(
@@ -112,13 +127,17 @@ class MobileTracker(
                     surface = platform.surface,
                     mode = TrackerMode.Background,
                     tunables = config,
+                    steamWrites = steamWrites,
+                    reportUnsentCreates = reportUnsentCreates,
                     steamSessionInVault = true,
                 ),
                 marketplace = marketplace,
                 steamReader = KtorSteamReadClient(steamHttp, config.steamEndpoints),
-                scraper = KtorSteamSessionScraper(steamHttp, config.steamScrape, config.steamEndpoints.communityBaseUrl),
+                scraper = KtorSteamSessionScraper(steamHttp, config.steamScrape, community),
                 sessionRefresher = refresher,
-                inventoryReader = KtorSteamInventoryReader(steamHttp, config.steamEndpoints.communityBaseUrl),
+                offerCreator = offerCreator,
+                offerCanceller = offerCanceller,
+                inventoryReader = KtorSteamInventoryReader(steamHttp, community),
                 scheduler = NoWakeScheduler,
                 deviceId = platform.deviceIds,
                 vault = platform.vault,
@@ -132,6 +151,7 @@ class MobileTracker(
                 notaryThrottle = stores.notaryThrottle,
                 loopState = stores.loopState,
                 eventObserver = observer,
+                directivesEnabled = true,
             )
         }
         return P2pTracker(

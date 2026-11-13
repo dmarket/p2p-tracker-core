@@ -47,6 +47,9 @@ object AndroidTracker {
      *   default (off). Reading the network needs `ACCESS_NETWORK_STATE`; without it every network reads as metered.
      * @param hostOkHttp the app's `OkHttpClient` for DMarket calls; `null` takes the platform's.
      * @param clientVersion the app's version, for the heartbeat.
+     * @param steamWrites whether this device writes Steam offers (`create_offer` / `cancel_offer`); off by default, the
+     *   app sets it per environment. See [MobileTracker].
+     * @param reportUnsentCreates whether a `create_offer` that never reached Steam is reported `failed`.
      */
     fun install(
         context: Context,
@@ -55,6 +58,8 @@ object AndroidTracker {
         cellularProofs: () -> Boolean,
         hostOkHttp: OkHttpClient? = null,
         clientVersion: String = TradeTrackerCore.VERSION,
+        steamWrites: Boolean = false,
+        reportUnsentCreates: Boolean = true,
     ) {
         installation = MobileTracker(
             platform = AndroidTrackerPlatform(context, tokens),
@@ -66,6 +71,8 @@ object AndroidTracker {
                     androidMarketplaceClient(okHttp, baseUrl, authenticator, timeoutMs, retry)
                 }
             },
+            steamWrites = steamWrites,
+            reportUnsentCreates = reportUnsentCreates,
         )
     }
 

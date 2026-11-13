@@ -7,10 +7,15 @@ import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.engine.TrackerBlock
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.Directive
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
@@ -33,6 +38,7 @@ import io.ktor.client.engine.mock.MockRequestHandleScope
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
 import io.ktor.client.request.HttpResponseData
+import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -40,6 +46,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
@@ -93,9 +100,14 @@ class MobileSteamSessionTest {
         private fun MockRequestHandleScope.steam(request: HttpRequestData): HttpResponseData {
             steamRequests += request
             val owner = request.headers["Cookie"].orEmpty().substringAfter("steamLoginSecure=", "").substringBefore("%7C%7C")
-            return if (request.url.host == "steamcommunity.com" && request.url.encodedPath.trimEnd('/').isEmpty() && owner.isNotEmpty()) {
+            val community = request.url.host == "steamcommunity.com" && owner.isNotEmpty()
+            return if (community && request.url.encodedPath.trimEnd('/').isEmpty()) {
                 val token = steamAccessToken(owner, clock.now() + 20.hours)
                 respond("""<div data-loyalty_webapi_token="&quot;$token&quot;"></div><script>var g_steamID = "$owner";</script>""")
+            } else if (community && request.url.encodedPath == "/tradeoffer/new/send") {
+                respond("""{"tradeofferid":"8001","needs_mobile_confirmation":true}""")
+            } else if (community && request.url.encodedPath.endsWith("/cancel")) {
+                respond("""{"success":1}""")
             } else {
                 respond("", HttpStatusCode.InternalServerError)
             }
@@ -107,11 +119,12 @@ class MobileSteamSessionTest {
     private val platform = Platform()
     private val marketplace = FakeMarketplaceClient(HeartbeatResponse(ttlSeconds = 60, linkedSteamId = alice))
 
-    private fun TestScope.tracker(): P2pTracker = MobileTracker(
+    private fun TestScope.tracker(steamWrites: Boolean = false): P2pTracker = MobileTracker(
         platform.also { it.dispatcher = StandardTestDispatcher(testScheduler) },
         linkedAccount = { alice },
         cellularProofs = { false },
         hostMarketplaceClient = MarketplaceClientFactory { _, _, _, _ -> marketplace },
+        steamWrites = steamWrites,
     ).tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
 
     private fun loginSecure(owner: SteamId, left: Duration) = "${owner.value}%7C%7C${steamAccessToken(owner.value, clock.now() + left)}"
@@ -237,5 +250,84 @@ class MobileSteamSessionTest {
         assertEquals(before, platform.steamCookies.readSteamCookies())
         tracker.onLogout()
         assertEquals(emptyList(), platform.steamCookies.readSteamCookies())
+    }
+
+    /** A heartbeat for alice leasing one create (to bob) and one cancel of an offer already sent. */
+    private fun leaseWrites() {
+        marketplace.heartbeatResponse = HeartbeatResponse(
+            ttlSeconds = 60,
+            linkedSteamId = alice,
+            directives = listOf(
+                Directive(DirectiveId("create-1"), DirectiveAction.CREATE_OFFER, DealId("d2"), bob, listOf(AssetId("a-1")), "tok"),
+                Directive(DirectiveId("cancel-1"), DirectiveAction.CANCEL_OFFER, DealId("d3"), steamOfferId = OfferId("7002")),
+            ),
+        )
+    }
+
+    private val steamWrites get() = steamRequests.filter { it.method == HttpMethod.Post && it.url.host == "steamcommunity.com" }
+
+    @Test
+    fun leasedWritesGoToSteamOnTheVaultSessionAndReportTheirOutcomes() = runTest {
+        leaseWrites()
+        val tracker = tracker(steamWrites = true)
+        tracker.importSteamSession(session(alice))
+
+        tracker.onPush(push)
+
+        assertEquals(
+            setOf("/tradeoffer/new/send", "/tradeoffer/7002/cancel"),
+            steamWrites.map { it.url.encodedPath }.toSet(),
+        )
+        for (write in steamWrites) {
+            val cookies = write.headers.getAll("Cookie").orEmpty().flatMap { it.split("; ") }.map { it.substringBefore('=') }
+            assertEquals(listOf("steamLoginSecure", "sessionid"), cookies, "the vault's session, each cookie once")
+        }
+        val outcomes = marketplace.directiveOutcomes.associate { it.directiveId.value to it.status }
+        assertEquals(DirectiveStatus.NEEDS_CONFIRMATION, outcomes["create-1"])
+        assertEquals(DirectiveStatus.SUCCESS, outcomes["cancel-1"])
+    }
+
+    @Test
+    fun offerWritesAreOffByDefault() = runTest {
+        leaseWrites()
+        val tracker = tracker()
+        tracker.importSteamSession(session(alice))
+
+        tracker.onPush(push)
+        val delivery = tracker.startDelivery(DealId("d2"))
+
+        assertTrue(steamRequests.isNotEmpty(), "the session is alive and Steam is read")
+        assertEquals(emptyList(), steamWrites.map { it.url.encodedPath })
+        assertTrue(marketplace.directiveOutcomes.none { it.directiveId.value in setOf("create-1", "cancel-1") })
+        assertIs<CreateOfferResult.Failed>(delivery.result)
+    }
+
+    @Test
+    fun noSessionSendsNoWrite() = runTest {
+        leaseWrites()
+        val tracker = tracker(steamWrites = true)
+
+        tracker.onPush(push)
+        tracker.startDelivery(DealId("d2"))
+
+        assertEquals(SteamWebSessionState.GONE, tracker.state.value.steamSession)
+        assertEquals(emptyList(), steamWrites.map { it.url.encodedPath })
+    }
+
+    @Test
+    fun anotherAccountsSessionSendsNoWrite() = runTest {
+        val tracker = tracker(steamWrites = true)
+        tracker.importSteamSession(session(alice))
+        tracker.onPush(push) // the heartbeat names alice as linked
+        tracker.importSteamSession(session(bob))
+        leaseWrites()
+        steamRequests.clear()
+
+        tracker.onPush(push)
+        val delivery = tracker.startDelivery(DealId("d2"))
+
+        assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.state.value.steamSession)
+        assertEquals(emptyList(), steamRequests.map { "${it.method.value} ${it.url.host}${it.url.encodedPath}" })
+        assertEquals(CreateOfferResult.AccountMismatch(alice, bob), delivery.result)
     }
 }

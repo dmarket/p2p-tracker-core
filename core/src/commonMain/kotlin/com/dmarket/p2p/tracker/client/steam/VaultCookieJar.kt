@@ -40,6 +40,17 @@ class VaultCookieJar(private val vault: SteamCookieVault, private val clock: Clo
     suspend fun put(cookie: SteamCookie) = store(listOf(cookie), clock.now().epochSeconds)
 
     /**
+     * The value of the cookie [name] this jar sends to [url]; when there is none, [create]'s value, stored first for
+     * [url]'s host at path `/` with no expiry. Atomic against every other write of this jar, so two callers never
+     * store two different values.
+     */
+    suspend fun valueOrPut(url: Url, name: String, create: () -> String): String = mutex.withLock {
+        val now = clock.now().epochSeconds
+        vault.readSteamCookies().firstOrNull { it.name == name && it.appliesTo(url) && !it.expiredAt(now) }?.value
+            ?: create().also { value -> storeLocked(listOf(SteamCookie(name, value, url.host.lowercase())), now) }
+    }
+
+    /**
      * Writes the cookies of [setCookieHeaders] (a response to [url]) into the vault: a new value replaces the cookie
      * with the same name, host and path, and an expired one (`Max-Age=0`, a past `Expires`) erases it.
      */
@@ -61,7 +72,9 @@ class VaultCookieJar(private val vault: SteamCookieVault, private val clock: Clo
         if (received.isNotEmpty()) store(received, now)
     }
 
-    private suspend fun store(received: List<SteamCookie>, now: Long) = mutex.withLock {
+    private suspend fun store(received: List<SteamCookie>, now: Long) = mutex.withLock { storeLocked(received, now) }
+
+    private suspend fun storeLocked(received: List<SteamCookie>, now: Long) {
         val kept = vault.readSteamCookies().filterNot { stored -> received.any { it.sameSlot(stored) } }
         vault.writeSteamCookies(kept + received.filterNot { it.expiredAt(now) })
     }
