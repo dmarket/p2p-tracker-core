@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.engine
 
 import com.dmarket.p2p.tracker.model.AssetId
+import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.OfferDirection
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
@@ -22,10 +23,17 @@ object CreateOfferMatch {
         offer.partner == partner && offer.assetIdsGiven == assetIds
 
     /**
-     * The offer a re-leased `create_offer` to [partner] for [assetIds] reports instead of creating one: a sent offer
-     * giving exactly those assets, in one of [BINDABLE_STATES]. The newest wins; `null` when there is none.
+     * The offer a `create_offer` to [partner] for [assetIds] reports instead of creating one: a sent offer giving exactly
+     * those assets, in one of [BINDABLE_STATES], and not in [excluded] (offers known to be another deal's). The newest
+     * wins; `null` when there is none.
      */
-    fun bindable(offers: List<SteamSentOffer>, partner: SteamId, assetIds: Set<AssetId>): SteamSentOffer? = offers
+    fun bindable(
+        offers: List<SteamSentOffer>,
+        partner: SteamId,
+        assetIds: Set<AssetId>,
+        excluded: Set<OfferId> = emptySet(),
+    ): SteamSentOffer? = offers
         .filter { it.direction == OfferDirection.SENT && it.state in BINDABLE_STATES && givesExactly(it, partner, assetIds) }
+        .filter { it.offerId !in excluded }
         .maxByOrNull { it.createdAt }
 }

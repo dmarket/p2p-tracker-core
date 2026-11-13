@@ -6,10 +6,17 @@ import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
+import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DealWriteClaim
+import com.dmarket.p2p.tracker.model.DealWriteKey
+import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
@@ -38,6 +45,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -66,7 +74,10 @@ class ReissuedCreateBindTest {
     /** The `steamOfferId`/`status` of every report sent on `/trade-actions`. */
     private val reported = mutableListOf<String>()
 
-    /** The sent offers `GetTradeOffers` lists; each one `"<state>:<partner account id>:<asset>,<asset>"`. */
+    /** The heartbeat's `activeTracking` entries, as JSON. */
+    private var tracking = ""
+
+    /** The sent offers `GetTradeOffers` lists; each one `"<state>:<partner account id>:<asset>,<asset>[:<offer id>]"`. */
     private var sentOffers = listOf<String>()
 
     /** How many `GetTradeOffers` reads still fail with a 500. */
@@ -102,8 +113,9 @@ class ReissuedCreateBindTest {
                 if (readFailures-- > 0) return@MockEngine respond("", HttpStatusCode.InternalServerError)
                 val offers = sentOffers.mapIndexed { i, spec ->
                     val (state, account, assets) = spec.split(":")
+                    val id = spec.split(":").getOrNull(3) ?: "bound-$i"
                     val items = assets.split(",").joinToString(",") { """{"appid":730,"contextid":"2","assetid":"$it"}""" }
-                    """{"tradeofferid":"bound-$i","accountid_other":$account,"trade_offer_state":$state,
+                    """{"tradeofferid":"$id","accountid_other":$account,"trade_offer_state":$state,
                        "time_created":1792420000,"time_updated":1792420000,"items_to_give":[$items]}"""
                 }
                 respond("""{"response":{"trade_offers_sent":[${offers.joinToString(",")}]}}""", headers = json)
@@ -111,7 +123,7 @@ class ReissuedCreateBindTest {
             path.endsWith("/create-trade") ->
                 respond("""{"state":"P2P_DEAL_STATE_COMMITTED","createOffer":$createTrade}""", headers = json)
             path.endsWith("/heartbeat") ->
-                respond("""{"activeTracking":[],"directives":[$directive],"ttlSeconds":60}""", headers = json)
+                respond("""{"activeTracking":[$tracking],"directives":[$directive],"ttlSeconds":60}""", headers = json)
             path.endsWith("/trade-actions") -> {
                 val body = (request.body as TextContent).text
                 val reports = Json.parseToJsonElement(body).jsonObject.getValue("reports").jsonArray.map { it.jsonObject }
@@ -130,7 +142,7 @@ class ReissuedCreateBindTest {
     private fun create(extra: String = "") = """{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1",
            "partnerSteamId":"$partner","assetIds":["a1","a2"],"tradeToken":"tok","contextId":2$extra}"""
 
-    private fun loop(fence: Boolean = true) = TradeTrackerLoop(
+    private fun loop(fence: Boolean = true, claims: DealWriteClaimStore = PersistedDealWriteClaimStore()) = TradeTrackerLoop(
         config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background, reportEachWrite = true),
         marketplace = KtorMarketplaceClient(
             createHttpClient(engine),
@@ -150,6 +162,7 @@ class ReissuedCreateBindTest {
         offerCreator = creator,
         directivesEnabled = true,
         leaseClock = elapsed.takeIf { fence },
+        claims = claims,
     )
 
     @Test
@@ -235,6 +248,60 @@ class ReissuedCreateBindTest {
 
         assertEquals(CreateOfferResult.NeedsConfirmation(OfferId("new-offer")), result)
         assertEquals(listOf("read", "create", "report"), log)
+    }
+
+    @Test
+    fun an_offer_another_tracked_deal_holds_does_not_bind() = runTest {
+        // Deal 0 sold the same item; the buyer bought it again in deal 1 before deal 0's offer was cancelled.
+        tracking = """{"dealId":"deal-0","steamOfferId":"old-offer"}"""
+        directive = create()
+        sentOffers = listOf("2:$partnerAccountId:a1,a2:old-offer")
+
+        loop().runOnce()
+
+        assertEquals(listOf("read", "create", "report"), log)
+        assertEquals(listOf("new-offer/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun an_offer_this_device_created_for_another_deal_does_not_bind() = runTest {
+        // The backend tracks deal 0 under another id; the claim says this device created old-offer for it.
+        tracking = """{"dealId":"deal-0","steamOfferId":"backend-id"}"""
+        val claims = PersistedDealWriteClaimStore()
+        val key = DealWriteKey(DealId("deal-0"), DirectiveAction.CREATE_OFFER)
+        claims.claim(
+            DealWriteClaim(DealId("deal-0"), DirectiveAction.CREATE_OFFER, ClaimPhase.IN_FLIGHT, wall.now(), DirectiveId("dir-0")),
+            wall.now(),
+            1.hours,
+        )
+        claims.complete(
+            key,
+            DirectiveOutcome(
+                DirectiveId("dir-0"),
+                DirectiveAction.CREATE_OFFER,
+                DirectiveStatus.NEEDS_CONFIRMATION,
+                DealId("deal-0"),
+                OfferId("old-offer"),
+            ),
+        )
+        directive = create()
+        sentOffers = listOf("9:$partnerAccountId:a1,a2:old-offer")
+
+        loop(claims = claims).runOnce()
+
+        assertEquals(listOf("read", "create", "report"), log)
+        assertEquals(listOf("new-offer/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun an_offer_a_cancel_of_this_cycle_targets_does_not_bind() = runTest {
+        directive = create() + "," + """{"directiveId":"dir-c","action":"cancel_offer","dealId":"deal-0","steamOfferId":"old-offer"}"""
+        sentOffers = listOf("2:$partnerAccountId:a1,a2:old-offer")
+
+        loop().runOnce()
+
+        assertEquals(listOf("read", "create"), log.take(2))
+        assertTrue("new-offer/needs_confirmation" in reported, "$reported")
     }
 
     @Test

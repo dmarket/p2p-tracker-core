@@ -307,6 +307,9 @@ private sealed interface ClaimEnd {
     data class Held(val unanswered: UnansweredCreate) : ClaimEnd
 }
 
+/** What one cycle's creates bind against: [cancelling] are the offers that cycle's `cancel_offer`s target. */
+private class CreateBindScope(val cancelling: Set<OfferId>)
+
 /** [ClaimEnd.Completed] for a real write's outcome, [ClaimEnd.Released] when there is none. */
 private fun DirectiveOutcome?.claimEnd(): ClaimEnd = this?.let(ClaimEnd::Completed) ?: ClaimEnd.Released
 
@@ -2136,15 +2139,36 @@ class TradeTrackerLoop(
      * Before a mobile create writes, the offer an earlier lease of it made, maybe on another device that never reported
      * it (the backend serves the same `create_offer` again and does not say so): a sent offer to [partner] giving exactly
      * the directive's assets, in a state [CreateOfferMatch.BINDABLE_STATES] names, read with `active_only=1` from
-     * [bindCutoff]. Its result is reported as the create's own, and nothing is created. [Result.success] of `null`: no
+     * [bindCutoff], and not another deal's ([offersOfOtherDeals]). Its result is reported as the create's own, and
+     * nothing is created. [Result.success] of `null`: no
      * such offer, or no read to make (no [leaseClock]: web and headless run as before). A failed read is a
      * [Result.failure]: the caller creates nothing this cycle, and the read runs again when the directive is served again.
      */
-    private suspend fun boundOffer(directive: Directive, partner: SteamId, credential: SteamCredential): Result<CreateOfferResult?> {
+    private suspend fun boundOffer(
+        directive: Directive,
+        partner: SteamId,
+        credential: SteamCredential,
+        tracking: List<TrackedDeal>,
+        bind: CreateBindScope,
+    ): Result<CreateOfferResult?> {
         val lease = leaseClock ?: return Result.success(null)
         return runCatching { steamReader.sentOffers(credential, bindCutoff(directive, lease)) }.map { offers ->
-            CreateOfferMatch.bindable(offers, partner, directive.assetIds.toSet())?.createResult()
+            val excluded = offersOfOtherDeals(directive.dealId, tracking) + bind.cancelling
+            CreateOfferMatch.bindable(offers, partner, directive.assetIds.toSet(), excluded)?.createResult()
         }
+    }
+
+    /**
+     * The offers known to belong to a deal other than [dealId]: tracked under another deal, or created for another deal
+     * by this device (its create claim). The same item bought again after a cancel is listed by the old deal's offer
+     * until that cancel lands, and binding it would report the old deal's offer for the new one.
+     */
+    private suspend fun offersOfOtherDeals(dealId: DealId?, tracking: List<TrackedDeal>): Set<OfferId> {
+        val tracked = tracking.filter { it.dealId != dealId }.mapNotNull { it.steamOfferId }
+        val claimed = claims.all()
+            .filter { it.action == DirectiveAction.CREATE_OFFER && it.dealId != dealId }
+            .mapNotNull { it.outcome?.steamOfferId }
+        return (tracked + claimed).toSet()
     }
 
     /**
@@ -2262,7 +2286,9 @@ class TradeTrackerLoop(
         // `report_inventory` is not here — it answers on its own endpoint (/inventory), which is already one call
         // per directive by contract.
         val attempts = mutableListOf<WriteAttempt>()
-        attempts += executeCreateChains(plan.creates, credential, heartbeat.linkedSteamId, tracking)
+        // Creates run before cancels: an offer a cancel of this cycle targets is another deal's, never one to bind.
+        val bind = CreateBindScope(cancelling = plan.cancels.mapNotNullTo(mutableSetOf()) { it.steamOfferId })
+        attempts += executeCreateChains(plan.creates, credential, heartbeat.linkedSteamId, tracking, bind)
         plan.cancels.forEach { attempts += reportWrite(runCancel(it, credential, heartbeat.linkedSteamId, tracking)) }
         done += flushWriteOutcomes(attempts)
         reportCancelledOfferCodes(attempts.mapNotNull { it.offerReport })
@@ -2676,6 +2702,7 @@ class TradeTrackerLoop(
         credential: SteamCredential,
         linkedSteamId: SteamId?,
         tracking: List<TrackedDeal>,
+        bind: CreateBindScope,
     ): List<WriteAttempt> {
         if (creates.isEmpty()) return emptyList()
         // A token too close to its expiry would leave an offer the seller cannot confirm in time on this
@@ -2696,7 +2723,7 @@ class TradeTrackerLoop(
         if (chainPlan.isEmpty) return emptyList()
         return coroutineScope {
             chainPlan.chains
-                .map { chain -> async { runCreateChain(chain, credential, linkedSteamId, tracking) } }
+                .map { chain -> async { runCreateChain(chain, credential, linkedSteamId, tracking, bind) } }
                 .awaitAll()
                 .flatten()
         }
@@ -2712,6 +2739,7 @@ class TradeTrackerLoop(
         credential: SteamCredential,
         linkedSteamId: SteamId?,
         tracking: List<TrackedDeal>,
+        bind: CreateBindScope,
     ): List<WriteAttempt> {
         val attempts = mutableListOf<WriteAttempt>()
         chain.directives.forEachIndexed { index, directive ->
@@ -2720,7 +2748,7 @@ class TradeTrackerLoop(
                 abandonChain(chain, directive, throttled.deferReason(), index, throttled.retryAfterSeconds)
                 return attempts
             }
-            val attempt = reportWrite(runCreate(directive, credential, linkedSteamId, tracking))
+            val attempt = reportWrite(runCreate(directive, credential, linkedSteamId, tracking, bind))
             attempts += attempt
             if (attempt.stopChain) {
                 // This create did run (and failed), so the abandoned tail starts after it.
@@ -2763,6 +2791,7 @@ class TradeTrackerLoop(
         credential: SteamCredential,
         linkedSteamId: SteamId?,
         activeTracking: List<TrackedDeal>,
+        bind: CreateBindScope,
     ): WriteAttempt {
         val partner = directive.partnerSteamId ?: return WriteAttempt.SKIPPED
         // Wrong-account guard (defense-in-depth: runOnce already skips executeDirectives on a mismatch).
@@ -2838,7 +2867,7 @@ class TradeTrackerLoop(
             // happens to the create's answer. Before the bind read too: the offer it finds is this deal's.
             directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
             // An unread offer list is no proof there is no offer: creating now could make the deal's second one.
-            val bound = boundOffer(directive, partner, credential).getOrElse {
+            val bound = boundOffer(directive, partner, credential, activeTracking, bind).getOrElse {
                 emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
                 emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))

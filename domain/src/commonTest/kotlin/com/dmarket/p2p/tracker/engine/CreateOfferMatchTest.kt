@@ -53,6 +53,14 @@ class CreateOfferMatchTest {
     }
 
     @Test
+    fun an_excluded_offer_does_not_bind_and_the_next_newest_does() {
+        val offers = listOf(offer("old", at = t0), offer("new", at = t0 + 5.seconds))
+
+        assertEquals(OfferId("old"), CreateOfferMatch.bindable(offers, partner, assets, excluded = setOf(OfferId("new")))?.offerId)
+        assertNull(CreateOfferMatch.bindable(offers, partner, assets, excluded = setOf(OfferId("new"), OfferId("old"))))
+    }
+
+    @Test
     fun the_newest_matching_offer_binds() {
         val offers = listOf(offer("old", at = t0), offer("new", at = t0 + 5.seconds), offer("mid", at = t0 + 2.seconds))
 
