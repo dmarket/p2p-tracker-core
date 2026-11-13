@@ -11,6 +11,7 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DealWriteKey
 import com.dmarket.p2p.tracker.model.DirectiveId
+import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -28,6 +29,7 @@ import com.dmarket.p2p.tracker.support.FakeDeviceIdStore
 import com.dmarket.p2p.tracker.support.FakeMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.support.FakeScheduler
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
+import com.dmarket.p2p.tracker.support.RecordingEventObserver
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -80,8 +82,12 @@ class ReissuedCreateBindTest {
     /** The sent offers `GetTradeOffers` lists; each one `"<state>:<partner account id>:<asset>,<asset>[:<offer id>]"`. */
     private var sentOffers = listOf<String>()
 
-    /** How many `GetTradeOffers` reads still fail with a 500. */
+    /** How many `GetTradeOffers` reads still fail, with [readFailure]. */
     private var readFailures = 0
+
+    private var readFailure = HttpStatusCode.InternalServerError
+
+    private val observer = RecordingEventObserver()
 
     private var directive = ""
 
@@ -110,7 +116,9 @@ class ReissuedCreateBindTest {
             path == endpoints.getTradeOffersPath -> {
                 log += "read"
                 reads += request.url.parameters.entries().associate { it.key to it.value.first() }
-                if (readFailures-- > 0) return@MockEngine respond("", HttpStatusCode.InternalServerError)
+                if (readFailures-- > 0) {
+                    return@MockEngine respond("", readFailure, headersOf(HttpHeaders.RetryAfter, "30"))
+                }
                 val offers = sentOffers.mapIndexed { i, spec ->
                     val (state, account, assets) = spec.split(":")
                     val id = spec.split(":").getOrNull(3) ?: "bound-$i"
@@ -162,6 +170,7 @@ class ReissuedCreateBindTest {
         offerCreator = creator,
         directivesEnabled = true,
         leaseClock = elapsed.takeIf { fence },
+        eventObserver = observer,
         claims = claims,
     )
 
@@ -327,6 +336,25 @@ class ReissuedCreateBindTest {
         loop.forceHeartbeatNow()
         loop.runOnce()
         assertEquals(listOf("read", "read", "create", "report"), log)
+    }
+
+    @Test
+    fun a_429_on_the_read_parks_the_create_surface_and_the_next_cycle_does_not_read_again() = runTest {
+        directive = create()
+        readFailures = 1
+        readFailure = HttpStatusCode.TooManyRequests
+        val loop = loop()
+
+        loop.runOnce()
+        assertEquals(listOf("read"), log)
+        assertEquals(listOf("steam"), observer.events.filterIsInstance<LifecycleEvent.RateLimited>().map { it.surface })
+
+        // Inside the cooldown (2 min at least): the create is deferred before its read.
+        wall.advance(1.minutes)
+        loop.forceHeartbeatNow()
+        loop.runOnce()
+        assertEquals(listOf("read"), log)
+        assertTrue(observer.events.any { it is LifecycleEvent.SteamWriteDeferred }, "${observer.events}")
     }
 
     @Test

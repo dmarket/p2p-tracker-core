@@ -8,6 +8,7 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamNotificationReader
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCanceller
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCreator
 import com.dmarket.p2p.tracker.client.HttpStatusException
+import com.dmarket.p2p.tracker.client.HttpTransportException
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.client.steam.SteamRateLimitedException
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
@@ -91,6 +92,7 @@ import com.dmarket.p2p.tracker.policy.CreateChain
 import com.dmarket.p2p.tracker.policy.CreateChainPlanner
 import com.dmarket.p2p.tracker.policy.PollClass
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.policy.SteamWriteFailureKind
 import com.dmarket.p2p.tracker.policy.SteamWriteThrottle
 import com.dmarket.p2p.tracker.policy.WriteGate
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -989,6 +991,21 @@ class TradeTrackerLoop(
             // default OTHER and silently stop parking anything, which is how an account earns a trade block.
             // Reading it here instead means such a slip costs the host a cause code, not the back-pressure.
             is CreateOfferResult.Failed -> SteamWriteThrottle.classify(result.error, config.tunables.steamWrites)
+            else -> return
+        }
+        throttle.onResult(partner, kind, clock.now())
+    }
+
+    /**
+     * Folds a failed bind read ahead of [partner]'s create into the throttle, as [recordCreateResult] folds a refused
+     * POST: a 429 parks the whole create surface (Steam throttles the account's requests, not one partner), a read
+     * that never got an answer counts towards the global breaker. Any other failure parks nothing.
+     */
+    private suspend fun recordBindReadFailure(partner: SteamId, failure: Throwable) {
+        val kind = when {
+            failure is SteamRateLimitedException -> SteamWriteFailureKind.RATE_LIMITED_SURFACE
+            failure is HttpStatusException && failure.statusCode == HTTP_TOO_MANY_REQUESTS -> SteamWriteFailureKind.RATE_LIMITED_SURFACE
+            failure is HttpTransportException -> SteamWriteFailureKind.TRANSPORT
             else -> return
         }
         throttle.onResult(partner, kind, clock.now())
@@ -2868,6 +2885,9 @@ class TradeTrackerLoop(
             directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
             // An unread offer list is no proof there is no offer: creating now could make the deal's second one.
             val bound = boundOffer(directive, partner, credential, activeTracking, bind).getOrElse {
+                // Into the throttle before anything awaits, as a refused POST is: sibling chains re-gate on every step.
+                recordBindReadFailure(partner, it)
+                emitIfRateLimited(it)
                 emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
                 emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))
