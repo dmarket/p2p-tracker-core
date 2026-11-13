@@ -8,7 +8,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 /** Which of the account's sent offers a `create_offer` to a partner for a set of assets made. */
 object CreateOfferMatch {
     /**
-     * The `ETradeOfferState`s an offer a re-leased create binds to can be in: Active (2), Accepted (3),
+     * The `ETradeOfferState`s an offer a create binds to can be in: Active (2), Accepted (3),
      * CreatedNeedsConfirmation (9) and InEscrow (11). A declined, expired or cancelled offer is no delivery.
      */
     val BINDABLE_STATES: Set<Int> = setOf(2, 3, 9, 11)

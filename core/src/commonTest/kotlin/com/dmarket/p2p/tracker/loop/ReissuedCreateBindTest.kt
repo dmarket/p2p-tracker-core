@@ -6,6 +6,7 @@ import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
+import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -28,7 +29,9 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -38,12 +41,12 @@ import kotlin.test.assertEquals
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
-import kotlin.time.Duration.Companion.seconds
 
 /**
- * Bind-or-create (DMA-662 Q14): a `create_offer` the backend serves again after an earlier lease first reads the
- * account's sent offers and reports the offer an earlier lease made, instead of creating a second one. Steam and the
- * backend are both a [MockEngine]; the creator is a fake that logs its POST.
+ * Bind-or-create (DMA-662 Q14): on mobile (a lease clock) every `create_offer` first reads the account's sent offers
+ * and reports the offer an earlier lease of it made, instead of creating a second one. The backend serves the same
+ * directive again with no marker, so a first lease reads too. Steam and the backend are both a [MockEngine]; the
+ * creator is a fake that logs its POST.
  */
 class ReissuedCreateBindTest {
 
@@ -70,6 +73,9 @@ class ReissuedCreateBindTest {
     private var readFailures = 0
 
     private var directive = ""
+
+    /** The `createOffer` a `POST /create-trade` serves. */
+    private var createTrade = "null"
 
     private val elapsed = object : ElapsedClock {
         var now = 10.hours
@@ -102,6 +108,8 @@ class ReissuedCreateBindTest {
                 }
                 respond("""{"response":{"trade_offers_sent":[${offers.joinToString(",")}]}}""", headers = json)
             }
+            path.endsWith("/create-trade") ->
+                respond("""{"state":"P2P_DEAL_STATE_COMMITTED","createOffer":$createTrade}""", headers = json)
             path.endsWith("/heartbeat") ->
                 respond("""{"activeTracking":[],"directives":[$directive],"ttlSeconds":60}""", headers = json)
             path.endsWith("/trade-actions") -> {
@@ -121,8 +129,6 @@ class ReissuedCreateBindTest {
     /** A `create_offer` for [partner] giving `a1` and `a2`, with [extra] JSON fields. */
     private fun create(extra: String = "") = """{"directiveId":"dir-1","action":"create_offer","dealId":"deal-1",
            "partnerSteamId":"$partner","assetIds":["a1","a2"],"tradeToken":"tok","contextId":2$extra}"""
-
-    private val reissued = ""","leaseAttempt":2"""
 
     private fun loop(fence: Boolean = true) = TradeTrackerLoop(
         config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background, reportEachWrite = true),
@@ -151,7 +157,7 @@ class ReissuedCreateBindTest {
         mapOf(2 to "success", 3 to "success", 9 to "needs_confirmation", 11 to "success").forEach { (state, status) ->
             log.clear()
             reported.clear()
-            directive = create(reissued)
+            directive = create()
             sentOffers = listOf("$state:$partnerAccountId:a1,a2")
 
             loop().runOnce()
@@ -165,7 +171,7 @@ class ReissuedCreateBindTest {
     fun a_declined_or_expired_offer_does_not_bind_and_the_create_goes() = runTest {
         listOf(7, 8).forEach { state ->
             log.clear()
-            directive = create(reissued)
+            directive = create()
             sentOffers = listOf("$state:$partnerAccountId:a1,a2")
 
             loop().runOnce()
@@ -179,7 +185,7 @@ class ReissuedCreateBindTest {
         listOf("9:39734275:a1,a2", "9:$partnerAccountId:a1", "9:$partnerAccountId:a1,a2,a3").forEach { offer ->
             log.clear()
             reported.clear()
-            directive = create(reissued)
+            directive = create()
             sentOffers = listOf(offer)
 
             loop().runOnce()
@@ -190,28 +196,50 @@ class ReissuedCreateBindTest {
     }
 
     @Test
-    fun a_first_lease_creates_without_a_read() = runTest {
-        directive = create(""","leaseAttempt":1""")
-        sentOffers = listOf("9:$partnerAccountId:a1,a2")
-
-        loop().runOnce()
-
-        assertEquals(listOf("create", "report"), log)
-    }
-
-    @Test
-    fun without_the_backend_fields_the_create_goes_as_before() = runTest {
+    fun a_first_lease_with_an_offer_already_there_binds_without_creating() = runTest {
         directive = create()
         sentOffers = listOf("9:$partnerAccountId:a1,a2")
 
         loop().runOnce()
 
-        assertEquals(listOf("create", "report"), log)
+        assertEquals(listOf("read", "report"), log)
+        assertEquals(listOf("bound-0/needs_confirmation"), reported)
     }
 
     @Test
-    fun without_a_lease_clock_a_reissued_create_goes_as_before() = runTest {
-        directive = create(reissued)
+    fun with_no_offer_there_the_create_reads_then_creates() = runTest {
+        directive = create()
+
+        loop().runOnce()
+
+        assertEquals(listOf("read", "create", "report"), log)
+        assertEquals(listOf("new-offer/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun a_create_relayed_by_create_trade_reads_first_and_binds() = runTest {
+        createTrade = create()
+        sentOffers = listOf("9:$partnerAccountId:a1,a2")
+
+        val result = withContext(Dispatchers.Default) { loop().awaitDirectiveOutcome(DealId("deal-1"), 1.minutes, this) }
+
+        assertEquals(CreateOfferResult.NeedsConfirmation(OfferId("bound-0")), result)
+        assertEquals(listOf("read", "report"), log)
+    }
+
+    @Test
+    fun a_create_relayed_by_create_trade_with_no_offer_there_reads_then_creates() = runTest {
+        createTrade = create()
+
+        val result = withContext(Dispatchers.Default) { loop().awaitDirectiveOutcome(DealId("deal-1"), 1.minutes, this) }
+
+        assertEquals(CreateOfferResult.NeedsConfirmation(OfferId("new-offer")), result)
+        assertEquals(listOf("read", "create", "report"), log)
+    }
+
+    @Test
+    fun without_a_lease_clock_the_create_goes_as_before() = runTest {
+        directive = create()
         sentOffers = listOf("9:$partnerAccountId:a1,a2")
 
         loop(fence = false).runOnce()
@@ -221,7 +249,7 @@ class ReissuedCreateBindTest {
 
     @Test
     fun a_failed_read_creates_nothing_this_cycle_and_the_next_cycle_reads_again() = runTest {
-        directive = create(reissued)
+        directive = create()
         readFailures = 1
         val loop = loop()
 
@@ -235,8 +263,8 @@ class ReissuedCreateBindTest {
     }
 
     @Test
-    fun the_read_asks_for_active_offers_and_those_changed_since_the_previous_lease_started() = runTest {
-        directive = create(""","previousLeaseAgeSeconds":150""")
+    fun the_read_asks_for_active_offers_and_those_changed_since_the_lease_before_this_one() = runTest {
+        directive = create(""","leaseTtlSeconds":300""")
 
         loop().runOnce()
 
@@ -244,7 +272,8 @@ class ReissuedCreateBindTest {
         assertEquals("1", query[endpoints.paramActiveOnly])
         assertEquals("0", query[endpoints.paramGetReceivedOffers])
         assertEquals("0", query[endpoints.paramGetDescriptions])
-        val cutoff = wall.now() - 150.seconds - 5.minutes
+        // This lease's start, less one lease TTL, less the 10 min margin.
+        val cutoff = wall.now() - 5.minutes - 10.minutes
         assertEquals(cutoff.epochSeconds.toString(), query[endpoints.paramTimeHistoricalCutoff])
     }
 }

@@ -230,10 +230,10 @@ private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stoppe
 internal const val LEASE_LAPSED_DROP_REASON = "lease lapsed before the Steam write"
 
 /**
- * Why a re-leased create was not run: the account's sent offers, which may hold the offer an earlier lease made, could
- * not be read. Unreported; the read runs again when the backend serves the directive again.
+ * Why a mobile create was not run: the account's sent offers, which may hold the offer an earlier lease made, could not
+ * be read. Unreported; the read runs again when the backend serves the directive again.
  */
-internal const val BIND_READ_FAILED_DROP_REASON = "sent offers unread before a re-leased create"
+internal const val BIND_READ_FAILED_DROP_REASON = "sent offers unread before a create"
 
 /**
  * The `SteamWriteDeferred` reason of a create held back by `LoopConfig.minWriteTokenLifetime`: the token, not
@@ -2072,11 +2072,8 @@ class TradeTrackerLoop(
         return response
     }
 
-    /**
-     * One directive's lease as this device counts it: from [leasedAt] on the lease clock, for [ttl]. [previousLeaseAt] is
-     * where the lease before it started, on the same clock, when the backend says ([Directive.previousLeaseAge]).
-     */
-    private class LeaseWindow(val leasedAt: Duration, val ttl: Duration, val previousLeaseAt: Duration? = null) {
+    /** One directive's lease as this device counts it: from [leasedAt] on the lease clock, for [ttl]. */
+    private class LeaseWindow(val leasedAt: Duration, val ttl: Duration) {
         fun left(now: Duration): Duration = leasedAt + ttl - now
     }
 
@@ -2094,10 +2091,7 @@ class TradeTrackerLoop(
      */
     private suspend fun recordLeases(directives: List<Directive>, sentAt: Duration) = leaseLock.withLock {
         leases.entries.removeAll { it.value.left(sentAt) <= Duration.ZERO }
-        directives.forEach {
-            leases[it.directiveId] =
-                LeaseWindow(sentAt, it.leaseTtl ?: config.leaseTtl, it.previousLeaseAge?.let(sentAt::minus))
-        }
+        directives.forEach { leases[it.directiveId] = LeaseWindow(sentAt, it.leaseTtl ?: config.leaseTtl) }
     }
 
     /** What is left of [directive]'s lease now, on the lease clock; zero when none was recorded. */
@@ -2127,25 +2121,27 @@ class TradeTrackerLoop(
     }
 
     /**
-     * The `time_historical_cutoff` of a re-leased create's read: where its previous lease started, counted back on the
-     * lease clock from now and turned into Steam's time by the wall clock, less [UnansweredCreateCheck.CLOCK_TOLERANCE]
-     * for Steam's clock against this one. `null` when the backend did not say: Steam then lists the active offers only.
+     * The `time_historical_cutoff` of a create's bind read: where the lease before this one may have started (this
+     * lease's start, counted back on the lease clock and turned into Steam's time by the wall clock, less one lease TTL),
+     * less [com.dmarket.p2p.tracker.config.SteamWriteConfig.bindLookbackMargin].
      */
-    private suspend fun bindCutoff(directive: Directive, lease: ElapsedClock): Instant? = leaseLock.withLock {
-        leases[directive.directiveId]?.previousLeaseAt?.let { clock.now() - (lease.elapsed() - it) - UnansweredCreateCheck.CLOCK_TOLERANCE }
+    private suspend fun bindCutoff(directive: Directive, lease: ElapsedClock): Instant = leaseLock.withLock {
+        val window = leases[directive.directiveId]
+        val sinceLeased = window?.let { lease.elapsed() - it.leasedAt } ?: Duration.ZERO
+        val ttl = window?.ttl ?: directive.leaseTtl ?: config.leaseTtl
+        clock.now() - sinceLeased - ttl - config.tunables.steamWrites.bindLookbackMargin
     }
 
     /**
-     * Before a re-leased create ([Directive.reissued]) writes, the offer an earlier lease of it made, maybe on another
-     * device that never reported it: a sent offer to [partner] giving exactly the directive's assets, in a state
-     * [CreateOfferMatch.BINDABLE_STATES] names, read with `active_only=1` from where the previous lease started. Its
-     * result is reported as the create's own, and nothing is created. [Result.success] of `null`: no such offer, or no
-     * read to make (a first lease, or no [leaseClock]: web and headless run as before). A failed read is a
+     * Before a mobile create writes, the offer an earlier lease of it made, maybe on another device that never reported
+     * it (the backend serves the same `create_offer` again and does not say so): a sent offer to [partner] giving exactly
+     * the directive's assets, in a state [CreateOfferMatch.BINDABLE_STATES] names, read with `active_only=1` from
+     * [bindCutoff]. Its result is reported as the create's own, and nothing is created. [Result.success] of `null`: no
+     * such offer, or no read to make (no [leaseClock]: web and headless run as before). A failed read is a
      * [Result.failure]: the caller creates nothing this cycle, and the read runs again when the directive is served again.
      */
     private suspend fun boundOffer(directive: Directive, partner: SteamId, credential: SteamCredential): Result<CreateOfferResult?> {
-        val lease = leaseClock
-        if (!directive.reissued || lease == null) return Result.success(null)
+        val lease = leaseClock ?: return Result.success(null)
         return runCatching { steamReader.sentOffers(credential, bindCutoff(directive, lease)) }.map { offers ->
             CreateOfferMatch.bindable(offers, partner, directive.assetIds.toSet())?.createResult()
         }

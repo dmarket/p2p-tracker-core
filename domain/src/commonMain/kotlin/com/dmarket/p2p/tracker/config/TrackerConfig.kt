@@ -1286,6 +1286,15 @@ data class SteamWriteConfig(
      * user is told, not what the throttle does.
      */
     val requestRateLimitMarkers: List<String> = listOf("http 429"),
+    /**
+     * Mobile only (a device with a lease clock): before every `create_offer` the tracker reads the account's sent
+     * offers, the active ones plus those changed since a cutoff, and reports an offer to the same partner with exactly
+     * the directive's assets instead of creating a second one. The cutoff is where this lease started, less its TTL
+     * (the lease before it) and less this margin. The default 10 min is 5 min for Steam's clock against the device's
+     * and 5 min between the earlier lease running out and the backend serving the create again. It matters for an
+     * accepted offer only: a live one (active, awaiting confirmation, in escrow) is listed whatever the cutoff.
+     */
+    val bindLookbackMarginMs: Int = 600_000,
 ) {
     init {
         require(maxCreatesPerPartnerPerCycle >= 1) {
@@ -1299,6 +1308,7 @@ data class SteamWriteConfig(
         require(cooldownMaxMs >= cooldownMinMs) {
             "cooldownMaxMs ($cooldownMaxMs) must be >= cooldownMinMs ($cooldownMinMs)"
         }
+        require(bindLookbackMarginMs >= 0) { "bindLookbackMarginMs must be >= 0, was $bindLookbackMarginMs" }
     }
 
     @JsExport.Ignore val cooldownMin: Duration get() = cooldownMinMs.milliseconds
@@ -1306,4 +1316,6 @@ data class SteamWriteConfig(
     @JsExport.Ignore val cooldownBase: Duration get() = cooldownBaseMs.milliseconds
 
     @JsExport.Ignore val cooldownMax: Duration get() = cooldownMaxMs.milliseconds
+
+    @JsExport.Ignore val bindLookbackMargin: Duration get() = bindLookbackMarginMs.milliseconds
 }

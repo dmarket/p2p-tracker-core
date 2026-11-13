@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.adapter.host.InMemoryCredentialVault
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
+import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.engine.TrackerBlock
@@ -112,6 +113,8 @@ class MobileSteamSessionTest {
             return if (community && request.url.encodedPath.trimEnd('/').isEmpty()) {
                 val token = steamAccessToken(owner, clock.now() + 20.hours)
                 respond("""<div data-loyalty_webapi_token="&quot;$token&quot;"></div><script>var g_steamID = "$owner";</script>""")
+            } else if (request.url.encodedPath == SteamEndpointsConfig().getTradeOffersPath) {
+                respond("""{"response":{}}""") // no sent offer to bind a create to
             } else if (community && request.url.encodedPath == "/tradeoffer/new/send") {
                 respond("""{"tradeofferid":"8001","needs_mobile_confirmation":true}""")
             } else if (community && request.url.encodedPath.endsWith("/cancel")) {

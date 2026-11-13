@@ -299,28 +299,6 @@ class P2pSerializationTest {
         assertEquals(120.seconds, result.createOffer?.leaseTtl)
     }
 
-    // ---- re-issue marker (ahead of the contract) ----------------------------------------------------
-
-    @Test
-    fun a_directive_is_reissued_from_its_second_lease_or_with_a_previous_lease_start() {
-        val json = """
-            {
-              "directives": [
-                {"directiveId":"dir-1","action":"create_offer"},
-                {"directiveId":"dir-2","action":"create_offer","leaseAttempt":1},
-                {"directiveId":"dir-3","action":"create_offer","leaseAttempt":2},
-                {"directiveId":"dir-4","action":"create_offer","previousLeaseAgeSeconds":150},
-                {"directiveId":"dir-5","action":"create_offer","leaseAttempt":0,"previousLeaseAgeSeconds":-1}
-              ]
-            }
-        """.trimIndent()
-        val directives = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain().directives
-
-        assertEquals(listOf(false, false, true, true, false), directives.map { it.reissued })
-        assertEquals(listOf(null, 1, 2, null, null), directives.map { it.leaseAttempt })
-        assertEquals(listOf(null, null, null, 150.seconds, null), directives.map { it.previousLeaseAge })
-    }
-
     // ---- asset id -------------------------------------------------------------------------------
 
     @Test

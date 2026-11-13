@@ -75,20 +75,7 @@ data class Directive(
      * when the backend does not say, and the loop's default applies. See `TradeTrackerLoop`'s lease fence.
      */
     val leaseTtl: Duration? = null,
-    /** Which lease of this directive this is, 1 for the first; `null` when the backend does not say. See [reissued]. */
-    val leaseAttempt: Int? = null,
-    /**
-     * How long before the request that served this directive its previous lease started; `null` when the backend
-     * does not say. See [reissued].
-     */
-    val previousLeaseAge: Duration? = null,
 ) {
-    /**
-     * Served again after an earlier lease ran out, maybe on another device that made the offer and never reported it:
-     * a `create_offer` then looks for that offer before it creates. `false` while the backend sends neither field.
-     */
-    val reissued: Boolean get() = (leaseAttempt ?: 1) > 1 || previousLeaseAge != null
-
     /** Redacted: [tradeToken] is a bearer capability — see [com.dmarket.p2p.tracker.model.steam.TradeDraft]. */
     override fun toString(): String = "Directive(directiveId=$directiveId, action=$action, dealId=$dealId, " +
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +

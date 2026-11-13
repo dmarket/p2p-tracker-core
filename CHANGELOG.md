@@ -32,7 +32,7 @@ GitHub Release.
 - `TrackerState.steamSession` reports the Steam session as `ALIVE`, `NEEDS_REFRESH`, `GONE` or `OTHER_ACCOUNT`; on `OTHER_ACCOUNT` the tracker sends no request to Steam. Read the session's state from this field alone, not combined with `block` (DMA-662).
 - Android: the tracker runs the directives the backend leases, and creates and cancels Steam offers on the session in its vault when `AndroidTracker.install(steamWrites = true)`. `steamWrites` is off by default; `reportUnsentCreates` sets whether a create that never reached Steam is reported `failed` (DMA-662).
 - Android: a Steam offer create or cancel starts only inside its directive's lease (2 min unless the backend sends `leaseTtlSeconds`), counted on a clock that runs through sleep; with under 30 s left the tracker heartbeats first, and a lease that heartbeat does not renew gets no write. `MobileTrackerPlatform.elapsedClock` is that clock (DMA-662).
-- Android: a `create_offer` the backend serves again (`leaseAttempt` 2 or more, or `previousLeaseAgeSeconds`) first reads the account's active sent offers and reports an offer to the same partner with the same assets instead of creating a second one; without those fields nothing changes. `SteamReadClient.sentOffers(credential, historicalCutoff)` is the new read (DMA-662).
+- Android: before each Steam offer create the tracker reads the account's active sent offers and reports an offer to the same partner with the same assets instead of creating a second one. `SteamReadClient.sentOffers(credential, historicalCutoff)` is the new read, and `SteamWriteConfig.bindLookbackMarginMs` (10 min) widens how far back it looks for an accepted offer (DMA-662).
 
 ### Changed
 

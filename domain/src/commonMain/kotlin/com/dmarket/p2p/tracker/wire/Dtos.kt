@@ -122,18 +122,6 @@ data class DirectiveDto(
      * Absent (today's backend), zero or negative: the client's default (`LoopConfig.leaseTtl`, 2 min).
      */
     @SerialName("leaseTtlSeconds") val leaseTtlSeconds: Int? = null,
-    /**
-     * Ahead of the contract (DMA-662 Q14): which lease of this directive this is, 1 for the first. 2 and up mark a
-     * `create_offer` served again after an earlier lease ran out, possibly on another device, so the client reads the
-     * account's sent offers before it creates. Absent (today's backend), zero or negative: a first lease.
-     */
-    @SerialName("leaseAttempt") val leaseAttempt: Int? = null,
-    /**
-     * Ahead of the contract (DMA-662 Q14): how long before the request that served this directive the previous lease on
-     * it started, counted like [leaseTtlSeconds] so no device clock is compared with the server's. Present only on a
-     * directive served again; it also marks one. Absent or negative: no previous lease known.
-     */
-    @SerialName("previousLeaseAgeSeconds") val previousLeaseAgeSeconds: Int? = null,
 ) {
     /**
      * Redacted: [tradeToken] is a bearer capability. This is also what `HeartbeatResponseDto.toString()`
@@ -144,7 +132,7 @@ data class DirectiveDto(
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +
         "tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, " +
         "contextId=$contextId, steamOfferId=$steamOfferId, deadlineTime=$deadlineTime, " +
-        "leaseTtlSeconds=$leaseTtlSeconds, leaseAttempt=$leaseAttempt, previousLeaseAgeSeconds=$previousLeaseAgeSeconds)"
+        "leaseTtlSeconds=$leaseTtlSeconds)"
 }
 
 @Serializable
