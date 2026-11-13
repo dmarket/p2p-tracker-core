@@ -32,10 +32,14 @@ data class HeartbeatRequestDto(
     @SerialName("foreground") val foreground: Boolean,
     @SerialName("steamId") val steamId: String,
     @SerialName("deviceId") val deviceId: String,
-    /**
-     * The Steam session's state on a mobile device (`ALIVE` | `NEEDS_REFRESH` | `GONE` | `OTHER_ACCOUNT`), DMA-659.
-     * **Ahead of the contract**, like [TrackedDealDto.role]: nullable, and left out when `null` (web never sends it).
-     */
+    /** The mobile device's state (contract 27427d2 §5.1, `HeartbeatRequest.tracker_state`); left out when `null` (web, headless). */
+    @SerialName("trackerState") val trackerState: TrackerStateDto? = null,
+)
+
+/** `TrackerState` of contract 27427d2 §7: only the Steam session is sent so far. */
+@Serializable
+data class TrackerStateDto(
+    /** `SteamSessionState`: `STEAM_SESSION_STATE_ALIVE` | `…_NEEDS_REFRESH` | `…_GONE` | `…_OTHER_ACCOUNT`. */
     @SerialName("steamSession") val steamSession: String? = null,
 )
 
@@ -117,11 +121,12 @@ data class DirectiveDto(
     /** RFC3339: a `create_offer`'s create deadline. Absent on every other action, and from an older backend. */
     @SerialName("deadlineTime") val deadlineTime: String? = null,
     /**
-     * Ahead of the contract (DMA-662 Q14): how long this device's lease on the directive lasts, counted by the client
-     * from when it sent the request that served it. A duration, so no device clock is compared with the server's.
-     * Absent (today's backend), zero or negative: the client's default (`LoopConfig.leaseTtl`, 2 min).
+     * `Directive.lease_duration` (contract 27427d2 §5.2), a `google.protobuf.Duration` in its JSON form (`"120s"`,
+     * `"1.5s"`): how long this device's lease lasts, counted by the client from when it sent the request that served
+     * it. Absent, zero, negative or malformed: the client's default (`LoopConfig.leaseTtl`, 2 min). The contract's
+     * `leaseExpiresTime` is not read: it is a server instant, and the device clock is never compared with it.
      */
-    @SerialName("leaseTtlSeconds") val leaseTtlSeconds: Int? = null,
+    @SerialName("leaseDuration") val leaseDuration: String? = null,
 ) {
     /**
      * Redacted: [tradeToken] is a bearer capability. This is also what `HeartbeatResponseDto.toString()`
@@ -132,7 +137,7 @@ data class DirectiveDto(
         "partnerSteamId=$partnerSteamId, assetIds=$assetIds, " +
         "tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, " +
         "contextId=$contextId, steamOfferId=$steamOfferId, deadlineTime=$deadlineTime, " +
-        "leaseTtlSeconds=$leaseTtlSeconds)"
+        "leaseDuration=$leaseDuration)"
 }
 
 @Serializable
@@ -349,13 +354,16 @@ data class CreateOfferDto(
     @SerialName("assetIds") val assetIds: List<String> = emptyList(),
     @SerialName("tradeToken") val tradeToken: String? = null,
     @SerialName("contextId") val contextId: Int = 0,
-    /** Ahead of the contract, as [DirectiveDto.leaseTtlSeconds]: the lease `create-trade` parks under this device. */
-    @SerialName("leaseTtlSeconds") val leaseTtlSeconds: Int? = null,
+    /**
+     * As [DirectiveDto.leaseDuration]: the lease `create-trade` parks under this device. The contract names the field
+     * on `Directive` only; read here under the same name, and absent gives the default.
+     */
+    @SerialName("leaseDuration") val leaseDuration: String? = null,
 ) {
     /** Redacted: [tradeToken] is a bearer capability, as on [DirectiveDto]. */
     override fun toString(): String = "CreateOfferDto(directiveId=$directiveId, partnerSteamId=$partnerSteamId, " +
         "assetIds=$assetIds, tradeToken=${if (tradeToken == null) "null" else "<redacted>"}, contextId=$contextId, " +
-        "leaseTtlSeconds=$leaseTtlSeconds)"
+        "leaseDuration=$leaseDuration)"
 }
 
 @Serializable

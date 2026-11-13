@@ -30,6 +30,8 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -47,7 +49,7 @@ fun HeartbeatRequest.toDto(): HeartbeatRequestDto = HeartbeatRequestDto(
     foreground = foreground,
     steamId = steamId.value,
     deviceId = deviceId.value,
-    steamSession = steamSession?.name,
+    trackerState = steamSession?.let { TrackerStateDto(steamSession = "STEAM_SESSION_STATE_${it.name}") },
 )
 
 fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
@@ -110,7 +112,7 @@ fun DirectiveDto.toDomain(): Directive = Directive(
     // does not know is reported back, and the report has to name what the backend asked for.
     rawAction = action.takeIf { it.isNotBlank() },
     deadline = deadlineTime.toFreshnessMark(),
-    leaseTtl = leaseTtlSeconds?.takeIf { it > 0 }?.seconds,
+    leaseTtl = leaseDuration?.let(::protoDurationOrNull)?.takeIf { it.isPositive() },
 )
 
 fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(
@@ -250,7 +252,7 @@ fun CreateOfferDto.toDirective(dealId: DealId): Directive? = directiveId.takeIf 
         assetIds = assetIds,
         tradeToken = tradeToken,
         contextId = contextId,
-        leaseTtlSeconds = leaseTtlSeconds,
+        leaseDuration = leaseDuration,
     ).toDomain()
 }
 
@@ -260,3 +262,14 @@ fun DealActionResponseDto.toDomain(dealId: DealId): DealActionResult = DealActio
     reasonCode = reasonCode,
     createOffer = createOffer?.toDirective(dealId),
 )
+
+/** The JSON form of `google.protobuf.Duration` (`"120s"`, `"-1.5s"`, up to 9 fraction digits); `null` when malformed. */
+internal fun protoDurationOrNull(text: String): Duration? {
+    val match = PROTO_DURATION.matchEntire(text) ?: return null
+    val (sign, whole, fraction) = match.destructured
+    val seconds = whole.toLongOrNull() ?: return null
+    val duration = seconds.seconds + fraction.padEnd(9, '0').toLong().nanoseconds
+    return if (sign == "-") -duration else duration
+}
+
+private val PROTO_DURATION = Regex("""(-?)(\d+)(?:\.(\d{1,9}))?s""")

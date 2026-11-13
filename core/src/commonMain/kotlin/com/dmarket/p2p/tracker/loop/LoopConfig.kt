@@ -73,7 +73,7 @@ import kotlin.time.Duration.Companion.seconds
  *   the session belongs to another account than the last heartbeat's `linkedSteamId` (before one, [hostLinkedSteamId];
  *   without either, the account a previous verdict named), the cycle sends no Steam request at all (no scrape, refresh, mint, re-check, read, write
  *   or proof) and only heartbeats with the session's steamid. And the heartbeat carries the session's state
- *   (`steamSession`, ahead of the contract). `false` (web, headless): neither.
+ *   (`trackerState.steamSession`). `false` (web, headless): neither.
  * @param reportEachWrite Each `create_offer` / `cancel_offer` is reported on `/trade-actions` in a call of its own right
  *   after Steam answers, before the next write and before any proof (mobile: a wake can end at any moment, and a write
  *   the backend has not heard of keeps its lease held). An accepted report is pruned at once and left out of the
@@ -85,7 +85,7 @@ import kotlin.time.Duration.Companion.seconds
  *   for another account before the start sends nothing to Steam on the first cycle either. The heartbeat's value
  *   replaces it once one comes back. `null` (web, headless): the first cycle waits for the heartbeat, as before.
  * @param leaseTtl How long this device's lease on a directive lasts when the backend does not say
- *   (`leaseTtlSeconds`): the backend's `DefaultLeaseTTL`, 2 min. Read only by a loop given a lease clock (mobile).
+ *   (`leaseDuration`): the backend's `DefaultLeaseTTL`, 2 min. Read only by a loop given a lease clock (mobile).
  * @param leaseRenewBefore With less than this left of a directive's lease, the loop heartbeats before the Steam write,
  *   and writes only if that heartbeat leaves at least this much. 30 s by default.
  */

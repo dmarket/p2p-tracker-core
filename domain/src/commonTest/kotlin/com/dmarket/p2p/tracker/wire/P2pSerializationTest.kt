@@ -24,12 +24,16 @@ import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.deal
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
@@ -61,10 +65,16 @@ class P2pSerializationTest {
         )
 
         val web = TrackerJson.encodeToString(request.toDto())
-        val mobile = TrackerJson.encodeToString(request.copy(steamSession = SteamWebSessionState.OTHER_ACCOUNT).toDto())
-
+        assertFalse("trackerState" in web, web)
         assertFalse("steamSession" in web, web)
-        assertTrue("\"steamSession\":\"OTHER_ACCOUNT\"" in mobile, mobile)
+
+        SteamWebSessionState.entries.forEach { state ->
+            val mobile = TrackerJson.parseToJsonElement(TrackerJson.encodeToString(request.copy(steamSession = state).toDto()))
+            val session = mobile.jsonObject.getValue("trackerState").jsonObject.getValue("steamSession").jsonPrimitive.content
+            assertEquals("STEAM_SESSION_STATE_${state.name}", session)
+            assertFalse("steamSession" in mobile.jsonObject, "not at the top level: $mobile")
+        }
+        assertEquals(4, SteamWebSessionState.entries.size)
     }
 
     @Test
@@ -271,29 +281,33 @@ class P2pSerializationTest {
         assertEquals(directive, roundTrip(directive))
     }
 
-    // ---- lease duration (ahead of the contract) ----------------------------------------------------
+    // ---- lease duration (contract 27427d2 §5.2) ----------------------------------------------------
 
     @Test
     fun a_directive_carries_its_lease_duration_and_anything_but_a_positive_one_is_none() {
         val json = """
             {
               "directives": [
-                {"directiveId":"dir-1","action":"create_offer","leaseTtlSeconds":300},
+                {"directiveId":"dir-1","action":"create_offer","leaseDuration":"300s","leaseExpiresTime":"2026-11-13T12:00:00Z"},
                 {"directiveId":"dir-2","action":"cancel_offer"},
-                {"directiveId":"dir-3","action":"cancel_offer","leaseTtlSeconds":0},
-                {"directiveId":"dir-4","action":"cancel_offer","leaseTtlSeconds":-5},
-                {"directiveId":"dir-5","action":"cancel_offer","leaseTtlSeconds":null}
+                {"directiveId":"dir-3","action":"cancel_offer","leaseDuration":"0s"},
+                {"directiveId":"dir-4","action":"cancel_offer","leaseDuration":"-5s"},
+                {"directiveId":"dir-5","action":"cancel_offer","leaseDuration":null},
+                {"directiveId":"dir-6","action":"cancel_offer","leaseDuration":"1.5s"},
+                {"directiveId":"dir-7","action":"cancel_offer","leaseDuration":"0.000000001s"},
+                {"directiveId":"dir-8","action":"cancel_offer","leaseDuration":"120"},
+                {"directiveId":"dir-9","action":"cancel_offer","leaseDuration":"2m"}
               ]
             }
         """.trimIndent()
         val leases = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain().directives.map { it.leaseTtl }
 
-        assertEquals(listOf(300.seconds, null, null, null, null), leases)
+        assertEquals(listOf(300.seconds, null, null, null, null, 1500.milliseconds, 1.nanoseconds, null, null), leases)
     }
 
     @Test
     fun a_create_trade_directive_carries_its_lease_duration() {
-        val json = """{"state":"COMMITTED","createOffer":{"directiveId":"dir-9","leaseTtlSeconds":120}}"""
+        val json = """{"state":"COMMITTED","createOffer":{"directiveId":"dir-9","leaseDuration":"120s"}}"""
         val result = TrackerJson.decodeFromString<DealActionResponseDto>(json).toDomain(DealId("d1"))
 
         assertEquals(120.seconds, result.createOffer?.leaseTtl)

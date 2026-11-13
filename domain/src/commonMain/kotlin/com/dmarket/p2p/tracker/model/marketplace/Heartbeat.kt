@@ -14,7 +14,7 @@ import kotlin.time.Instant
  * directive transport only — it carries **no** inventory data and **no** account id (the backend reads
  * the account from the Bearer token). [steamId] must equal the account's Steam id (wrong-account
  * guard); [deviceId] is install-scoped and persistent (the directive-lease key). [steamSession] is the state of the
- * Steam session in the core's vault, sent by mobile only (DMA-659, ahead of the contract); `null` is left out.
+ * Steam session in the core's vault, sent by mobile only as `trackerState.steamSession`; `null` is left out.
  */
 data class HeartbeatRequest(
     val clientVersion: String,

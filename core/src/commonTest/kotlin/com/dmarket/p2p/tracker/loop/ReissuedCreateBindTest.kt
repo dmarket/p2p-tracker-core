@@ -264,7 +264,7 @@ class ReissuedCreateBindTest {
 
     @Test
     fun the_read_asks_for_active_offers_and_those_changed_since_the_lease_before_this_one() = runTest {
-        directive = create(""","leaseTtlSeconds":300""")
+        directive = create(""","leaseDuration":"300s"""")
 
         loop().runOnce()
 

@@ -224,12 +224,23 @@ class LeaseFenceTest {
 
     @Test
     fun the_backend_lease_duration_replaces_the_default() = runTest {
-        served = listOf(create("a", extra = ""","leaseTtlSeconds":600"""))
+        served = listOf(create("a", extra = ""","leaseDuration":"600s""""))
         heartbeatTakes = listOf(3.minutes)
 
         loop().runOnce()
 
         assertEquals(listOf("heartbeat", "create asset-a"), log)
+    }
+
+    @Test
+    fun a_shorter_backend_lease_renews_before_the_write() = runTest {
+        // 80 s would leave 40 s of the 2 min default; of the backend's 90.5 s lease it leaves 10.5 s, under the margin.
+        served = listOf(create("a", extra = ""","leaseDuration":"90.5s""""))
+        heartbeatTakes = listOf(80.seconds, Duration.ZERO)
+
+        loop().runOnce()
+
+        assertEquals(listOf("heartbeat", "heartbeat", "create asset-a"), log)
     }
 
     @Test
