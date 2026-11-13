@@ -205,8 +205,8 @@ class P2pTracker(
      * whatever the vault held ([MobileTrackerPlatform.importSteamSession]). A host calls
      * [MobileTracker.importSteamSession], which comes here once the tracker is built; see the contract there.
      *
-     * With a loop running, the import waits for its cycle and forces the next cycle's heartbeat, so the account binding
-     * is judged again on the new session. Returns the session's state, or `null` when no loop runs: the vault is written
+     * With a loop running, the import waits for its cycle, judges the account binding on the new session at once (a
+     * create asked for next sees that verdict) and forces the next cycle's heartbeat, which confirms it with DMarket. Returns the session's state, or `null` when no loop runs: the vault is written
      * all the same, and the first cycle after the start reads it.
      */
     suspend fun importSteamSession(cookies: List<SteamCookie>): SteamWebSessionState? {
@@ -218,6 +218,7 @@ class P2pTracker(
         }
         return s.cycleLock.withLock {
             import(cookies)
+            s.loop.judgeImportedSteamSession()
             s.loop.forceHeartbeatNow()
             publishSteamSession(s)
         }
@@ -488,7 +489,7 @@ class P2pTracker(
     /** Reads [s]'s Steam session state into [state]; under [s]'s cycle lock. */
     private suspend fun publishSteamSession(s: Session): SteamWebSessionState {
         val steamSession = s.loop.steamSessionState()
-        mutableState.update { it.copy(steamSession = steamSession).withSteamSessionFromBlock() }
+        mutableState.update { it.copy(block = s.loop.blockingState, steamSession = steamSession).withSteamSessionFromBlock() }
         return steamSession
     }
 

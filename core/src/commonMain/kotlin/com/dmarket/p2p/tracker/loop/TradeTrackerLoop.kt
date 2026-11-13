@@ -1729,6 +1729,21 @@ class TradeTrackerLoop(
         return if (replaced) state else SteamWebSessionState.OTHER_ACCOUNT
     }
 
+    /**
+     * Judges the account binding again on a session just imported into the vault, before any cycle: a session of another
+     * account sets the wrong-account verdict, a session naming another account than the verdict's clears it. So a create
+     * asked for right after the import is judged on the new session, as `TrackerState` already shows it. No network.
+     */
+    suspend fun judgeImportedSteamSession() = cycleMutex.withLock {
+        val other = otherAccountSession()
+        val verdict = mismatchTokenSteamId
+        if (other != null) {
+            setMismatchTokenSteamId(other)
+        } else if (verdict != null && credentials.sessionSteamId()?.let { it != verdict } == true) {
+            setMismatchTokenSteamId(null)
+        }
+    }
+
     /** Renews the Steam session when it is due and not another account's (the app's ON_START check); no import. */
     suspend fun checkSteamSession(): SteamWebSessionState = cycleMutex.withLock {
         if (steamSessionState() == SteamWebSessionState.NEEDS_REFRESH) credentials.refreshSession()

@@ -254,6 +254,22 @@ class MobileSteamSessionTest {
     }
 
     @Test
+    fun aCreateRightAfterSigningBackInIsNotRefusedAsAnotherAccount() = runTest {
+        val tracker = tracker()
+        tracker.importSteamSession(session(alice))
+        tracker.onPush(push)
+        tracker.importSteamSession(session(bob))
+        tracker.onPush(push)
+        assertEquals(TrackerBlock.STEAM_ACCOUNT_MISMATCH, tracker.state.value.block)
+
+        tracker.importSteamSession(session(alice))
+        assertEquals(TrackerBlock.NONE, tracker.state.value.block)
+        val delivery = tracker.startDelivery(DealId("d1"))
+
+        assertTrue(delivery.result !is CreateOfferResult.AccountMismatch, "${delivery.result}")
+    }
+
+    @Test
     fun theImportKeepsOnlyTheSteamSessionDomains() = runTest {
         val tracker = tracker()
 
