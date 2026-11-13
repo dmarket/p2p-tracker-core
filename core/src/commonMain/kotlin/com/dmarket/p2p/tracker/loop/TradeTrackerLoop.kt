@@ -1577,6 +1577,12 @@ class TradeTrackerLoop(
         // instead of waiting for the next due heartbeat.
         if (marketplaceCredentials != null) {
             if (marketplaceCredentials.current() == null) {
+                // A token the host could not hand over right now (it threw) is a temporary failure, not a logout: no
+                // prompt, the connection-error streak instead, and a retry on a later cycle.
+                if (marketplaceCredentials.lastFailureTransient) {
+                    countConnectionFailure()
+                    return@withLock TickOutcome.EMPTY
+                }
                 marketplaceConnectionMissingSticky = true
                 if (!marketplaceReLoginAnnounced) {
                     marketplaceReLoginAnnounced = true
@@ -1857,20 +1863,29 @@ class TradeTrackerLoop(
             // behavior for a cancelled cycle), so a Tracker.stop mid-heartbeat can't flash an error.
             return null
         } catch (_: Throwable) {
-            val before = blockingState
-            consecutiveServerErrors += 1
-            // Persist the streak like the server-error catch above: a network outage is exactly when
-            // nothing keeps the MV3 worker alive between retries, so an in-memory-only counter would
-            // restart at 0 on every respawn and the threshold would never be crossed.
-            runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
-            if (consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
-            if (marketplaceServerErrorSticky && blockingState != before) {
-                emit(LifecycleEvent.MarketplaceServerError("heartbeat", 0))
-            }
+            countConnectionFailure()
             return null
         }
         heartbeatReturned()
         return heartbeat
+    }
+
+    /**
+     * A DMarket heartbeat that could not round-trip for a reason with no HTTP status (network, decode, a token the host
+     * could not hand over), debounced like a transient 5xx: [SERVER_ERROR_THRESHOLD] in a row raise
+     * [TrackerBlock.DM_CONNECTION_ERROR], with statusCode 0. The missing-connection state is left as it is.
+     */
+    private suspend fun countConnectionFailure() {
+        val before = blockingState
+        consecutiveServerErrors += 1
+        // Persist the streak like the server-error catch: a network outage is exactly when nothing keeps the MV3
+        // worker alive between retries, so an in-memory-only counter would restart at 0 on every respawn and the
+        // threshold would never be crossed.
+        runCatching { loopState.setServerErrorCount(consecutiveServerErrors) }
+        if (consecutiveServerErrors >= SERVER_ERROR_THRESHOLD) marketplaceServerErrorSticky = true
+        if (marketplaceServerErrorSticky && blockingState != before) {
+            emit(LifecycleEvent.MarketplaceServerError("heartbeat", 0))
+        }
     }
 
     /** The heartbeat round-tripped, so the DMarket connection is live: the error states clear. */

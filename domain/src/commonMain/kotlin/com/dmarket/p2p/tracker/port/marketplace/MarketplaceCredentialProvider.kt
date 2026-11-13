@@ -63,4 +63,13 @@ interface MarketplaceCredentialProvider {
      * leave it `false`, or an outage turns into a false "you are signed out" for the whole install base.
      */
     val lastRefreshFailedLoggedOut: Boolean
+
+    /**
+     * `true` when the last `null` from [current] or [forceRefresh] came from a failure the implementation knows is
+     * temporary and says nothing about the session (the mobile host's supplier threw: no network, a locked Keychain).
+     * The loop then counts a DMarket connection failure and retries on a later cycle, with no sign-in prompt and no
+     * missing-connection state. `false` by default: an implementation that cannot tell the two apart leaves every
+     * `null` to the missing-connection path, as before.
+     */
+    val lastFailureTransient: Boolean get() = false
 }

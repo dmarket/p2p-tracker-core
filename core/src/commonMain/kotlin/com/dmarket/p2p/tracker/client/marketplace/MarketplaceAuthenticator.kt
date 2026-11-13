@@ -67,8 +67,20 @@ internal const val AUTHORIZATION_HEADER = "Authorization"
 class CredentialMarketplaceAuthenticator(private val provider: MarketplaceCredentialProvider) : MarketplaceAuthenticator {
     override suspend fun tokenOrNull(): String? = provider.current()?.token
 
-    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean = provider.forceRefresh(rejectedToken) != null
+    override suspend fun refreshOnUnauthorized(rejectedToken: String?): Boolean {
+        val refreshed = provider.forceRefresh(rejectedToken)
+        // A refresh that failed for a temporary reason is no "unauthorized" verdict: the call fails as a network blip would.
+        if (refreshed == null && provider.lastFailureTransient) throw MarketplaceTokenUnavailableException()
+        return refreshed != null
+    }
 }
+
+/**
+ * Thrown by [CredentialMarketplaceAuthenticator] when the refresh after a 401 failed for a temporary reason
+ * ([MarketplaceCredentialProvider.lastFailureTransient]): the request fails like a network error, not as
+ * unauthorized, so it raises no sign-in prompt.
+ */
+class MarketplaceTokenUnavailableException : RuntimeException("DMarket token temporarily unavailable")
 
 /**
  * The default authenticator: attaches no header and never retries. Only for a transport that authenticates

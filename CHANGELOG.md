@@ -37,7 +37,7 @@ GitHub Release.
 ### Changed
 
 - The mobile tracker is assembled in common code: `MobileTracker` over a `MobileTrackerPlatform`, which `AndroidTrackerPlatform` now extends. `AndroidTrackerStores` is renamed `MobileTrackerStores`; `AndroidTracker.install` is unchanged (DMA-661).
-- Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary failure, no longer a logout; return `null` when there is no DMarket session (DMA-663).
+- Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 
 ## [1.3.0-beta] - 2026-11-10

@@ -17,8 +17,10 @@ import kotlinx.coroutines.CancellationException
  * The host's "no session" signal is `null`: it becomes `null` plus [lastRefreshFailedLoggedOut] = `true`, and the
  * tracker stops sending DMarket requests until a later call gets a token. A *throw* is read by
  * [treatFailureAsLoggedOut]: the mobile tracker (`MobileTrackerPlatform`) sets it `false`, so there a throw is a
- * temporary failure (retry later, no logout) that returns `null` for this call and leaves
- * [lastRefreshFailedLoggedOut] `false`. On iOS the Keychain on a locked phone throws instead of returning `null`.
+ * temporary failure that returns `null` for this call with [lastRefreshFailedLoggedOut] `false` and
+ * [lastFailureTransient] `true`. The loop then counts a DMarket connection failure (after two in a row the host sees
+ * `DM_CONNECTION_ERROR`), shows no sign-in prompt, and asks again on a later cycle. On iOS the Keychain on a locked
+ * phone throws instead of returning `null`.
  *
  * @param supplier the host's token layer. A [MarketplaceTokenSupplier] rather than a bare lambda type so a host can
  *   implement it with a small class holding only its token manager — this object lives as long as the tracker, and a
@@ -36,6 +38,9 @@ class HostTokenMarketplaceCredentialProvider(
     override var lastRefreshFailedLoggedOut: Boolean = false
         private set
 
+    override var lastFailureTransient: Boolean = false
+        private set
+
     override suspend fun current(): MarketplaceCredential? = ask(rejectedToken = null)
 
     override suspend fun forceRefresh(rejectedToken: String?): MarketplaceCredential? = ask(rejectedToken)
@@ -48,8 +53,10 @@ class HostTokenMarketplaceCredentialProvider(
             throw e
         } catch (_: Throwable) {
             lastRefreshFailedLoggedOut = treatFailureAsLoggedOut
+            lastFailureTransient = !treatFailureAsLoggedOut
             return null
         }
+        lastFailureTransient = false
         lastRefreshFailedLoggedOut = credential == null
         return credential
     }
@@ -66,8 +73,9 @@ class HostTokenMarketplaceCredentialProvider(
  * token no 2xx ever confirmed), end it and return `null`.
  *
  * Return `null` when there is no session; the tracker then stops and refreshes nothing itself. On mobile a throw is
- * not "no session" but a temporary failure (network, a locked Keychain): the tracker keeps the session, treats this
- * call as having no token and asks again on its next cycle. Never block on user interaction.
+ * not "no session" but a temporary failure (network, a locked Keychain): the tracker keeps the session, shows no
+ * sign-in prompt, counts it as a DMarket connection failure and asks again on a later cycle. Never block on user
+ * interaction.
  *
  * Mapping on each app:
  * - **Android**: `TokenDataHolder.getTokenData(forceRefresh = rejected != null, failedToken = rejected)`, which already
