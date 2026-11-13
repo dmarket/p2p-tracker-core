@@ -51,6 +51,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Bind-or-create (DMA-662 Q14): on mobile (a lease clock) every `create_offer` first reads the account's sent offers
@@ -81,6 +82,9 @@ class ReissuedCreateBindTest {
 
     /** The sent offers `GetTradeOffers` lists; each one `"<state>:<partner account id>:<asset>,<asset>[:<offer id>]"`. */
     private var sentOffers = listOf<String>()
+
+    /** How long each `GetTradeOffers` read takes on the lease clock. */
+    private var readTakes = Duration.ZERO
 
     /** How many `GetTradeOffers` reads still fail, with [readFailure]. */
     private var readFailures = 0
@@ -115,6 +119,7 @@ class ReissuedCreateBindTest {
         when {
             path == endpoints.getTradeOffersPath -> {
                 log += "read"
+                elapsed.now += readTakes
                 reads += request.url.parameters.entries().associate { it.key to it.value.first() }
                 if (readFailures-- > 0) {
                     return@MockEngine respond("", readFailure, headersOf(HttpHeaders.RetryAfter, "30"))
@@ -370,6 +375,50 @@ class ReissuedCreateBindTest {
         assertEquals(1, log.count { it == "read" }, "$log")
         assertEquals(2, log.count { it == "create" }, "$log")
         assertEquals(setOf("bound-x2/needs_confirmation", "new-offer/needs_confirmation"), reported.toSet())
+    }
+
+    @Test
+    fun a_read_that_eats_the_lease_margin_drops_the_create_unreported() = runTest {
+        directive = create()
+        readTakes = 100.seconds // 20 s of the 2 min lease left after the read
+
+        loop().runOnce()
+
+        assertEquals(listOf("read"), log)
+        assertTrue(reported.isEmpty())
+    }
+
+    @Test
+    fun a_read_inside_the_margin_lets_the_create_go() = runTest {
+        directive = create()
+        readTakes = 60.seconds // 60 s left
+
+        loop().runOnce()
+
+        assertEquals(listOf("read", "create", "report"), log)
+    }
+
+    @Test
+    fun an_offer_found_by_a_long_read_is_still_reported() = runTest {
+        directive = create()
+        sentOffers = listOf("9:$partnerAccountId:a1,a2")
+        readTakes = 100.seconds
+
+        loop().runOnce()
+
+        assertEquals(listOf("read", "report"), log)
+        assertEquals(listOf("bound-0/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun a_relayed_create_whose_read_eats_the_margin_is_not_posted() = runTest {
+        createTrade = create()
+        readTakes = 100.seconds
+
+        val result = withContext(Dispatchers.Default) { loop().awaitDirectiveOutcome(DealId("deal-1"), 1.minutes, this) }
+
+        assertEquals(CreateOfferResult.Failed(LEASE_LAPSED_DROP_REASON), result)
+        assertTrue("create" !in log, "$log")
     }
 
     @Test

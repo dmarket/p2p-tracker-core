@@ -2152,6 +2152,14 @@ class TradeTrackerLoop(
     }
 
     /**
+     * The lease fence's second look, right before a create's POST and after its bind read: at least
+     * [LoopConfig.leaseRenewBefore] left, with no renewal (the write itself needs that time to land and be reported
+     * inside the lease, as the first look asks). Off without a [leaseClock].
+     */
+    private suspend fun leaseStillAllowsWrite(directive: Directive): Boolean =
+        leaseClock?.let { leaseLeft(directive, it) >= config.leaseRenewBefore } ?: true
+
+    /**
      * The `time_historical_cutoff` of a create's bind read: where the lease before this one may have started (this
      * lease's start, counted back on the lease clock and turned into Steam's time by the wall clock, less one lease TTL),
      * less [com.dmarket.p2p.tracker.config.SteamWriteConfig.bindLookbackMargin].
@@ -2911,6 +2919,13 @@ class TradeTrackerLoop(
                 emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))
                 return@withDealClaim WriteAttempt(stopChain = true, reason = BIND_READ_FAILED_DROP_REASON) to ClaimEnd.Released
+            }
+            // The read may have waited for another chain's and taken a refresh: check the lease again before the POST,
+            // with no renewal now. A bound offer writes nothing to Steam, so it needs no lease left.
+            if (bound == null && !leaseStillAllowsWrite(directive)) {
+                emitDropped(directive, LEASE_LAPSED_DROP_REASON)
+                resolveCreateWaiter(directive, CreateOfferResult.Failed(LEASE_LAPSED_DROP_REASON))
+                return@withDealClaim WriteAttempt(stopChain = true, reason = LEASE_LAPSED_DROP_REASON) to ClaimEnd.Released
             }
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
