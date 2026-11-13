@@ -18,6 +18,7 @@ import com.dmarket.p2p.tracker.engine.BlockingState
 import com.dmarket.p2p.tracker.engine.CancelDecision
 import com.dmarket.p2p.tracker.engine.CancelWrite
 import com.dmarket.p2p.tracker.engine.ClaimVerdict
+import com.dmarket.p2p.tracker.engine.CreateOfferMatch
 import com.dmarket.p2p.tracker.engine.DealRoleBinding
 import com.dmarket.p2p.tracker.engine.DealWriteGuard
 import com.dmarket.p2p.tracker.engine.DirectiveAcknowledgement
@@ -226,6 +227,12 @@ private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stoppe
  * Unreported: the lease is not this device's to answer for any more.
  */
 internal const val LEASE_LAPSED_DROP_REASON = "lease lapsed before the Steam write"
+
+/**
+ * Why a re-leased create was not run: the account's sent offers, which may hold the offer an earlier lease made, could
+ * not be read. Unreported; the read runs again when the backend serves the directive again.
+ */
+internal const val BIND_READ_FAILED_DROP_REASON = "sent offers unread before a re-leased create"
 
 /**
  * The `SteamWriteDeferred` reason of a create held back by `LoopConfig.minWriteTokenLifetime`: the token, not
@@ -1003,6 +1010,10 @@ class TradeTrackerLoop(
         emit(LifecycleEvent.CreateUnanswered(dealId.value, directive.directiveId.value, failed.error))
         return UnansweredCreate(partner, directive.assetIds.toSet(), directive.deadline)
     }
+
+    /** What a create whose answer is this offer, found among the account's sent offers, produced. */
+    private fun SteamSentOffer.createResult(): CreateOfferResult =
+        if (state == STEAM_OFFER_NEEDS_CONFIRMATION) CreateOfferResult.NeedsConfirmation(offerId) else CreateOfferResult.Created(offerId)
 
     /** This create's outcome, from the [CreateOfferResult] its Steam write produced. */
     private fun Directive.createOutcome(result: CreateOfferResult): DirectiveOutcome = when (result) {
@@ -2041,8 +2052,11 @@ class TradeTrackerLoop(
         return response
     }
 
-    /** One directive's lease as this device counts it: from [leasedAt] on the lease clock, for [ttl]. */
-    private class LeaseWindow(val leasedAt: Duration, val ttl: Duration) {
+    /**
+     * One directive's lease as this device counts it: from [leasedAt] on the lease clock, for [ttl]. [previousLeaseAt] is
+     * where the lease before it started, on the same clock, when the backend says ([Directive.previousLeaseAge]).
+     */
+    private class LeaseWindow(val leasedAt: Duration, val ttl: Duration, val previousLeaseAt: Duration? = null) {
         fun left(now: Duration): Duration = leasedAt + ttl - now
     }
 
@@ -2060,7 +2074,10 @@ class TradeTrackerLoop(
      */
     private suspend fun recordLeases(directives: List<Directive>, sentAt: Duration) = leaseLock.withLock {
         leases.entries.removeAll { it.value.left(sentAt) <= Duration.ZERO }
-        directives.forEach { leases[it.directiveId] = LeaseWindow(sentAt, it.leaseTtl ?: config.leaseTtl) }
+        directives.forEach {
+            leases[it.directiveId] =
+                LeaseWindow(sentAt, it.leaseTtl ?: config.leaseTtl, it.previousLeaseAge?.let(sentAt::minus))
+        }
     }
 
     /** What is left of [directive]'s lease now, on the lease clock; zero when none was recorded. */
@@ -2087,6 +2104,31 @@ class TradeTrackerLoop(
             renewLeases(credential)
         }
         return leaseLeft(directive, clock) >= margin
+    }
+
+    /**
+     * The `time_historical_cutoff` of a re-leased create's read: where its previous lease started, counted back on the
+     * lease clock from now and turned into Steam's time by the wall clock, less [UnansweredCreateCheck.CLOCK_TOLERANCE]
+     * for Steam's clock against this one. `null` when the backend did not say: Steam then lists the active offers only.
+     */
+    private suspend fun bindCutoff(directive: Directive, lease: ElapsedClock): Instant? = leaseLock.withLock {
+        leases[directive.directiveId]?.previousLeaseAt?.let { clock.now() - (lease.elapsed() - it) - UnansweredCreateCheck.CLOCK_TOLERANCE }
+    }
+
+    /**
+     * Before a re-leased create ([Directive.reissued]) writes, the offer an earlier lease of it made, maybe on another
+     * device that never reported it: a sent offer to [partner] giving exactly the directive's assets, in a state
+     * [CreateOfferMatch.BINDABLE_STATES] names, read with `active_only=1` from where the previous lease started. Its
+     * result is reported as the create's own, and nothing is created. [Result.success] of `null`: no such offer, or no
+     * read to make (a first lease, or no [leaseClock]: web and headless run as before). A failed read is a
+     * [Result.failure]: the caller creates nothing this cycle, and the read runs again when the directive is served again.
+     */
+    private suspend fun boundOffer(directive: Directive, partner: SteamId, credential: SteamCredential): Result<CreateOfferResult?> {
+        val lease = leaseClock
+        if (!directive.reissued || lease == null) return Result.success(null)
+        return runCatching { steamReader.sentOffers(credential, bindCutoff(directive, lease)) }.map { offers ->
+            CreateOfferMatch.bindable(offers, partner, directive.assetIds.toSet())?.createResult()
+        }
     }
 
     /**
@@ -2285,15 +2327,7 @@ class TradeTrackerLoop(
             val result = when (val verdict = UnansweredCreateCheck.evaluate(claim, unanswered, sent, now, grace)) {
                 UnansweredCreateVerdict.NotYet -> continue
                 UnansweredCreateVerdict.Absent -> CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
-                is UnansweredCreateVerdict.Found -> with(verdict.offer) {
-                    if (state ==
-                        STEAM_OFFER_NEEDS_CONFIRMATION
-                    ) {
-                        CreateOfferResult.NeedsConfirmation(offerId)
-                    } else {
-                        CreateOfferResult.Created(offerId)
-                    }
-                }
+                is UnansweredCreateVerdict.Found -> verdict.offer.createResult()
             }
             val outcome = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId).createOutcome(result)
             val found = result !is CreateOfferResult.Failed
@@ -2777,21 +2811,28 @@ class TradeTrackerLoop(
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(LEASE_LAPSED_DROP_REASON))
                 return@withDealClaim WriteAttempt(stopChain = true, reason = LEASE_LAPSED_DROP_REASON) to ClaimEnd.Released
             }
+            // Before the POST, so the suspicious-offer check already knows this offer when Steam lists it, whatever
+            // happens to the create's answer. Before the bind read too: the offer it finds is this deal's.
+            directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
+            // An unread offer list is no proof there is no offer: creating now could make the deal's second one.
+            val bound = boundOffer(directive, partner, credential).getOrElse {
+                emit(LifecycleEvent.SteamReadFailed("sent_offers", it.redactedSummary()))
+                emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
+                resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))
+                return@withDealClaim WriteAttempt(stopChain = true, reason = BIND_READ_FAILED_DROP_REASON) to ClaimEnd.Released
+            }
             // A throwing creator (a rejected fetch — network down, missing host permission, CORS — or
             // body/regex drift) is a FAILED create, exactly as it is on the cancel surface and on the host
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
             // instead left the lease held with no /trade-actions answer and no lifecycle event, so the
             // backend re-leased the directive forever and the deal stalled invisibly.
-            // Before the POST, so the suspicious-offer check already knows this offer when Steam lists it, whatever
-            // happens to the create's answer.
-            directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
-            val result = runCatching {
+            val result = bound ?: runCatching {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
             // concurrently and re-gate on every step, so the sooner a refusal lands in the throttle the fewer
-            // doomed creates they attempt.
-            recordCreateResult(partner, result)
+            // doomed creates they attempt. A bound offer is no write, so it says nothing about the surface.
+            if (bound == null) recordCreateResult(partner, result)
             resolveCreateWaiter(directive, result)
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {

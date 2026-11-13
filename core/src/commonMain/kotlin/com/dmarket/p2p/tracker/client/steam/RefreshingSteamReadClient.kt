@@ -11,6 +11,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import io.ktor.http.HttpStatusCode
+import kotlin.time.Instant
 
 /**
  * [SteamReadClient] decorator that reacts to HTTP **401/403** responses by forcing a credential
@@ -39,6 +40,9 @@ class RefreshingSteamReadClient(private val delegate: SteamReadClient, private v
 
     override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         withRefreshRetry(credential) { delegate.sentOffers(it) }
+
+    override suspend fun sentOffers(credential: SteamCredential, historicalCutoff: Instant?): List<SteamSentOffer> =
+        withRefreshRetry(credential) { delegate.sentOffers(it, historicalCutoff) }
 
     override suspend fun offers(credential: SteamCredential): List<SteamSentOffer> = withRefreshRetry(credential) { delegate.offers(it) }
 

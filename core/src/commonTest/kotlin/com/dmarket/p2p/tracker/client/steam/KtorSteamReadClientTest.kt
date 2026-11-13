@@ -189,6 +189,23 @@ class KtorSteamReadClientTest {
     }
 
     @Test
+    fun active_sent_offers_are_read_with_active_only_and_the_historical_cutoff() = runTest {
+        val recording = RecordingSteam()
+
+        recording.client.sentOffers(credential, Instant.fromEpochSeconds(1792420000))
+        recording.client.sentOffers(credential, historicalCutoff = null)
+
+        val (withCutoff, withoutCutoff) = recording.listParams
+        assertEquals("1", withCutoff[recording.endpoints.paramGetSentOffers])
+        assertEquals("0", withCutoff[recording.endpoints.paramGetReceivedOffers])
+        assertEquals("1", withCutoff[recording.endpoints.paramActiveOnly])
+        assertEquals("1792420000", withCutoff[recording.endpoints.paramTimeHistoricalCutoff])
+        assertEquals("0", withCutoff[recording.endpoints.paramGetDescriptions])
+        assertEquals("1", withoutCutoff[recording.endpoints.paramActiveOnly])
+        assertEquals(null, withoutCutoff[recording.endpoints.paramTimeHistoricalCutoff])
+    }
+
+    @Test
     fun offers_reads_both_lists_in_one_call_and_names_the_sides_from_this_account() = runTest {
         // Two deposit-shaped offers: this account gives a1 to the partner and gets nothing back. Steam names the sides
         // from the reader's side on both lists, so the received one is mapped as it stands, never swapped.

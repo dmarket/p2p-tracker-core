@@ -13,6 +13,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
+import kotlin.time.Instant
 
 /**
  * Ktor-backed implementation of [SteamReadClient] that calls Steam's `IEconService` endpoints and
@@ -79,19 +80,31 @@ class KtorSteamReadClient(private val httpClient: HttpClient, private val endpoi
     override suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         SteamReadResponses.sentOffers(tradeOffers(credential, received = false))
 
+    /** `GetTradeOffers`, sent offers only: the active ones and those changed since [historicalCutoff], without descriptions. */
+    override suspend fun sentOffers(credential: SteamCredential, historicalCutoff: Instant?): List<SteamSentOffer> =
+        SteamReadResponses.sentOffers(tradeOffers(credential, received = false, activeOnly = true, historicalCutoff = historicalCutoff))
+
     /** `GetTradeOffers`, sent and received offers in one call, in any state, without item descriptions. */
     override suspend fun offers(credential: SteamCredential): List<SteamSentOffer> =
         SteamReadResponses.offers(tradeOffers(credential, received = true))
 
-    /** The `GetTradeOffers` body: sent offers, [received] ones too when asked, in any state, without descriptions. */
-    private suspend fun tradeOffers(credential: SteamCredential, received: Boolean): String =
-        httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
-            parameter(endpoints.paramAccessToken, credential.token)
-            parameter(endpoints.paramGetSentOffers, 1)
-            parameter(endpoints.paramGetReceivedOffers, if (received) 1 else 0)
-            parameter(endpoints.paramActiveOnly, 0)
-            parameter(endpoints.paramGetDescriptions, 0)
-        }.bodyAsText()
+    /**
+     * The `GetTradeOffers` body: sent offers, [received] ones too when asked, without descriptions; in any state, or
+     * with [activeOnly] the active ones plus those changed since [historicalCutoff].
+     */
+    private suspend fun tradeOffers(
+        credential: SteamCredential,
+        received: Boolean,
+        activeOnly: Boolean = false,
+        historicalCutoff: Instant? = null,
+    ): String = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeOffersPath}") {
+        parameter(endpoints.paramAccessToken, credential.token)
+        parameter(endpoints.paramGetSentOffers, 1)
+        parameter(endpoints.paramGetReceivedOffers, if (received) 1 else 0)
+        parameter(endpoints.paramActiveOnly, if (activeOnly) 1 else 0)
+        historicalCutoff?.let { parameter(endpoints.paramTimeHistoricalCutoff, it.epochSeconds) }
+        parameter(endpoints.paramGetDescriptions, 0)
+    }.bodyAsText()
 
     override suspend fun recentTransfers(credential: SteamCredential, maxTrades: Int): List<SteamTransfer> {
         val responseText = httpClient.get("${endpoints.steamApiBaseUrl}${endpoints.getTradeHistoryPath}") {

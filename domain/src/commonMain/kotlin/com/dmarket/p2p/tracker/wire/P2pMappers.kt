@@ -111,6 +111,8 @@ fun DirectiveDto.toDomain(): Directive = Directive(
     rawAction = action.takeIf { it.isNotBlank() },
     deadline = deadlineTime.toFreshnessMark(),
     leaseTtl = leaseTtlSeconds?.takeIf { it > 0 }?.seconds,
+    leaseAttempt = leaseAttempt?.takeIf { it > 0 },
+    previousLeaseAge = previousLeaseAgeSeconds?.takeIf { it >= 0 }?.seconds,
 )
 
 fun HeartbeatResponseDto.toDomain(): HeartbeatResponse = HeartbeatResponse(

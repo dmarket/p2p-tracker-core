@@ -934,6 +934,8 @@ data class SteamEndpointsConfig(
     val paramTradeOfferId: String = "tradeofferid",
     val paramGetSentOffers: String = "get_sent_offers",
     val paramActiveOnly: String = "active_only",
+    /** Unix seconds: with [paramActiveOnly] on, the offers whose state changed since then are listed too. */
+    val paramTimeHistoricalCutoff: String = "time_historical_cutoff",
     val paramGetDescriptions: String = "get_descriptions",
     val paramMaxTrades: String = "max_trades",
     /**

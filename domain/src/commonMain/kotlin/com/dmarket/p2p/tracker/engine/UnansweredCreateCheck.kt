@@ -52,7 +52,7 @@ object UnansweredCreateCheck {
     ): UnansweredCreateVerdict {
         val earliest = claim.claimedAt - CLOCK_TOLERANCE
         val match = sentOffers
-            .filter { it.partner == unanswered.partner && it.assetIdsGiven.containsAll(unanswered.assetIds) && it.createdAt >= earliest }
+            .filter { CreateOfferMatch.givesAll(it, unanswered.partner, unanswered.assetIds) && it.createdAt >= earliest }
             .maxByOrNull { it.createdAt }
         return when {
             match != null -> UnansweredCreateVerdict.Found(match)

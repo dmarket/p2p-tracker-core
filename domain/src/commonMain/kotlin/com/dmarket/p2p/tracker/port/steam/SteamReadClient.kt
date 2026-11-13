@@ -7,6 +7,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
+import kotlin.time.Instant
 
 /**
  * Read-only access to Steam's trade surfaces (the stable JSON `IEconService` API). All calls are
@@ -58,6 +59,14 @@ interface SteamReadClient {
      */
     suspend fun sentOffers(credential: SteamCredential): List<SteamSentOffer> =
         throw UnsupportedOperationException("this Steam read client does not list sent offers")
+
+    /**
+     * The offers this account sent that are still active, plus those whose state changed since [historicalCutoff] when
+     * it is set (`GetTradeOffers`, sent only, `active_only=1`, `time_historical_cutoff`), for a re-leased create that
+     * looks for the offer an earlier lease made. Throws on a failed read. A client that does not implement it answers
+     * with every sent offer ([sentOffers]), a superset.
+     */
+    suspend fun sentOffers(credential: SteamCredential, historicalCutoff: Instant?): List<SteamSentOffer> = sentOffers(credential)
 
     /**
      * The offers this account sent and the ones sent to it, each with its `direction`, in one `GetTradeOffers` read
