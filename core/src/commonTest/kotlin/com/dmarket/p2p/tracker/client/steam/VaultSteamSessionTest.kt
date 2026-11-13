@@ -85,6 +85,23 @@ class VaultSteamSessionTest {
     }
 
     @Test
+    fun aSetCookieForAnotherHostChangesNothing() = runTest {
+        session(left = 20.hours)
+        val before = vault.readSteamCookies()
+
+        jar.save(
+            Url("https://steamcommunity.com/login/settoken"),
+            listOf(
+                "steamRefresh_steam=forged; Domain=login.steampowered.com; Path=/",
+                "steamLoginSecure=forged; Domain=store.steampowered.com; Path=/",
+                "steamLoginSecure=forged; Domain=.evil.com; Path=/",
+            ),
+        )
+
+        assertEquals(before, vault.readSteamCookies())
+    }
+
+    @Test
     fun anExpiredCookieIsNotSent() = runTest {
         vault.writeSteamCookies(
             listOf(

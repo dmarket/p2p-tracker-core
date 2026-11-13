@@ -52,18 +52,22 @@ class VaultCookieJar(private val vault: SteamCookieVault, private val clock: Clo
 
     /**
      * Writes the cookies of [setCookieHeaders] (a response to [url]) into the vault: a new value replaces the cookie
-     * with the same name, host and path, and an expired one (`Max-Age=0`, a past `Expires`) erases it.
+     * with the same name, host and path, and an expired one (`Max-Age=0`, a past `Expires`) erases it. A cookie whose
+     * `Domain=` does not domain-match [url]'s host (RFC 6265 §5.3) is dropped, so one host never writes another's.
      */
     suspend fun save(url: Url, setCookieHeaders: List<String>) {
         if (setCookieHeaders.isEmpty()) return
         val now = clock.now().epochSeconds
+        val host = url.host.lowercase()
         val received = setCookieHeaders.mapNotNull { header ->
             val parsed = runCatching { parseServerSetCookieHeader(header) }.getOrNull() ?: return@mapNotNull null
             if (parsed.name.isBlank()) return@mapNotNull null
+            val domain = parsed.domain?.trimStart('.')?.lowercase()?.takeIf { it.isNotEmpty() } ?: host
+            if (host != domain && !host.endsWith(".$domain")) return@mapNotNull null
             SteamCookie(
                 name = parsed.name,
                 value = parsed.value,
-                domain = parsed.domain?.trimStart('.')?.lowercase()?.takeIf { it.isNotEmpty() } ?: url.host.lowercase(),
+                domain = domain,
                 path = parsed.path?.takeIf { it.startsWith("/") } ?: "/",
                 expiresAtEpochSeconds = parsed.maxAge?.let { now + it } ?: parsed.expires?.timestamp?.div(1000),
                 httpOnly = parsed.httpOnly,
