@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.HttpTransportException
+import com.dmarket.p2p.tracker.client.marketplace.MarketplaceTokenUnavailableException
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.TrackerBlock
@@ -184,6 +185,7 @@ class P2pTrackerDealActionsTest {
             HttpTransportException("timeout", "POST", "https://x") to DealCallError(DealCallErrorKind.TIMEOUT),
             HttpTransportException("Fail to fetch", "POST", "https://x") to DealCallError(DealCallErrorKind.NETWORK),
             IOException("connection reset") to DealCallError(DealCallErrorKind.NETWORK),
+            MarketplaceTokenUnavailableException() to DealCallError(DealCallErrorKind.NETWORK),
             IllegalArgumentException("bad body") to DealCallError(DealCallErrorKind.OTHER),
         )
         for ((thrown, expected) in cases) {

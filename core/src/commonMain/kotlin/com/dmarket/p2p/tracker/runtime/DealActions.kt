@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.client.HttpTransportException
+import com.dmarket.p2p.tracker.client.marketplace.MarketplaceTokenUnavailableException
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.marketplace.Deal
@@ -99,6 +100,8 @@ internal fun Throwable.toDealCallError(): DealCallError = when (this) {
     )
     is HttpRequestTimeoutException -> DealCallError(DealCallErrorKind.TIMEOUT)
     is HttpTransportException -> DealCallError(if (kind == "timeout") DealCallErrorKind.TIMEOUT else DealCallErrorKind.NETWORK)
+    // The host could not hand over a refreshed token after a 401 (no network, a locked Keychain): no sign-out.
+    is MarketplaceTokenUnavailableException -> DealCallError(DealCallErrorKind.NETWORK)
     // OkHttp's SocketTimeoutException is an IOException too; its name is all common code can see of it.
     is IOException -> DealCallError(
         if ("Timeout" in
