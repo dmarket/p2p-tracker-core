@@ -22,6 +22,7 @@ import com.dmarket.p2p.tracker.engine.CreateOfferMatch
 import com.dmarket.p2p.tracker.engine.DealRoleBinding
 import com.dmarket.p2p.tracker.engine.DealWriteGuard
 import com.dmarket.p2p.tracker.engine.DirectiveAcknowledgement
+import com.dmarket.p2p.tracker.engine.DirectiveOutcomeAck
 import com.dmarket.p2p.tracker.engine.DirectivePlanner
 import com.dmarket.p2p.tracker.engine.DirectiveRefusal
 import com.dmarket.p2p.tracker.engine.ExpeditedTransitions
@@ -719,8 +720,15 @@ class TradeTrackerLoop(
      * Absent is deliberately read as **not** accepted: the caller keeps the stored outcome and resends it when
      * the backend re-leases, which is strictly safer than assuming silence meant success and pruning it.
      */
-    private suspend fun reportOutcomes(outcomes: List<DirectiveOutcome>): Map<DirectiveId, Boolean> {
-        if (outcomes.isEmpty()) return emptyMap()
+    private suspend fun reportOutcomes(outcomes: List<DirectiveOutcome>): Map<DirectiveId, Boolean> =
+        reportOutcomeAcks(outcomes).associate { it.outcome.directiveId to it.accepted }
+
+    /**
+     * [reportOutcomes] with each outcome's ack. An outcome absent from the response, or in a call that threw, has
+     * [DirectiveAcknowledgement.NO_RESULT] for its reason; any other unaccepted one the backend rejected.
+     */
+    private suspend fun reportOutcomeAcks(outcomes: List<DirectiveOutcome>): List<DirectiveOutcomeAck> {
+        if (outcomes.isEmpty()) return emptyList()
         val result = runCatching { marketplace.reportDirectives(outcomes) }
         // Non-null only when the call itself failed, in which case it is the reason for every action in the
         // batch — more informative than the matcher's "no result", which is about a response that did arrive.
@@ -738,7 +746,7 @@ class TradeTrackerLoop(
                 ),
             )
         }
-        return paired.associate { it.outcome.directiveId to it.accepted }
+        return paired
     }
 
     /**
@@ -2540,8 +2548,8 @@ class TradeTrackerLoop(
      * `markHandled` + persisted at the moment its Steam write succeeded, so a worker that dies before this flush
      * cannot re-execute the write — the backend re-leases the directive and [resendHandledOutcomes] re-sends the
      * stored outcome instead. With [LoopConfig.reportEachWrite] the writes reported themselves ([reportWrite]): an
-     * accepted one carries no outcome here, so this call holds only the ones the backend did not accept (often none,
-     * and then no request is made).
+     * accepted or rejected one carries no outcome here, so this call holds only the ones absent from their response or
+     * lost to the network (often none, and then no request is made).
      */
     private suspend fun flushWriteOutcomes(attempts: List<WriteAttempt>): Int {
         if (attempts.isEmpty()) return 0
@@ -2555,16 +2563,23 @@ class TradeTrackerLoop(
     /**
      * Reports [attempt]'s outcome in a `/trade-actions` call of its own, right after its Steam write answered
      * ([LoopConfig.reportEachWrite]; otherwise [attempt] is returned as it is, for the batch). Accepted: its stored
-     * outcome is pruned now and the attempt leaves the batch, still counted ([WriteAttempt.countedOutOfBand]). Refused,
-     * absent from the response or lost to the network: unchanged, so [flushWriteOutcomes] sends it again, and after
-     * that its stored outcome waits for the re-lease ([resendHandledOutcomes]).
+     * outcome is pruned now and the attempt leaves the batch, still counted ([WriteAttempt.countedOutOfBand]). Rejected
+     * by the backend: it leaves the batch too, since the same report would be rejected again, and its stored outcome
+     * waits for the re-lease ([resendHandledOutcomes]). Absent from the response or lost to the network: unchanged, so
+     * [flushWriteOutcomes] sends it again, and after that it waits for the re-lease as well.
      */
     private suspend fun reportWrite(attempt: WriteAttempt): WriteAttempt {
         val outcome = attempt.outcome
         if (!config.reportEachWrite || outcome == null) return attempt
-        val accepted = mapOf(outcome.directiveId to reportOutcome(outcome))
-        attempt.prunableId(accepted)?.let { pruneOutcome(it) }
-        return if (accepted.getValue(outcome.directiveId)) attempt.copy(outcome = null, countedOutOfBand = true) else attempt
+        val ack = reportOutcomeAcks(listOf(outcome)).single()
+        return when {
+            ack.accepted -> {
+                attempt.prunableId(mapOf(outcome.directiveId to true))?.let { pruneOutcome(it) }
+                attempt.copy(outcome = null, countedOutOfBand = true)
+            }
+            ack.reason != DirectiveAcknowledgement.NO_RESULT -> attempt.copy(outcome = null)
+            else -> attempt
+        }
     }
 
     /**

@@ -5,6 +5,7 @@ import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.model.DirectiveId
+import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.TrackerMode
@@ -22,6 +23,7 @@ import com.dmarket.p2p.tracker.support.FakeNotaryProver
 import com.dmarket.p2p.tracker.support.FakeScheduler
 import com.dmarket.p2p.tracker.support.FakeSteamReadClient
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
+import com.dmarket.p2p.tracker.support.RecordingEventObserver
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -55,6 +57,11 @@ class PerWriteReportingTest {
 
     /** Directive ids `/trade-actions` leaves out of its answer, as a partial answer would. */
     private var unacked = emptySet<String>()
+
+    /** Directive ids `/trade-actions` answers `accepted: false` for. */
+    private var rejected = emptySet<String>()
+
+    private val observer = RecordingEventObserver()
 
     /** How many of the next `/trade-actions` calls throw, as a dropped connection does. */
     private var tradeActionsFailures = 0
@@ -92,7 +99,8 @@ class PerWriteReportingTest {
                     .map { it.jsonObject.getValue("directiveId").jsonPrimitive.content }
                 log += "trade-actions ${ids.joinToString(",")}"
                 if (tradeActionsFailures-- > 0) error("connection reset")
-                val results = ids.filterNot { it in unacked }.joinToString(",") { """{"directiveId":"$it","accepted":true}""" }
+                val results = ids.filterNot { it in unacked }
+                    .joinToString(",") { """{"directiveId":"$it","accepted":${it !in rejected},"reason":"deal closed"}""" }
                 respond("""{"results":[$results]}""", headers = json)
             }
             "notary" -> {
@@ -134,6 +142,7 @@ class PerWriteReportingTest {
         notary = FakeNotaryProver(),
         progress = progress,
         directivesEnabled = true,
+        eventObserver = observer,
     )
 
     @Test
@@ -234,5 +243,18 @@ class PerWriteReportingTest {
         assertEquals(listOf("create asset-a-1", "trade-actions a-1", "trade-actions a-1"), log.filter { it != "notary" })
         assertEquals(1, outcome.directivesExecuted)
         assertTrue(progress.loadDirectiveOutcomes().isEmpty(), "accepted in the batch, so pruned")
+    }
+
+    @Test
+    fun a_rejected_report_goes_once_per_cycle_and_waits_for_the_re_lease() = runTest {
+        directives = create("a-1")
+        rejected = setOf("a-1")
+
+        val outcome = loop(reportEachWrite = true).runOnce()
+
+        assertEquals(listOf("create asset-a-1", "trade-actions a-1"), log.filter { it != "notary" })
+        assertEquals(1, observer.events.filterIsInstance<LifecycleEvent.DirectiveReportFailed>().size)
+        assertEquals(1, outcome.directivesExecuted, "the write reached Steam")
+        assertEquals(setOf(DirectiveId("a-1")), progress.loadDirectiveOutcomes().keys, "kept for the re-lease")
     }
 }
