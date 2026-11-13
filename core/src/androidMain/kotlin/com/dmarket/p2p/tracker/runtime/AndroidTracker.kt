@@ -1,12 +1,14 @@
 package com.dmarket.p2p.tracker.runtime
 
 import android.content.Context
+import com.dmarket.p2p.tracker.adapter.WebViewSteamCookies
 import com.dmarket.p2p.tracker.client.marketplace.androidMarketplaceClient
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +68,14 @@ object AndroidTracker {
             },
         )
     }
+
+    /**
+     * The app's user just signed in to Steam in the app's WebView (`steamSignedIn`): the WebView's Steam cookies become
+     * the core's Steam session ([P2pTracker.importSteamSession]). Call it after that sign-in only, never on start: the
+     * WebView keeps the `steamLoginSecure` the core has since refreshed in its vault. Returns the session's state, or
+     * `null` before [startTracker] or while no loop runs.
+     */
+    suspend fun importSteamSession(): SteamWebSessionState? = tracker?.importSteamSession(WebViewSteamCookies().read())
 
     /** The tracker, built on the first call; later calls return the same one, whatever they pass. */
     internal fun trackerFor(

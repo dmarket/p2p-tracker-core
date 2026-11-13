@@ -4,10 +4,14 @@ import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
+import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
+import com.dmarket.p2p.tracker.client.steam.KtorSteamWebSessionGateway
+import com.dmarket.p2p.tracker.client.steam.VaultCookieJar
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
 import com.dmarket.p2p.tracker.game.GameRegistry
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
@@ -52,8 +56,10 @@ private object NoWakeScheduler : Scheduler {
  * [P2pTracker] over them. A platform gives only its adapters ([platform]); the app gives the rest of the host
  * contract.
  *
- * Not production-ready on its own: the Steam session (vault, cookies, offer writes) is DMA-662. Until then the loop
- * reads the session with the shared scraper and leaves `create_offer` / `cancel_offer` leases to lapse.
+ * The Steam session lives in the core's vault ([MobileTrackerPlatform.steamCookies]): imported once after a Steam
+ * sign-in ([P2pTracker.importSteamSession]), sent from there in an explicit `Cookie` header, refreshed from
+ * `steamRefresh_steam` and written back. Offer writes are still to come (DMA-662 2/3): `create_offer` /
+ * `cancel_offer` leases lapse.
  *
  * @param linkedAccount the Steam account the logged-in user links, or `null` when none; read on every start.
  * @param cellularProofs the user's "proofs on mobile data" option, read before every cycle; the app owns its default.
@@ -80,7 +86,17 @@ class MobileTracker(
         eventObserver: EventObserver,
     ): P2pTracker {
         val timeoutMs = config.http.requestTimeoutMs.toLong()
-        val steamHttp = createSteamHttpClient(platform.steamEngine(), timeoutMs, networkObserver)
+        // Cookies from the core's vault only, in an explicit header; Set-Cookie goes back to it (DMA-662).
+        val cookies = VaultCookieJar(platform.steamCookies, platform.clock)
+        val steamHttp = createSteamHttpClient(platform.steamEngine(), timeoutMs, networkObserver, cookies = cookies)
+        // One refresher for the process: every loop's provider and the ON_START check run it under their locks.
+        val refresher = DefaultSteamSessionRefresher(
+            gateway = KtorSteamWebSessionGateway(steamHttp, cookies),
+            clock = platform.clock,
+            loginBaseUrl = config.steamEndpoints.loginBaseUrl,
+            communityBaseUrl = config.steamEndpoints.communityBaseUrl,
+            storeBaseUrl = config.steamEndpoints.storeBaseUrl,
+        )
         val marketplace = hostMarketplaceClient?.create(baseUrl, platform.marketplaceAuthenticator, timeoutMs, config.marketplaceRetry)
             ?: KtorMarketplaceClient(
                 httpClient = createMarketplaceHttpClient(platform.dmarketEngine(), timeoutMs, networkObserver),
@@ -96,10 +112,13 @@ class MobileTracker(
                     surface = platform.surface,
                     mode = TrackerMode.Background,
                     tunables = config,
+                    steamSessionInVault = true,
                 ),
                 marketplace = marketplace,
                 steamReader = KtorSteamReadClient(steamHttp, config.steamEndpoints),
                 scraper = KtorSteamSessionScraper(steamHttp, config.steamScrape, config.steamEndpoints.communityBaseUrl),
+                sessionRefresher = refresher,
+                inventoryReader = KtorSteamInventoryReader(steamHttp, config.steamEndpoints.communityBaseUrl),
                 scheduler = NoWakeScheduler,
                 deviceId = platform.deviceIds,
                 vault = platform.vault,
@@ -125,6 +144,8 @@ class MobileTracker(
             cellularProofs = cellularProofs,
             eventObserver = eventObserver,
             clearAccountState = platform::clearAccountState,
+            steamCookies = platform.steamCookies,
+            clearSteamCredential = platform.vault::clearSteamCredential,
         )
     }
 }

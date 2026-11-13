@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.engine.DealRoleBinding
 import com.dmarket.p2p.tracker.model.AccountId
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
@@ -13,11 +14,13 @@ import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
+import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.Money
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.deal
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -44,6 +47,23 @@ class P2pSerializationTest {
             deviceId = "device-abc-123",
         )
         assertEquals(dto, roundTrip(dto))
+    }
+
+    @Test
+    fun heartbeat_request_carries_the_steam_session_only_when_set() {
+        val request = HeartbeatRequest(
+            clientVersion = "1.0.0",
+            platform = "android_native",
+            foreground = false,
+            steamId = SteamId("76561198000000001"),
+            deviceId = DeviceId("device-abc-123"),
+        )
+
+        val web = TrackerJson.encodeToString(request.toDto())
+        val mobile = TrackerJson.encodeToString(request.copy(steamSession = SteamWebSessionState.OTHER_ACCOUNT).toDto())
+
+        assertFalse("steamSession" in web, web)
+        assertTrue("\"steamSession\":\"OTHER_ACCOUNT\"" in mobile, mobile)
     }
 
     @Test

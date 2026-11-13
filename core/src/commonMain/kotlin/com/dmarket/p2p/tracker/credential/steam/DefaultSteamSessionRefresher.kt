@@ -131,6 +131,11 @@ class DefaultSteamSessionRefresher(
         }
     }.getOrDefault(SteamWebSessionState.ALIVE)
 
+    override suspend fun sessionSteamId(): SteamId? = runCatching {
+        val value = gateway.readCookie(COMMUNITY_DOMAIN, sessionCookieName)?.value ?: return@runCatching null
+        SteamSessionCookie.parse(value)?.steamId ?: value.steamIdPrefixOrNull()?.let(::SteamId)
+    }.getOrNull()
+
     // ---- private -----------------------------------------------------------------------------------
 
     private suspend fun doRefresh(force: Boolean = false): SessionRefreshOutcome {

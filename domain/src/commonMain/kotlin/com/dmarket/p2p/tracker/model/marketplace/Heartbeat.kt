@@ -6,13 +6,15 @@ import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlin.time.Instant
 
 /**
  * The `POST /heartbeat` body (golden `HeartbeatRequest`). Presence +
  * directive transport only — it carries **no** inventory data and **no** account id (the backend reads
  * the account from the Bearer token). [steamId] must equal the account's Steam id (wrong-account
- * guard); [deviceId] is install-scoped and persistent (the directive-lease key).
+ * guard); [deviceId] is install-scoped and persistent (the directive-lease key). [steamSession] is the state of the
+ * Steam session in the core's vault, sent by mobile only (DMA-659, ahead of the contract); `null` is left out.
  */
 data class HeartbeatRequest(
     val clientVersion: String,
@@ -20,6 +22,7 @@ data class HeartbeatRequest(
     val foreground: Boolean,
     val steamId: SteamId,
     val deviceId: DeviceId,
+    val steamSession: SteamWebSessionState? = null,
 )
 
 /** Which Steam read the backend asks the tracker to perform for a watched deal (`TrackedDeal.watch`). */

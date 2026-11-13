@@ -46,6 +46,7 @@ fun HeartbeatRequest.toDto(): HeartbeatRequestDto = HeartbeatRequestDto(
     foreground = foreground,
     steamId = steamId.value,
     deviceId = deviceId.value,
+    steamSession = steamSession?.name,
 )
 
 fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(

@@ -3,12 +3,13 @@ package com.dmarket.p2p.tracker.runtime
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlin.time.Duration
 import kotlin.time.Instant
 
 /**
  * What a [P2pTracker] shows the app: the account screen's status (T-04), the deal's "Last update" (T-12) and the
- * Active tab's banners (T-21). The Steam session's own state comes with DMA-662.
+ * Active tab's banners (T-21), and the Steam session's state (T-04, T-20, T-02).
  *
  * @property running whether a loop runs for [account].
  * @property foreground whether the app said it is on screen; only then does the tracker poll.
@@ -16,6 +17,11 @@ import kotlin.time.Instant
  * @property block the one reason the tracker is blocked, by [TrackerBlock]'s precedence.
  * @property linkedSteamId the Steam account the last heartbeat named as linked to the DMarket account.
  * @property accountMismatch whether that account and the Steam token's disagree; every Steam request stops.
+ * @property steamSession the state of the Steam session in the core's vault, read after every cycle, import and check:
+ *   [SteamWebSessionState.ALIVE], [SteamWebSessionState.NEEDS_REFRESH] (renewed on the next cycle or check),
+ *   [SteamWebSessionState.GONE] (sign in to Steam again, T-20) or [SteamWebSessionState.OTHER_ACCOUNT] (the session or
+ *   the token belongs to another account than the linked one; no Steam request goes out). Ranked like [block]: a gone
+ *   session reads `GONE` whoever it belonged to. `null` while no loop runs.
  * @property lastSyncAt when the last heartbeat came back.
  * @property deals per tracked deal; a deal the last heartbeat no longer tracks is dropped.
  */
@@ -26,6 +32,7 @@ data class TrackerState(
     val block: TrackerBlock = TrackerBlock.NONE,
     val linkedSteamId: SteamId? = null,
     val accountMismatch: Boolean = false,
+    val steamSession: SteamWebSessionState? = null,
     val lastSyncAt: Instant? = null,
     val deals: Map<DealId, DealTrackingState> = emptyMap(),
 )

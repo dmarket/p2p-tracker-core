@@ -66,6 +66,12 @@ import kotlin.time.Duration.Companion.seconds
  *   [TradeTrackerLoop.awaitDirectiveOutcome]'s call answers with no `create_offer`, no refusal and no claim for the deal.
  *   One retry per entry, in order, whatever is left of the caller's timeout. Empty answers after the first call.
  *   Defaults to one retry after 2 s.
+ * @param steamSessionInVault The Steam session lives in the core's own cookie vault (mobile), so its cookie is the whole
+ *   truth about whose session it is. Two effects. The wrong-account guard runs before the credential is acquired: when
+ *   the session belongs to another account than the last heartbeat's `linkedSteamId` (or is still the account a
+ *   previous verdict named), the cycle sends no Steam request at all (no scrape, refresh, mint, re-check, read, write
+ *   or proof) and only heartbeats with the session's steamid. And the heartbeat carries the session's state
+ *   (`steamSession`, ahead of the contract). `false` (web, headless): neither.
  */
 data class LoopConfig(
     val clientVersion: String,
@@ -82,4 +88,5 @@ data class LoopConfig(
     val checkFailedCancels: Boolean = false,
     val reportNotActionable: Boolean = false,
     val createDirectiveRetryDelays: List<Duration> = listOf(2.seconds),
+    val steamSessionInVault: Boolean = false,
 )

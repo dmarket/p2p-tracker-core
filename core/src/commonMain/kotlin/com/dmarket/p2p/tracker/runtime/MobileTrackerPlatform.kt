@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
+import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.TrackerConfig
@@ -24,6 +25,7 @@ import com.dmarket.p2p.tracker.loop.UnprovenClaimStore
 import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
@@ -31,6 +33,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.host.SteamCookieVault
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.sync.Mutex
@@ -41,12 +44,12 @@ import kotlinx.coroutines.sync.withLock
  * members; the install and account rules over them are the same on every platform and live here. Nothing secret
  * passes through the host.
  *
- * **Install scope.** The device id and the Steam credential belong to one install on one device ([installMarker]). On
+ * **Install scope.** The device id, the Steam credential and the Steam session's cookies belong to one install on one device ([installMarker]). On
  * another install (a fresh one, a reinstall, a restore or a transfer) the device id is made anew, the vault reads
  * empty, and the state that came along with them is erased before anything reads it.
  *
  * **Account scope.** State belongs to one Steam account at a time. [storageFor] another account erases the previous
- * one's state first, and [clearAccountState] (logout) erases it with the Steam credential, so a new account always
+ * one's state first, and [clearAccountState] (logout) erases it with the Steam credential and cookies, so a new account always
  * starts from empty stores and nothing of the previous one is read or reported. The device id stays.
  *
  * Subclasses must not call into these members from their own initialisers: the rules read the adapters lazily.
@@ -99,6 +102,20 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
         override suspend fun clearSteamCredential() = inInstall { sealedVault.clearSteamCredential() }
     }
 
+    /**
+     * The Steam session's cookies, sealed in [sealedStore] next to the device id: after the import that follows a Steam
+     * sign-in, the only source of Steam cookies. Each call settles the install first, like [vault].
+     */
+    val steamCookies: SteamCookieVault = object : SteamCookieVault {
+        private val sealed by lazy { SealedSteamCookieVault(sealedStore) }
+
+        override suspend fun readSteamCookies(): List<SteamCookie> = inInstall { sealed.readSteamCookies() }
+
+        override suspend fun writeSteamCookies(cookies: List<SteamCookie>) = inInstall { sealed.writeSteamCookies(cookies) }
+
+        override suspend fun clearSteamCookies() = inInstall { sealed.clearSteamCookies() }
+    }
+
     /** The install's device id; another install gets a new one. */
     val deviceIds: DeviceIdStore = object : DeviceIdStore {
         override suspend fun current(): DeviceId = mutex.withLock { currentInstallLocked() }
@@ -145,12 +162,14 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
 
     /**
      * Logout: erases every key of the current account's state (stores, and whatever else a later part keeps there,
-     * proofs included) and the Steam credential. The device id stays: it belongs to the install.
+     * proofs included), the Steam credential and the Steam session's cookies. The device id stays: it belongs to the
+     * install.
      */
     suspend fun clearAccountState() = mutex.withLock {
         clearAccountStore()
         installStore.remove(ACTIVE_ACCOUNT)
         sealedVault.clearSteamCredential()
+        sealedStore.remove(SealedSteamCookieVault.KEY)
     }
 
     /** The device id, made on first use; what another install left is erased before anything reads it. */
@@ -159,6 +178,7 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
             clearAccountStore()
             installStore.remove(ACTIVE_ACCOUNT)
             sealedVault.clearSteamCredential()
+            sealedStore.remove(SealedSteamCookieVault.KEY)
             sealedStore.remove(DeviceVaultKeys.DEVICE_ID)
             installMarker.markInstall()
         }

@@ -70,10 +70,15 @@ interface SteamSessionRefresher {
      * is unknown, so a cookie-store hiccup can never manufacture a logged-out verdict (and
      * [refreshSession] still self-gates). Must not throw. Defaults to `ALIVE` for hosts that cannot
      * inspect the session store.
-     *
-     * TODO(mobile): the deferred iOS/Android actuals inherit this default, so they answer `ALIVE` and never
-     *  report `OTHER_ACCOUNT` — a wrong-account credential would stay cached there for its full life. Wire
-     *  their cookie stores through `SteamWebSessionGateway` when those targets are enabled.
+     * The mobile tracker answers from the core's own cookie vault (`DefaultSteamSessionRefresher` over
+     * `KtorSteamWebSessionGateway`).
      */
     suspend fun sessionState(expectedSteamId: SteamId? = null): SteamWebSessionState = SteamWebSessionState.ALIVE
+
+    /**
+     * Whose session the cookie holds: the steamid64 in front of the community `steamLoginSecure` token, read with no
+     * network, or `null` when there is no legible one. Same zero-network, never-throw contract as [sessionState];
+     * defaults to `null` for hosts that cannot inspect the session store.
+     */
+    suspend fun sessionSteamId(): SteamId? = null
 }

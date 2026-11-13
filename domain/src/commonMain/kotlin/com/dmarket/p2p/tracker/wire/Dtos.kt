@@ -32,6 +32,11 @@ data class HeartbeatRequestDto(
     @SerialName("foreground") val foreground: Boolean,
     @SerialName("steamId") val steamId: String,
     @SerialName("deviceId") val deviceId: String,
+    /**
+     * The Steam session's state on a mobile device (`ALIVE` | `NEEDS_REFRESH` | `GONE` | `OTHER_ACCOUNT`), DMA-659.
+     * **Ahead of the contract**, like [TrackedDealDto.role]: nullable, and left out when `null` (web never sends it).
+     */
+    @SerialName("steamSession") val steamSession: String? = null,
 )
 
 @Serializable

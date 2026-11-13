@@ -110,6 +110,7 @@ import com.dmarket.p2p.tracker.port.steam.SteamNotificationReader
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -620,6 +621,10 @@ class TradeTrackerLoop(
         val tracking = lastActiveTracking.orEmpty()
         if (!directivesEnabled || (config.requireLinkedSteamId && lastLinkedSteamId == null)) {
             return@withLock CreateOfferResult.Failed(NO_CREATE_DIRECTIVE_ERROR)
+        }
+        otherAccountSession()?.let { other ->
+            setMismatchTokenSteamId(other)
+            return@withLock accountMismatch()
         }
         val credential = credentials.current() ?: return@withLock CreateOfferResult.Failed(NO_STEAM_SESSION_CREATE_ERROR)
         val leased = HeartbeatResponse(activeTracking = tracking, directives = listOf(directive), linkedSteamId = lastLinkedSteamId)
@@ -1518,6 +1523,13 @@ class TradeTrackerLoop(
             // Announcing is latched separately so re-deriving the state per cycle can't re-emit the event.
             marketplaceConnectionMissingSticky = false
         }
+        // Wrong-account guard ahead of the credential, for a session the core holds itself
+        // ([LoopConfig.steamSessionInVault]): a session positively someone else's sends nothing to Steam, not even the
+        // scrape or refresh that acquiring a credential could start. Only the heartbeat goes, with that session's id.
+        otherAccountSession()?.let { other ->
+            setMismatchTokenSteamId(other)
+            return@withLock if (action == CycleAction.HEARTBEAT) heartbeatForOtherAccount(other) else TickOutcome.EMPTY
+        }
         var acquired = credentials.current()
         // First cycle of an episode that finds the session gone: ask Steam to mint a new one from the
         // durable "remember me" credential the platform still holds. That is the only way back — a session
@@ -1627,6 +1639,65 @@ class TradeTrackerLoop(
         )
         emit(LifecycleEvent.CycleCompleted(directivesExecuted, reportsSent, proofsSubmitted, outcome.watching))
         outcome
+    }
+
+    /**
+     * The steamid of a session the core holds itself that belongs to another account, or `null`: the session is the
+     * linked account's, the binding is unknown, or the core does not hold the session ([LoopConfig.steamSessionInVault]
+     * off). With no `linkedSteamId` known yet (a new process) a session still naming the account of the persisted
+     * verdict counts. One cookie read, no network.
+     */
+    private suspend fun otherAccountSession(): SteamId? {
+        if (!config.steamSessionInVault) return null
+        val session = credentials.sessionSteamId() ?: return null
+        val linked = lastLinkedSteamId
+        val other = if (linked != null) {
+            credentials.sessionState(linked) == SteamWebSessionState.OTHER_ACCOUNT
+        } else {
+            session == mismatchTokenSteamId
+        }
+        return session.takeIf { other }
+    }
+
+    /**
+     * The heartbeat of a cycle the wrong-account guard stopped before any Steam request ([otherAccountSession]): sent for
+     * [session], the account the core's session belongs to, with `foreground: false` since this device cannot act for
+     * the linked one. It re-derives the binding exactly as the full cycle does; its directives are not run, and their
+     * leases lapse, as on a mismatch found by the full cycle.
+     */
+    private suspend fun heartbeatForOtherAccount(session: SteamId): TickOutcome {
+        val heartbeat = heartbeatOrNull(session, foreground = false) ?: return TickOutcome.EMPTY
+        val linked = heartbeat.linkedSteamId
+        lastLinkedSteamId = linked
+        val mismatched = AccountBinding.evaluate(linked, session) == AccountBindingStatus.MISMATCH
+        setMismatchTokenSteamId(if (mismatched) session else null)
+        if (!mismatched) scheduleNextHeartbeat(heartbeat.ttlSeconds)
+        lastActiveTracking = heartbeat.activeTracking
+        releaseStaleClaims(heartbeat)
+        emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
+        if (mismatched) linked?.let { emit(LifecycleEvent.LinkedSteamIdMismatch(it.value, session.value)) }
+        return TickOutcome(watching = heartbeat.activeTracking.size)
+    }
+
+    /**
+     * The Steam session's state as the app shows it (`TrackerState.steamSession`) and the mobile heartbeat sends it,
+     * ranked like [TrackerBlock]: a session that is gone reads [SteamWebSessionState.GONE] whoever it belonged to;
+     * otherwise a wrong-account verdict ([linkedSteamIdMismatch]) or a session not the linked account's reads
+     * [SteamWebSessionState.OTHER_ACCOUNT]. A verdict about a token the core's own session no longer names (a new
+     * session was imported since) does not count: the next cycle judges the new one. No network.
+     */
+    suspend fun steamSessionState(): SteamWebSessionState {
+        val state = credentials.sessionState(lastLinkedSteamId)
+        if (state == SteamWebSessionState.GONE || state == SteamWebSessionState.OTHER_ACCOUNT) return state
+        val verdict = mismatchTokenSteamId ?: return state
+        val replaced = config.steamSessionInVault && credentials.sessionSteamId()?.let { it != verdict } == true
+        return if (replaced) state else SteamWebSessionState.OTHER_ACCOUNT
+    }
+
+    /** Renews the Steam session when it is due and not another account's (the app's ON_START check); no import. */
+    suspend fun checkSteamSession(): SteamWebSessionState = cycleMutex.withLock {
+        if (steamSessionState() == SteamWebSessionState.NEEDS_REFRESH) credentials.refreshSession()
+        steamSessionState()
     }
 
     /**
@@ -1933,6 +2004,7 @@ class TradeTrackerLoop(
             foreground = foreground,
             steamId = steamId,
             deviceId = deviceId.current(),
+            steamSession = if (config.steamSessionInVault) steamSessionState() else null,
         )
         return marketplace.heartbeat(request)
     }

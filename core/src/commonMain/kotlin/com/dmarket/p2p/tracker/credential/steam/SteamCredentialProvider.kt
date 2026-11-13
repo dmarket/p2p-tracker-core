@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.credential.steam
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.port.SessionRefreshOutcome
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
@@ -237,9 +238,20 @@ class SteamCredentialProvider(
         }
     }
 
-    /** [SteamSessionRefresher.sessionState] with the port's fail-open contract enforced locally. */
-    private suspend fun sessionState(expectedSteamId: SteamId? = null): SteamWebSessionState =
+    /** [SteamSessionRefresher.sessionState] with the port's fail-open contract enforced locally. No network. */
+    suspend fun sessionState(expectedSteamId: SteamId? = null): SteamWebSessionState =
         runCatching { sessionRefresher.sessionState(expectedSteamId) }.getOrDefault(SteamWebSessionState.ALIVE)
+
+    /** Whose session the cookie holds ([SteamSessionRefresher.sessionSteamId]); `null` when unknown. No network. */
+    suspend fun sessionSteamId(): SteamId? = runCatching { sessionRefresher.sessionSteamId() }.getOrNull()
+
+    /**
+     * Renews the session on the ON_START check, under the same lock as every other refresh here, so a foreground check,
+     * a Worker and a wake never run two handshakes at once. Never throws.
+     */
+    suspend fun refreshSession(): SessionRefreshOutcome = mutex.withLock {
+        runCatching { sessionRefresher.refreshSession() }.getOrDefault(SessionRefreshOutcome.FAILED)
+    }
 
     /**
      * @param force When `true` (forceRefresh path) skip the freshness re-check under lock so
