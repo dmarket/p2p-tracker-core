@@ -28,6 +28,7 @@ class ProofMintPolicyTest {
         minted: Boolean = true,
         deadline: Instant? = null,
         networkDeferred: Boolean = false,
+        pinned: Set<ProofIntent> = emptySet(),
     ) = ProofMintPolicy.decide(
         intent,
         now,
@@ -39,6 +40,7 @@ class ProofMintPolicyTest {
         minted,
         deadline,
         networkDeferred,
+        pinned,
     )
 
     @Test
@@ -159,6 +161,19 @@ class ProofMintPolicyTest {
     }
 
     @Test
+    fun exactly_the_skips_time_undoes_are_deferred() {
+        // What the loop re-reads history for. The budget renews and a park ends by themselves; a host with no
+        // prover stays without one, and the three settled answers will not change by waiting.
+        assertEquals(
+            listOf(ProofSkipReason.PROVER_PARKED, ProofSkipReason.BUDGET_SPENT),
+            ProofSkipReason.entries.filter { it.deferred },
+        )
+        for (reason in ProofSkipReason.entries.filter { it.deferred }) {
+            assertTrue(reason.unprovable, "$reason is deferred, so nothing was submitted for it")
+        }
+    }
+
+    @Test
     fun only_an_acceptance_leaves_the_transition_corroborated() {
         // The property the report gate reads. Derived from the reason so the two cannot drift.
         assertTrue(ProofSkipReason.ALREADY_ACCEPTED.corroborated)
@@ -179,6 +194,33 @@ class ProofMintPolicyTest {
         val accepted = mapOf(intent to T0)
         assertEquals(ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED), decide(now = T0 + 59.minutes, accepted = accepted))
         assertEquals(ProofMintVerdict.Mint, decide(now = T0 + 1.hours, accepted = accepted))
+    }
+
+    @Test
+    fun a_pinned_acceptance_does_not_expire() {
+        // Pinned = the backend accepted the REPORT too, and only the dedup baseline held the transition back.
+        // The window protects a backend not yet ready to accept the report; this one already has.
+        val accepted = mapOf(intent to T0)
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
+            decide(now = T0 + 30.hours, accepted = accepted, pinned = setOf(intent)),
+        )
+        assertEquals(ProofMintVerdict.Mint, decide(now = T0 + 30.hours, accepted = accepted, pinned = setOf(other)))
+    }
+
+    @Test
+    fun a_pin_without_its_row_corroborates_nothing() {
+        // A pin is a property of a stored verdict: once the row is cleared (refused, persisted, untracked) a
+        // pin left behind must not keep releasing reports.
+        assertEquals(ProofMintVerdict.Mint, decide(pinned = setOf(intent)))
+    }
+
+    @Test
+    fun a_refusal_outranks_a_pinned_acceptance() {
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED),
+            decide(refused = setOf(intent), accepted = mapOf(intent to T0), pinned = setOf(intent)),
+        )
     }
 
     @Test
