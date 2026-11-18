@@ -5,8 +5,10 @@ import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
+import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
+import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
@@ -17,6 +19,8 @@ import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.WakeOutcomeKind
 import com.dmarket.p2p.tracker.model.marketplace.ApnsTarget
 import com.dmarket.p2p.tracker.model.marketplace.DeviceRegistration
+import com.dmarket.p2p.tracker.model.marketplace.Directive
+import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.NetworkType
@@ -180,7 +184,8 @@ class P2pTrackerWakeTest {
         val outcome = tracker.onPush(wake(), deadline = 10.seconds)
 
         assertEquals(WakeOutcome.failed(WakeCause.BUDGET), outcome)
-        assertEquals(10_000, currentTime, "the host's 10 s, not the cycle's 3 min")
+        // The host's 10 s (less the real time the test took to get there), not the cycle's 3 min.
+        assertTrue(currentTime in 9_000..10_000, "ended at $currentTime ms")
         assertEquals(1, stuck.attempts)
         assertEquals(receiptThen(WakeOutcome.failed(WakeCause.BUDGET)), acks)
     }
@@ -242,6 +247,24 @@ class P2pTrackerWakeTest {
         )
 
         assertEquals(WakeOutcome.failed(WakeCause.STEAM_SESSION), tracker(setup).onPush(wake("directive")))
+    }
+
+    @Test
+    fun a_directive_the_wake_left_undone_fails_and_stays_unreported() = runTest {
+        val directive = Directive(
+            directiveId = DirectiveId("dir-1"),
+            action = DirectiveAction.CREATE_OFFER,
+            dealId = deal,
+            partnerSteamId = SteamId("76561198000000002"),
+            assetIds = listOf(AssetId("asset-1")),
+            tradeToken = "trade-token",
+            contextId = 2,
+        )
+        // This loop runs no directives: the create is dropped, as one the lease or the bind read stopped would be.
+        val setup = Setup(FakeMarketplaceClient(heartbeat().copy(directives = listOf(directive))))
+
+        assertEquals(WakeOutcome.failed(WakeCause.OTHER), tracker(setup).onPush(wake("directive")))
+        assertTrue(setup.marketplace.directiveOutcomes.isEmpty(), "no failed report for work that did not run")
     }
 
     @Test

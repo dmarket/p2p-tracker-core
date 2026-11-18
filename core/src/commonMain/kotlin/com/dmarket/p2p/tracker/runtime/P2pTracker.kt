@@ -139,6 +139,7 @@ class P2pTracker(
         var steamReadFailed = false
         var failed = false
         var dmarketRateLimited = false
+        var directiveDropped = false
         var proofDeferred = false
         var proofOutOfBudget = false
         val proofFailed = mutableSetOf<String>()
@@ -667,6 +668,8 @@ class P2pTracker(
             loop.steamCredentialUnavailable && loop.needsReLogin -> WakeOutcome.failed(WakeCause.STEAM_SESSION)
             block == TrackerBlock.DM_SESSION_MISSING -> WakeOutcome.failed(WakeCause.AUTH)
             block != TrackerBlock.NONE || !probe.heartbeat || probe.dmarketRateLimited -> WakeOutcome.failed(WakeCause.NETWORK)
+            // No Steam credential this time (a refresh that failed on the network), or a leased write left undone.
+            loop.steamCredentialUnavailable || probe.directiveDropped -> WakeOutcome.failed(WakeCause.OTHER)
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
             proofs && probe.proofDeferred -> WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
@@ -690,6 +693,7 @@ class P2pTracker(
             }
             is LifecycleEvent.CycleCompleted -> if (event.watching > 0) watchedAt = clock.now()
             is LifecycleEvent.CycleFailed -> probe.failed = true
+            is LifecycleEvent.DirectiveDropped -> probe.directiveDropped = true
             is LifecycleEvent.RateLimited -> {
                 val steam = event.surface == "steam"
                 if (steam) probe.steamRateLimited = true else probe.dmarketRateLimited = true

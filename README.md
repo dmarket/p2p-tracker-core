@@ -825,14 +825,20 @@ AndroidTracker.install(
     cellularProofs = { settings.proofsOnMobileData },  // the user's option; the app owns its default (off)
 )
 val handle = startTracker()             // builds the process's P2pTracker and starts it for the linked account
-val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onPush, deviceId
+val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onPush, registerDevice, deviceId
 ```
 
 - **Push.** The app's push service enqueues the wake with the push's data payload:
-  `P2pTrackerWorker.enqueue(context, payloadJson)`. The Worker calls `tracker.onPush`, which acknowledges the wake on
-  receipt and then syncs (a heartbeat, then the deal watch and reports). The app sends no ack and has no Worker of its
-  own. Unknown `type`s are ignored. The wake envelope `{type, dealId?, reason, proveAfter?, issuedAt}` and its ack are
-  provisional until the backend contract defines them; until then the ack is a no-op.
+  `P2pTrackerWorker.enqueue(context, payloadJson)`. The Worker calls `tracker.onPush(payload, 9.minutes)`, which acks
+  the wake `done` on receipt (`POST /exchange/v1/p2p/ext/wake-ack`), syncs (a heartbeat carrying the `wakeId`, then
+  the deal watch and reports) and acks the final `WakeOutcome` under the same `wakeId`; the Worker's output data
+  carries it (`outcome`, `cause`). The app sends no ack and has no Worker of its own. A wake past its `deadline` is
+  acked `failed` and not synced. The envelope is a flat map of strings `{v, type, wakeId, transactionId?, reason,
+  proveAfter?, deadline?, issuedAt}`; a frame with an unknown `type` and no `wakeId` is ignored.
+- **Device registry.** `tracker.registerDevice(fcmToken, PushProvider.FCM)` after login, on a new token and on start
+  when the token changed; `tracker.unregisterDevice()` on logout, before `AndroidTracker.onLogout()` while the DMarket
+  session still works, and on a Steam account switch. The core adds the device id, platform, client version and the
+  capabilities (`wake_v1`, and `steam_writes` with `steamWrites = true`).
 - **Foreground.** `tracker.setForeground(true)` while the app is on screen: only then does the tracker poll. In the
   background nothing is scheduled; a wake runs a cycle. The heartbeat only says "last seen", so a day-long
   `ttl_seconds` wakes nothing.
@@ -879,7 +885,8 @@ and a default; substitute platform implementations as you enable iOS/Android.
 | `SteamSessionRefresher` / `SteamWebSessionGateway` | Keep the `steamLoginSecure` web session alive in the background. | `DefaultSteamSessionRefresher` / `FetchSteamWebSessionGateway` · `NoOpSteamSessionRefresher` |
 | `NotaryProver` | Generate a TLSN proof for a decisive transition on a `proof_required` deal (`POST /notary`). | `DelegatingNotaryProver` when the host supplies a proving context · `NoOpNotaryProver` (stub presentation) otherwise |
 | `PushChannel` | Backend→client push wake-up (transport-agnostic). | `NoOpPushChannel` (poll-only) |
-| `WakeAcknowledger` | Acknowledge a mobile wake push on receipt, before the sync. Provisional. | `NoOpWakeAcknowledger` |
+| `WakeAcknowledger` | Ack a mobile wake: `done` on receipt, then its final outcome (`POST /wake-ack`). | `KtorMarketplaceClient` · `NoOpWakeAcknowledger` |
+| `DeviceRegistryClient` | Register or remove this install's push token (`PUT`/`DELETE /devices/{deviceId}`). | `KtorMarketplaceClient` |
 
 ---
 
