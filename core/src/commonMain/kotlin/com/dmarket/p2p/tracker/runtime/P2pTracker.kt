@@ -75,14 +75,15 @@ import kotlin.time.TimeSource
  * nothing the old loop holds in memory lands in them. A `null` account stops the tracker.
  *
  * **Proof gate.** Before each cycle the tracker reads [network]: on a metered one a notary proof (~20 MB) runs only
- * with the user's opt-in ([cellularProofs]) or a manual [updateStatus] the user allowed it for (T-13). Otherwise the
- * proof is deferred: [LifecycleEvent.ProofDeferred], [ProofState.DEFERRED], and the decisive report that needs it is
+ * with the user's opt-in or a manual [updateStatus] the user allowed it for (T-13). The opt-in is [cellularProofs] for
+ * a cycle on screen (no wake, the app in the foreground) and [backgroundProofs] for a wake or a background cycle.
+ * Otherwise the proof is deferred: [LifecycleEvent.ProofDeferred], [ProofState.DEFERRED], and the decisive report that needs it is
  * not sent, nor claimed unproven, until a proof runs. Sync, reads and reports go on any network.
  *
  * @param loopFor builds the loop for an account, emitting to the observer it is given.
  * @param network what the device's network costs right now.
- * @param cellularProofs the user's "proofs on mobile data" option, read on each cycle; the host holds it and its
- *   default (off, D6).
+ * @param cellularProofs the user's "proofs on mobile data" option for a cycle on screen, read on each cycle; the host
+ *   holds it and its default (off, D6).
  * @param eventObserver every lifecycle event, after the tracker's own handling.
  * @param deliveryTimeout how long [startDelivery] waits for the create before it answers
  *   [CreateOfferResult.CreateInFlight]; the create goes on regardless.
@@ -93,6 +94,9 @@ import kotlin.time.TimeSource
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
  * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
  * @param deviceRegistry the push device registry behind [registerDevice] / [unregisterDevice]; `null` refuses both.
+ * @param backgroundProofs the user's "background checks on mobile data" option, read on each cycle: the opt-in for a
+ *   wake or a background cycle, and what every heartbeat reports as `backgroundProveAllowed`. Defaults to
+ *   [cellularProofs], so one option governs both, as before.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -110,6 +114,7 @@ class P2pTracker(
     private val clearAccountState: suspend () -> Unit = {},
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
     private val deviceRegistry: DeviceRegistry? = null,
+    private val backgroundProofs: () -> Boolean = cellularProofs,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -581,13 +586,15 @@ class P2pTracker(
         val cycleProbe = CycleProbe()
         probe = cycleProbe
         val metered = runCatching { network.metered() }.getOrNull()
-        val option = runCatching { cellularProofs() }.getOrNull()
+        val background = runCatching { backgroundProofs() }.getOrNull()
+        val onScreenCycle = wake == null && (onScreen || foreground)
+        val option = if (onScreenCycle) runCatching { cellularProofs() }.getOrNull() else background
         s.loop.proofsDeferred = !(metered == false || allowCellularProof || option == true)
         s.loop.proofsOutOfBudget = !allowProof
         s.loop.heartbeatContext = TradeTrackerLoop.HeartbeatContext(
             wakeId = wake?.wakeId,
             network = metered?.let { if (it) NetworkType.CELLULAR else NetworkType.WIFI },
-            backgroundProveAllowed = option,
+            backgroundProveAllowed = background,
         )
         if (onScreen) s.loop.mode = TrackerMode.Foreground
         val limit = ends?.let { minOf(cycleDeadline, -it.elapsedNow()) } ?: cycleDeadline

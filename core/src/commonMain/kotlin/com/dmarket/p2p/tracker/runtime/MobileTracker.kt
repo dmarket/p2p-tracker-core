@@ -72,7 +72,10 @@ private object NoWakeScheduler : Scheduler {
  * [HeaderSessionSteamOfferCanceller] over the vault) only with [steamWrites] on.
  *
  * @param linkedAccount the Steam account the logged-in user links, or `null` when none; read on every start.
- * @param cellularProofs the user's "proofs on mobile data" option, read before every cycle; the app owns its default.
+ * @param cellularProofs the user's "proofs on mobile data" option for a cycle on screen, read before every cycle; the
+ *   app owns its default.
+ * @param backgroundProofs the user's "background checks on mobile data" option: the opt-in for a wake or a background
+ *   cycle, and the heartbeat's `backgroundProveAllowed`. Defaults to [cellularProofs].
  * @param clientVersion the app's version, for the heartbeat.
  * @param hostMarketplaceClient the DMarket client over the host's HTTP stack; `null` builds the core's own over
  *   [MobileTrackerPlatform.dmarketEngine].
@@ -90,6 +93,7 @@ class MobileTracker(
     private val hostMarketplaceClient: MarketplaceClientFactory? = null,
     private val steamWrites: Boolean = false,
     private val reportUnsentCreates: Boolean = true,
+    private val backgroundProofs: () -> Boolean = cellularProofs,
 ) {
     /** The tracker [tracker] built last; the host's [importSteamSession] and [onLogout] go through it once there is one. */
     @Volatile private var built: P2pTracker? = null
@@ -207,6 +211,7 @@ class MobileTracker(
             loopFor = loopFor,
             network = platform.network,
             cellularProofs = cellularProofs,
+            backgroundProofs = backgroundProofs,
             eventObserver = eventObserver,
             clearAccountState = platform::clearAccountState,
             importSteamCookies = platform::importSteamSession,

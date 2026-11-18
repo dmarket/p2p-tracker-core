@@ -44,13 +44,15 @@ object AndroidTracker {
      *
      * @param tokens the app's DMarket token layer (`TokenManager.getTokenData(forceRefresh)`).
      * @param linkedAccount the Steam account the logged-in user links, or `null` when none; read on every start.
-     * @param cellularProofs the user's "proofs on mobile data" option (T-04), read before every cycle; the app owns its
-     *   default (off). Reading the network needs `ACCESS_NETWORK_STATE`; without it every network reads as metered.
+     * @param cellularProofs the user's "proofs on mobile data" option (T-04) for a cycle on screen, read before every
+     *   cycle; the app owns its default (off). Reading the network needs `ACCESS_NETWORK_STATE`; without it every network reads as metered.
      * @param hostOkHttp the app's `OkHttpClient` for DMarket calls; `null` takes the platform's.
      * @param clientVersion the app's version, for the heartbeat.
      * @param steamWrites whether this device writes Steam offers (`create_offer` / `cancel_offer`); off by default, the
      *   app sets it per environment. See [MobileTracker].
      * @param reportUnsentCreates whether a `create_offer` that never reached Steam is reported `failed`.
+     * @param backgroundProofs the user's "background checks on mobile data" option: the opt-in for a wake or a
+     *   background cycle, and the heartbeat's `backgroundProveAllowed`; defaults to [cellularProofs].
      */
     fun install(
         context: Context,
@@ -61,6 +63,7 @@ object AndroidTracker {
         clientVersion: String = TradeTrackerCore.VERSION,
         steamWrites: Boolean = false,
         reportUnsentCreates: Boolean = true,
+        backgroundProofs: () -> Boolean = cellularProofs,
     ) = install(
         AndroidTrackerPlatform(context, tokens),
         linkedAccount,
@@ -69,6 +72,7 @@ object AndroidTracker {
         clientVersion,
         steamWrites,
         reportUnsentCreates,
+        backgroundProofs,
     )
 
     /** [install] over a ready [platform]; host tests build it over fake prefs and a fake Keystore. */
@@ -80,6 +84,7 @@ object AndroidTracker {
         clientVersion: String = TradeTrackerCore.VERSION,
         steamWrites: Boolean = false,
         reportUnsentCreates: Boolean = true,
+        backgroundProofs: () -> Boolean = cellularProofs,
     ) {
         installation = MobileTracker(
             platform = platform,
@@ -93,6 +98,7 @@ object AndroidTracker {
             },
             steamWrites = steamWrites,
             reportUnsentCreates = reportUnsentCreates,
+            backgroundProofs = backgroundProofs,
         )
     }
 

@@ -28,6 +28,7 @@ import com.dmarket.p2p.tracker.model.marketplace.PushProvider
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
@@ -92,39 +93,57 @@ class P2pTrackerWakeTest {
         val refresher: SteamSessionRefresher = NoOpSteamSessionRefresher,
         val metered: Boolean = false,
         val cellularOptIn: Boolean = false,
+        val backgroundOptIn: Boolean = false,
         val heldMarketplace: MarketplaceClient = marketplace,
         val registry: DeviceRegistry? = null,
     )
 
+    private fun TestScope.loopFor(setup: Setup): suspend (SteamId, EventObserver) -> TradeTrackerLoop = { _, observer ->
+        TradeTrackerLoop(
+            config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background),
+            marketplace = setup.heldMarketplace,
+            steamReader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            credentials = SteamCredentialProvider(
+                vault = FakeCredentialVault(setup.vault),
+                scraper = FakeSteamSessionScraper(result = setup.vault),
+                clock = clock,
+                sessionRefresher = setup.refresher,
+            ),
+            scheduler = FakeScheduler(),
+            clock = clock,
+            deviceId = FakeDeviceIdStore(),
+            notary = setup.notary,
+            eventObserver = observer,
+        )
+    }
+
+    /** The host before the split: one option, [Setup.cellularOptIn], for every cycle. */
     private fun TestScope.tracker(setup: Setup, cycleDeadline: Duration = P2pTracker.DEFAULT_CYCLE_DEADLINE) = P2pTracker(
         scope = backgroundScope,
         clock = clock,
         deviceIds = FakeDeviceIdStore(),
         linkedAccount = { account },
-        loopFor = { _, observer ->
-            TradeTrackerLoop(
-                config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background),
-                marketplace = setup.heldMarketplace,
-                steamReader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
-                credentials = SteamCredentialProvider(
-                    vault = FakeCredentialVault(setup.vault),
-                    scraper = FakeSteamSessionScraper(result = setup.vault),
-                    clock = clock,
-                    sessionRefresher = setup.refresher,
-                ),
-                scheduler = FakeScheduler(),
-                clock = clock,
-                deviceId = FakeDeviceIdStore(),
-                notary = setup.notary,
-                eventObserver = observer,
-            )
-        },
+        loopFor = loopFor(setup),
         network = { setup.metered },
         cellularProofs = { setup.cellularOptIn },
         acknowledger = acknowledger,
         eventObserver = events,
         cycleDeadline = cycleDeadline,
         deviceRegistry = setup.registry,
+    )
+
+    /** The host with two options: [Setup.cellularOptIn] on screen, [Setup.backgroundOptIn] for a wake and the heartbeat. */
+    private fun TestScope.splitTracker(setup: Setup) = P2pTracker(
+        scope = backgroundScope,
+        clock = clock,
+        deviceIds = FakeDeviceIdStore(),
+        linkedAccount = { account },
+        loopFor = loopFor(setup),
+        network = { setup.metered },
+        cellularProofs = { setup.cellularOptIn },
+        acknowledger = acknowledger,
+        eventObserver = events,
+        backgroundProofs = { setup.backgroundOptIn },
     )
 
     /** A heartbeat that never answers. */
@@ -308,5 +327,85 @@ class P2pTrackerWakeTest {
             tracker(Setup(FakeMarketplaceClient())).unregisterDevice()?.kind,
             "no registry: refused",
         )
+    }
+
+    // ---- two proof options: on screen, wake, heartbeat -------------------------------------------
+
+    @Test
+    fun a_cycle_on_screen_follows_the_cellular_option_not_the_background_one() = runTest {
+        val allowed = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, cellularOptIn = true)
+        val onScreen = splitTracker(allowed).apply { setForeground(true) }
+        onScreen.updateStatus(deal)
+        assertTrue(allowed.notary.proven.isNotEmpty(), "on mobile data, on screen: the cellular option allows the proof")
+
+        val held = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, backgroundOptIn = true)
+        splitTracker(held).apply { setForeground(true) }.updateStatus(deal)
+        assertTrue(held.notary.proven.isEmpty(), "the background option does not allow a proof on screen")
+        assertTrue(events.events.contains(LifecycleEvent.ProofDeferred(deal.value, "offer")))
+    }
+
+    @Test
+    fun a_wake_follows_the_background_option_not_the_cellular_one() = runTest {
+        val allowed = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, backgroundOptIn = true)
+        assertEquals(WakeOutcome.DONE, splitTracker(allowed).onPush(wake()))
+        assertEquals(1, allowed.notary.proven.size, "on mobile data, in a wake: the background option allows the proof")
+
+        val held = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, cellularOptIn = true)
+        assertEquals(
+            WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED),
+            splitTracker(held).onPush(wake()),
+        )
+        assertTrue(held.notary.proven.isEmpty(), "the cellular option does not allow a proof in a wake")
+    }
+
+    @Test
+    fun a_cycle_off_screen_follows_the_background_option() = runTest {
+        val allowed = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, backgroundOptIn = true)
+        splitTracker(allowed).updateStatus(deal) // the app never said it is on screen
+        assertTrue(allowed.notary.proven.isNotEmpty())
+
+        val held = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, cellularOptIn = true)
+        splitTracker(held).updateStatus(deal)
+        assertTrue(held.notary.proven.isEmpty())
+    }
+
+    @Test
+    fun the_heartbeat_always_reports_the_background_option() = runTest {
+        for ((cellular, background) in listOf(true to false, false to true)) {
+            for (onScreen in listOf(true, false)) {
+                val setup = Setup(FakeMarketplaceClient(heartbeat()), cellularOptIn = cellular, backgroundOptIn = background)
+                val tracker = splitTracker(setup)
+                if (onScreen) tracker.setForeground(true)
+                tracker.updateStatus(deal)
+                tracker.onPush(wake())
+                val sent = setup.marketplace.heartbeatsSent.map { it.backgroundProveAllowed }
+                assertTrue(
+                    sent.isNotEmpty() && sent.all {
+                        it == background
+                    },
+                    "cellular=$cellular background=$background onScreen=$onScreen: $sent",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun without_a_background_option_the_cellular_one_governs_every_cycle() = runTest {
+        val setup = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true, cellularOptIn = true)
+        val tracker = tracker(setup)
+
+        assertEquals(WakeOutcome.DONE, tracker.onPush(wake()))
+        tracker.setForeground(true)
+        tracker.updateStatus(deal)
+
+        assertTrue(setup.notary.proven.isNotEmpty())
+        assertTrue(setup.marketplace.heartbeatsSent.all { it.backgroundProveAllowed == true })
+
+        val off = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), metered = true)
+        assertEquals(
+            WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED),
+            tracker(off).onPush(wake()),
+        )
+        assertEquals(false, off.marketplace.heartbeatsSent.single().backgroundProveAllowed)
     }
 }
