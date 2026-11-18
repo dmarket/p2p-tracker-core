@@ -440,12 +440,28 @@ sealed interface LifecycleEvent {
     data class SuspiciousOutgoingOffers(val offers: List<SuspiciousOffer>, val cleared: List<OfferId> = emptyList()) : LifecycleEvent
 
     /**
-     * The mobile tracker took a wake push (DMA-659, provisional): [type] is `wake_all` or `wake_deal`, [dealId] the
-     * deal a `wake_deal` names, [proveAfter] the envelope's, re-formatted (ISO-8601). [acknowledged] is whether the
-     * receipt ack went out; it is sent before the sync, and a failed one does not stop it.
+     * The mobile tracker took a wake push (contract d455888 §2.2): [type] is `wake_all` or `wake_deal`, [dealId] the
+     * deal an extension's `wake_deal` names, [proveAfter] the envelope's, re-formatted (ISO-8601). [acknowledged] is
+     * whether the receipt ack (`done`) went out; it is sent before the sync, and a failed one does not stop it.
+     * [transactionId] is the mobile `wake_deal`'s hint, logged only; [expired] a wake past its `deadline`, dropped
+     * without a sync (its one ack is then the final [WakeFinished]).
      */
-    data class WakeReceived(val type: String, val dealId: String?, val proveAfter: String?, val acknowledged: Boolean) :
-        LifecycleEvent
+    data class WakeReceived(
+        val type: String,
+        val dealId: String?,
+        val proveAfter: String?,
+        val acknowledged: Boolean,
+        val wakeId: String? = null,
+        val transactionId: String? = null,
+        val reason: String? = null,
+        val expired: Boolean = false,
+    ) : LifecycleEvent
+
+    /**
+     * A wake's work ended: [outcome] (`done` | `deferred` | `failed`) and [cause] as the final ack sends them
+     * ([WakeOutcomeKind.wireName], [WakeCause.wireName]); [acknowledged] whether that ack went out.
+     */
+    data class WakeFinished(val wakeId: String?, val outcome: String, val cause: String?, val acknowledged: Boolean) : LifecycleEvent
 
     /**
      * A decisive transition's proof was put off by the mobile proof gate: the device is on a metered network

@@ -16,6 +16,7 @@ import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.Money
+import com.dmarket.p2p.tracker.model.marketplace.NetworkType
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
@@ -75,6 +76,30 @@ class P2pSerializationTest {
             assertFalse("steamSession" in mobile.jsonObject, "not at the top level: $mobile")
         }
         assertEquals(4, SteamWebSessionState.entries.size)
+    }
+
+    @Test
+    fun a_wake_heartbeat_carries_its_wake_id_and_the_device_state_beside_the_session() {
+        val request = HeartbeatRequest(
+            clientVersion = "1.0.0",
+            platform = "android",
+            foreground = false,
+            steamId = SteamId("76561198000000001"),
+            deviceId = DeviceId("device-abc-123"),
+            steamSession = SteamWebSessionState.ALIVE,
+            network = NetworkType.WIFI,
+            backgroundProveAllowed = false,
+            wakeId = "w-1",
+        )
+        val json = TrackerJson.parseToJsonElement(TrackerJson.encodeToString(request.toDto())).jsonObject
+        assertEquals("w-1", json.getValue("wakeId").jsonPrimitive.content)
+        val state = json.getValue("trackerState").jsonObject
+        assertEquals("NETWORK_TYPE_WIFI", state.getValue("network").jsonPrimitive.content)
+        assertEquals("false", state.getValue("backgroundProveAllowed").jsonPrimitive.content)
+
+        // No Steam session (web, headless): no trackerState at all, whatever else is set.
+        val web = TrackerJson.encodeToString(request.copy(steamSession = null, wakeId = null).toDto())
+        assertFalse("trackerState" in web || "wakeId" in web, web)
     }
 
     @Test

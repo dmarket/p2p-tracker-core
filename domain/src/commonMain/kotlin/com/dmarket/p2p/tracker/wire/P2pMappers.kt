@@ -3,15 +3,18 @@ package com.dmarket.p2p.tracker.wire
 import com.dmarket.p2p.tracker.model.AccountId
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TradeId
+import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.marketplace.CounterpartyBadges
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
 import com.dmarket.p2p.tracker.model.marketplace.DealCounterparty
 import com.dmarket.p2p.tracker.model.marketplace.DealRole
+import com.dmarket.p2p.tracker.model.marketplace.DeviceRegistration
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAck
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
@@ -49,8 +52,29 @@ fun HeartbeatRequest.toDto(): HeartbeatRequestDto = HeartbeatRequestDto(
     foreground = foreground,
     steamId = steamId.value,
     deviceId = deviceId.value,
-    trackerState = steamSession?.let { TrackerStateDto(steamSession = "STEAM_SESSION_STATE_${it.name}") },
+    trackerState = steamSession?.let {
+        TrackerStateDto(
+            steamSession = "STEAM_SESSION_STATE_${it.name}",
+            network = network?.let { type -> "NETWORK_TYPE_${type.name}" },
+            backgroundProveAllowed = backgroundProveAllowed,
+        )
+    },
+    wakeId = wakeId,
 )
+
+fun DeviceRegistration.toDto(): RegisterDeviceRequestDto = RegisterDeviceRequestDto(
+    platform = platform,
+    pushProvider = pushProvider.wireName,
+    pushTokenType = pushTokenType,
+    pushToken = pushToken,
+    clientVersion = clientVersion,
+    capabilities = capabilities,
+    apnsEnvironment = apns?.environment,
+    apnsTopic = apns?.topic,
+)
+
+fun WakeOutcome.toAckDto(deviceId: DeviceId, wakeId: String): WakeAckRequestDto =
+    WakeAckRequestDto(wakeId = wakeId, deviceId = deviceId.value, outcome = kind.wireName, cause = cause?.wireName)
 
 fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     dealId = DealId(dealId),

@@ -15,6 +15,8 @@ import kotlin.time.Instant
  * the account from the Bearer token). [steamId] must equal the account's Steam id (wrong-account
  * guard); [deviceId] is install-scoped and persistent (the directive-lease key). [steamSession] is the state of the
  * Steam session in the core's vault, sent by mobile only as `trackerState.steamSession`; `null` is left out.
+ * [network] and [backgroundProveAllowed] ride in the same `trackerState`, so only beside [steamSession]; [wakeId] names
+ * the wake this heartbeat answers (contract d455888 §5.1).
  */
 data class HeartbeatRequest(
     val clientVersion: String,
@@ -23,7 +25,13 @@ data class HeartbeatRequest(
     val steamId: SteamId,
     val deviceId: DeviceId,
     val steamSession: SteamWebSessionState? = null,
+    val network: NetworkType? = null,
+    val backgroundProveAllowed: Boolean? = null,
+    val wakeId: String? = null,
 )
+
+/** `TrackerState.network` (§5.1): a metered network reads as [CELLULAR], whatever carries it. */
+enum class NetworkType { WIFI, CELLULAR }
 
 /** Which Steam read the backend asks the tracker to perform for a watched deal (`TrackedDeal.watch`). */
 enum class WatchTarget(val wireName: String) {

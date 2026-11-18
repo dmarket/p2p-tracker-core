@@ -28,6 +28,7 @@ class ProofMintPolicyTest {
         minted: Boolean = true,
         deadline: Instant? = null,
         networkDeferred: Boolean = false,
+        wakeBudget: Boolean = false,
     ) = ProofMintPolicy.decide(
         intent,
         now,
@@ -39,6 +40,7 @@ class ProofMintPolicyTest {
         minted,
         deadline,
         networkDeferred,
+        wakeBudget,
     )
 
     @Test
@@ -141,6 +143,20 @@ class ProofMintPolicyTest {
         // Deferred is neither: its report waits and is never claimed unproven.
         assertFalse(ProofSkipReason.NETWORK_DEFERRED.unprovable)
         assertFalse(ProofSkipReason.NETWORK_DEFERRED.corroborated)
+    }
+
+    @Test
+    fun a_wake_without_time_for_a_proof_holds_it_after_settled_answers_and_ahead_of_the_network_gate() {
+        val held = ProofMintVerdict.Skip(ProofSkipReason.WAKE_BUDGET)
+        assertEquals(held, decide(wakeBudget = true, networkDeferred = true, parkedUntil = T0 + 45.seconds))
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
+            decide(accepted = mapOf(intent to T0), wakeBudget = true),
+        )
+        assertEquals(held, ProofMintPolicy.decideFreshness(null, T0, true, null, false, null, wakeBudget = true))
+        // Held like a deferral: its report waits and is never claimed unproven.
+        assertFalse(ProofSkipReason.WAKE_BUDGET.unprovable)
+        assertFalse(ProofSkipReason.WAKE_BUDGET.corroborated)
     }
 
     @Test
@@ -248,6 +264,7 @@ class ProofMintPolicyTest {
                 ProofSkipReason.FRESHNESS_RETRY_PENDING -> decideFreshness(progress = laddered(T0 + 30.seconds))
                 ProofSkipReason.NO_PROVER -> decide(proverAvailable = false)
                 ProofSkipReason.NETWORK_DEFERRED -> decide(networkDeferred = true)
+                ProofSkipReason.WAKE_BUDGET -> decide(wakeBudget = true)
                 ProofSkipReason.PROVER_PARKED -> decide(parkedUntil = T0 + 30.seconds)
                 ProofSkipReason.BUDGET_SPENT -> decide(deadline = T0)
             }

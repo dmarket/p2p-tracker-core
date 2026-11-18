@@ -13,6 +13,8 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.WakeCause
+import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
@@ -45,6 +47,8 @@ import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
@@ -53,8 +57,9 @@ import kotlin.time.Duration.Companion.seconds
 class P2pTrackerTest {
     private val accountA = SteamId("76561198000000001")
     private val accountB = SteamId("76561198000000002")
-    private val wakeDeal = """{"type":"wake_deal","dealId":"d1","reason":"buyer_accepted","issuedAt":"2026-11-11T10:00:00Z"}"""
-    private val wakeAll = """{"type":"wake_all","reason":"new_deal"}"""
+    private val wakeDeal =
+        """{"v":"1","type":"wake_deal","wakeId":"w-1","transactionId":"tx-1","reason":"prove_offer","issuedAt":"2026-11-11T10:00:00Z"}"""
+    private val wakeAll = """{"v":"1","type":"wake_all","wakeId":"w-2","reason":"sync"}"""
 
     private val clock = FakeClock()
     private val events = RecordingEventObserver()
@@ -101,8 +106,10 @@ class P2pTrackerTest {
     /** Records each ack with how many heartbeats had gone out by then. */
     private class RecordingAcknowledger(private val marketplace: FakeMarketplaceClient) : WakeAcknowledger {
         val heartbeatsAtAck = mutableListOf<Int>()
-        override suspend fun acknowledge(deviceId: DeviceId, wake: com.dmarket.p2p.tracker.model.Wake) {
+        val acks = mutableListOf<Pair<String, WakeOutcome>>()
+        override suspend fun acknowledge(deviceId: DeviceId, wakeId: String, outcome: WakeOutcome) {
             heartbeatsAtAck += marketplace.heartbeatsSent.size
+            acks += wakeId to outcome
         }
     }
 
@@ -132,16 +139,29 @@ class P2pTrackerTest {
         val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3))
         val tracker = tracker(mp, reader, acks)
 
-        assertTrue(tracker.onPush(wakeDeal))
+        assertEquals(WakeOutcome.DONE, tracker.onPush(wakeDeal))
 
-        assertEquals(listOf(0), acks.heartbeatsAtAck, "one ack per push, sent before the sync's heartbeat")
+        assertEquals(listOf(0, 1), acks.heartbeatsAtAck, "the receipt ack before the sync's heartbeat, the final one after")
+        assertEquals(listOf("w-1" to WakeOutcome.DONE, "w-1" to WakeOutcome.DONE), acks.acks)
+        assertEquals("w-1", mp.heartbeatsSent.single().wakeId, "the sync names its wake")
         assertEquals(1, mp.heartbeatsSent.size)
         assertFalse(mp.heartbeatsSent.single().foreground, "a background sync heartbeats with foreground=false")
         assertEquals(listOf(3), mp.tradeStatusReports.map { it.steamStatusCode })
         val wakeAt = events.events.indexOfFirst { it is LifecycleEvent.WakeReceived }
         val beatAt = events.events.indexOfFirst { it is LifecycleEvent.HeartbeatSent }
         assertTrue(wakeAt in 0 until beatAt)
-        assertEquals(LifecycleEvent.WakeReceived("wake_deal", "d1", null, acknowledged = true), events.events[wakeAt])
+        assertEquals(
+            LifecycleEvent.WakeReceived(
+                "wake_deal",
+                null,
+                null,
+                acknowledged = true,
+                wakeId = "w-1",
+                transactionId = "tx-1",
+                reason = "prove_offer",
+            ),
+            events.events[wakeAt],
+        )
 
         val state = tracker.state.value
         assertTrue(state.running)
@@ -156,8 +176,8 @@ class P2pTrackerTest {
         val mp = FakeMarketplaceClient(HeartbeatResponse(activeTracking = listOf(tracked()), ttlSeconds = 86_400))
         val tracker = tracker(mp)
 
-        assertTrue(tracker.onPush(wakeAll))
-        assertTrue(tracker.onPush(wakeAll))
+        assertNotNull(tracker.onPush(wakeAll))
+        assertNotNull(tracker.onPush(wakeAll))
 
         assertEquals(2, mp.heartbeatsSent.size, "a wake always heartbeats, so the guard and the claim release run")
     }
@@ -168,9 +188,8 @@ class P2pTrackerTest {
         val acks = RecordingAcknowledger(mp)
         val tracker = tracker(mp, acknowledger = acks)
 
-        assertFalse(tracker.onPush("""{"type":"presence_ping","dealId":"d1"}"""))
-        assertFalse(tracker.onPush("""{"type":"wake_deal"}"""))
-        assertFalse(tracker.onPush("not json"))
+        assertNull(tracker.onPush("""{"type":"presence_ping","dealId":"d1"}"""))
+        assertNull(tracker.onPush("not json"))
 
         assertTrue(acks.heartbeatsAtAck.isEmpty())
         assertEquals(0, mp.heartbeatAttempts)
@@ -180,9 +199,9 @@ class P2pTrackerTest {
     @Test
     fun a_failed_ack_still_syncs() = runTest {
         val mp = FakeMarketplaceClient()
-        val tracker = tracker(mp, acknowledger = { _, _ -> error("ack refused") })
+        val tracker = tracker(mp, acknowledger = { _, _, _ -> error("ack refused") })
 
-        assertTrue(tracker.onPush(wakeAll))
+        assertEquals(WakeOutcome.DONE, tracker.onPush(wakeAll))
 
         assertEquals(1, mp.heartbeatsSent.size)
         assertEquals(false, events.events.filterIsInstance<LifecycleEvent.WakeReceived>().single().acknowledged)
@@ -263,7 +282,7 @@ class P2pTrackerTest {
         stuck.cancelAndJoin()
 
         mp.hold = null
-        assertTrue(tracker.onPush(wakeAll))
+        assertNotNull(tracker.onPush(wakeAll))
         assertEquals(1, mp.fake.heartbeatsSent.size, "the next wake gets the lock and syncs")
         assertEquals(2, mp.attempts)
     }
@@ -282,7 +301,7 @@ class P2pTrackerTest {
             cycleDeadline = 30.seconds,
         )
 
-        assertTrue(tracker.onPush(wakeAll))
+        assertEquals(WakeOutcome.failed(WakeCause.BUDGET), tracker.onPush(wakeAll), "the cycle's own deadline is the budget too")
         mp.hold = null
         tracker.onPush(wakeAll)
 
@@ -404,14 +423,14 @@ class P2pTrackerTest {
         assertEquals(notRunning, tracker.startDelivery(deal).error)
         assertEquals(AcceptOutcome.Failed(notRunning), tracker.acceptDeal(deal))
         assertEquals(DealRead.Failed(notRunning), tracker.getDeal(deal))
-        assertTrue(tracker.onPush(wakeAll), "the wake is still taken")
+        assertEquals(WakeOutcome.failed(WakeCause.OTHER), tracker.onPush(wakeAll), "the wake is still taken")
         assertFalse(tracker.start())
         assertEquals(6, events.events.count { it == LifecycleEvent.CycleFailed("IllegalStateException: Keystore busy") })
         assertFalse(tracker.state.value.running)
         assertTrue(mp.heartbeatsSent.isEmpty())
 
         fault = null
-        assertTrue(tracker.onPush(wakeAll))
+        assertNotNull(tracker.onPush(wakeAll))
         assertEquals(1, mp.heartbeatsSent.size, "the next call starts the loop")
         assertTrue(tracker.state.value.running)
     }

@@ -5,9 +5,12 @@ import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.OfferId
+import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.marketplace.Deal
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
+import com.dmarket.p2p.tracker.model.marketplace.DeviceRegistration
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAck
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
@@ -19,12 +22,14 @@ import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.policy.ExponentialBackoff
+import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedException
+import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.wire.DealActionResponseDto
 import com.dmarket.p2p.tracker.wire.DealDto
 import com.dmarket.p2p.tracker.wire.HeartbeatResponseDto
@@ -34,6 +39,7 @@ import com.dmarket.p2p.tracker.wire.ReportTradeStatusResponseDto
 import com.dmarket.p2p.tracker.wire.SubmitProofResponseDto
 import com.dmarket.p2p.tracker.wire.TrackerJson
 import com.dmarket.p2p.tracker.wire.chunkByEncodedSize
+import com.dmarket.p2p.tracker.wire.toAckDto
 import com.dmarket.p2p.tracker.wire.toDomain
 import com.dmarket.p2p.tracker.wire.toDto
 import com.dmarket.p2p.tracker.wire.toRequestDto
@@ -42,7 +48,7 @@ import io.ktor.client.plugins.ResponseException
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.request.post
+import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -114,7 +120,9 @@ class KtorMarketplaceClient(
     private val maxReportBodyBytes: Int = 0,
     private val onServerDate: ((Instant) -> Unit)? = null,
 ) : MarketplaceClient,
-    DmarketOfferVerifier {
+    DmarketOfferVerifier,
+    WakeAcknowledger,
+    DeviceRegistryClient {
 
     /** C2 deal calls (`accept`/`create-trade`/`getDeal`). */
     private val p2pPath = "/exchange/v1/p2p"
@@ -243,6 +251,22 @@ class KtorMarketplaceClient(
         }
     } ?: DmarketOfferAnswer(null)
 
+    /** `POST {ext}/wake-ack` (contract d455888 §6.4); the answer's body is not read. */
+    override suspend fun acknowledge(deviceId: DeviceId, wakeId: String, outcome: WakeOutcome) {
+        postJson("$baseUrl$extPath/wake-ack", TrackerJson.encodeToString(outcome.toAckDto(deviceId, wakeId)), readErrorCode = true)
+    }
+
+    override suspend fun registerDevice(deviceId: DeviceId, registration: DeviceRegistration) {
+        val body = TrackerJson.encodeToString(registration.toDto())
+        postJson(devicePath(deviceId), body, readErrorCode = true, method = HttpMethod.Put)
+    }
+
+    override suspend fun unregisterDevice(deviceId: DeviceId) {
+        postJson(devicePath(deviceId), "", readErrorCode = true, method = HttpMethod.Delete)
+    }
+
+    private fun devicePath(deviceId: DeviceId) = "$baseUrl$extPath/devices/${deviceId.value.encodeURLPath()}"
+
     // ---- private -----------------------------------------------------------------------------------
 
     /**
@@ -250,12 +274,12 @@ class KtorMarketplaceClient(
      * other non-2xx (a deterministic 4xx like 404, or a 5xx) surfaces as [MarketplaceServerErrorException]
      * carrying the status, so the loop can tell a DMarket-side error apart from a transient transport blip.
      */
-    private suspend fun postJson(url: String, body: String, readErrorCode: Boolean = false): String {
+    private suspend fun postJson(url: String, body: String, readErrorCode: Boolean = false, method: HttpMethod = HttpMethod.Post): String {
         val sent = SentToken()
         return try {
-            send(url, body, readErrorCode, sent)
+            send(url, body, readErrorCode, sent, method)
         } catch (e: HttpStatusException) {
-            mapStatus(e) { retryOrUnauthorized(sent) { send(url, body, readErrorCode, sent) } }
+            mapStatus(e) { retryOrUnauthorized(sent) { send(url, body, readErrorCode, sent, method) } }
         } catch (e: ResponseException) {
             // Only reachable if this client was built without sanitizeHttpFailures (the mobile host-supplied
             // path). Degrade to the same domain error rather than letting Ktor's URL+body message escape.
@@ -268,10 +292,11 @@ class KtorMarketplaceClient(
         var token: String? = null
     }
 
-    private suspend fun send(url: String, body: String, readErrorCode: Boolean, sent: SentToken): String {
-        val response: HttpResponse = httpClient.post(url) {
+    private suspend fun send(url: String, body: String, readErrorCode: Boolean, sent: SentToken, method: HttpMethod): String {
+        val response: HttpResponse = httpClient.request(url) {
+            this.method = method
             if (readErrorCode) captureErrorBody(ERROR_BODY_CHARS)
-            authorizeAndSet(body, sent)
+            if (method == HttpMethod.Delete) authorize(method, body, sent) else authorizeAndSet(body, sent, method)
         }
         heardDate(response.headers[HttpHeaders.Date])
         return response.bodyAsText()
@@ -364,8 +389,8 @@ class KtorMarketplaceClient(
         return response.bodyAsText()
     }
 
-    private suspend fun HttpRequestBuilder.authorizeAndSet(body: String, sent: SentToken) {
-        authorize(HttpMethod.Post, body, sent)
+    private suspend fun HttpRequestBuilder.authorizeAndSet(body: String, sent: SentToken, method: HttpMethod) {
+        authorize(method, body, sent)
         contentType(ContentType.Application.Json)
         setBody(body)
     }

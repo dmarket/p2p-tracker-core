@@ -1,15 +1,13 @@
 package com.dmarket.p2p.tracker.port.marketplace
 
 import com.dmarket.p2p.tracker.model.DeviceId
-import com.dmarket.p2p.tracker.model.Wake
+import com.dmarket.p2p.tracker.model.WakeOutcome
 
 /**
- * Tells DMarket this device received a [Wake], before the sync it triggers. The mobile tracker sends it, not the app.
- *
- * **PROVISIONAL** — DMA-659 asks for an ack on receipt, but the contract does not define its shape yet, so nothing
- * here names an endpoint. Until it does the tracker runs the no-op one; the real one lands behind this port.
+ * The wake ack, `POST /exchange/v1/p2p/ext/wake-ack` (contract d455888 §6.4). The mobile tracker sends it, not the app:
+ * `done` on receipt ("the work started"), then the final outcome under the same `wakeId`; the last one wins.
  * A throw counts as "not acknowledged" and never stops the sync.
  */
 fun interface WakeAcknowledger {
-    suspend fun acknowledge(deviceId: DeviceId, wake: Wake)
+    suspend fun acknowledge(deviceId: DeviceId, wakeId: String, outcome: WakeOutcome)
 }

@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.runtime
 
+import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
@@ -24,7 +25,9 @@ import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
+import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -207,6 +210,11 @@ class MobileTracker(
             eventObserver = eventObserver,
             clearAccountState = platform::clearAccountState,
             importSteamCookies = platform::importSteamSession,
+            // The core's DMarket client acks and registers; a host client without those routes gets neither.
+            acknowledger = marketplace as? WakeAcknowledger ?: NoOpWakeAcknowledger,
+            deviceRegistry = (marketplace as? DeviceRegistryClient)?.let {
+                DeviceRegistry(it, platform.surface.platformWireName, clientVersion, steamWrites)
+            },
         ).also { built = it }
     }
 }

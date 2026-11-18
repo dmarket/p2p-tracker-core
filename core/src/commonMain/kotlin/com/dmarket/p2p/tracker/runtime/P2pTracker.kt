@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
+import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.DealId
@@ -10,6 +11,12 @@ import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.Wake
+import com.dmarket.p2p.tracker.model.WakeCause
+import com.dmarket.p2p.tracker.model.WakeOutcome
+import com.dmarket.p2p.tracker.model.WakeOutcomeKind
+import com.dmarket.p2p.tracker.model.marketplace.ApnsTarget
+import com.dmarket.p2p.tracker.model.marketplace.NetworkType
+import com.dmarket.p2p.tracker.model.marketplace.PushProvider
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -23,6 +30,7 @@ import com.dmarket.p2p.tracker.wire.parsePushEnvelope
 import com.dmarket.p2p.tracker.wire.toWakeOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -36,6 +44,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
@@ -44,15 +53,17 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /**
  * The mobile tracker: one [TradeTrackerLoop] per Steam account, woken by pushes and, while the app is on screen, by
  * its own polling. The app owns the push transport and the UI; it calls [onPush] with each payload, [setForeground]
  * from its lifecycle, and reads [state].
  *
- * **Push model.** A wake is a visible push acknowledged on receipt (DMA-659, provisional). [onPush] acks it at once,
- * before the sync, and then always syncs: a heartbeat (`foreground: false` in the background), so the wrong-account
- * guard and the stale-claim release run on every wake. The heartbeat only says "last seen": the backend's mobile
+ * **Push model** (contract d455888 §2, §5.1, §6.4). [onPush] acks a wake `done` at once ("the work started"), then
+ * always syncs: a heartbeat (`foreground: false` in the background) carrying the wake's id, so the wrong-account
+ * guard and the stale-claim release run on every wake; then it acks the final [WakeOutcome] under the same id. The heartbeat only says "last seen": the backend's mobile
  * `ttl_seconds` is at least 24 h, and nothing is woken for it — in the background no wake is scheduled at all.
  *
  * **One cycle at a time.** Every call into the loop — a push's sync, a poll, the mode switch — runs under one lock and
@@ -80,6 +91,8 @@ import kotlin.time.Instant
  *   cookies, never the device id.
  * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
+ * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
+ * @param deviceRegistry the push device registry behind [registerDevice] / [unregisterDevice]; `null` refuses both.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -96,6 +109,7 @@ class P2pTracker(
     private val deliveryTimeout: Duration = DEFAULT_DELIVERY_TIMEOUT,
     private val clearAccountState: suspend () -> Unit = {},
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
+    private val deviceRegistry: DeviceRegistry? = null,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -124,6 +138,9 @@ class P2pTracker(
         var steamRateLimited = false
         var steamReadFailed = false
         var failed = false
+        var dmarketRateLimited = false
+        var proofDeferred = false
+        var proofOutOfBudget = false
         val proofFailed = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
     }
@@ -255,24 +272,106 @@ class P2pTracker(
     }
 
     /**
-     * Handles one push payload. A known wake is acknowledged, then synced; returns `true`. An unknown `type` or an
-     * unreadable payload is ignored (no ack, no sync); returns `false`. Starts the tracker first when it is not running
-     * (a push that woke the process).
+     * Handles one wake push (contract d455888 §2.2) and returns how it ended, or `null` for a payload that is no wake
+     * (an unknown `type` without a `wakeId`, unreadable JSON): no ack, no sync. Starts the tracker first when it is not
+     * running (a push that woke the process).
+     *
+     * A wake past its `deadline` is dropped: one ack `failed`, no sync. Otherwise the wake is acked `done` at once,
+     * synced (a full sync whatever deal it names; its `transactionId` is only logged), and its final outcome acked
+     * once, under the same `wakeId` (the last ack wins). The outcome never changes what the cycle reports: a create
+     * that did not run is left unanswered, never reported `failed` (§4.3).
+     *
+     * @param deadline how long the host lets the work run from now; the cycle runs within the lesser of it and the
+     *   tracker's cycle deadline, and a deadline already spent, or reached, is [WakeCause.BUDGET].
+     * @param allowProof whether a proof may run in this wake; `false` (an iOS background push) mints none
+     *   ([ProofSkipReason.WAKE_BUDGET]) and the report that needs it waits.
      */
-    suspend fun onPush(payload: String): Boolean {
-        val wake = parsePushEnvelope(payload)?.toWakeOrNull() ?: return false
-        val acknowledged = try {
-            acknowledger.acknowledge(deviceIds.current(), wake)
+    suspend fun onPush(payload: String, deadline: Duration = cycleDeadline, allowProof: Boolean = true): WakeOutcome? {
+        val wake = parsePushEnvelope(payload)?.toWakeOrNull() ?: return null
+        val ends = TimeSource.Monotonic.markNow() + deadline
+        val expired = wake.deadline?.let { clock.now() >= it } == true
+        val early = when {
+            expired -> WakeOutcome.failed(WakeCause.OTHER)
+            !deadline.isPositive() -> WakeOutcome.failed(WakeCause.BUDGET)
+            else -> null
+        }
+        val received = if (early == null) ack(wake, WakeOutcome.DONE) else false
+        emitQuietly(
+            LifecycleEvent.WakeReceived(
+                wake.type,
+                wake.dealId?.value,
+                wake.proveAfter?.toString(),
+                received,
+                wake.wakeId,
+                wake.transactionId,
+                wake.reason,
+                expired,
+            ),
+        )
+        if (early != null) return finish(wake, early)
+        val outcome = try {
+            val s = sessionOrStart()
+            if (s == null) {
+                WakeOutcome.failed(if (startFailed) WakeCause.OTHER else WakeCause.STEAM_SESSION)
+            } else {
+                val run = cycle(s, wake, allowCellularProof = false, allowProof = allowProof, ends = ends)
+                if (run == null) WakeOutcome.failed(WakeCause.OTHER) else wakeOutcomeOf(wake, s.loop, run)
+            }
+        } catch (e: CancellationException) {
+            // The host stopped the work (WorkManager's stop, the process going down): say so if there is time.
+            withContext(NonCancellable) { withTimeoutOrNull(STOPPED_ACK_TIMEOUT) { finish(wake, WakeOutcome.failed(WakeCause.BUDGET)) } }
+            throw e
+        }
+        return finish(wake, outcome)
+    }
+
+    /** Sends the final ack of [wake] and announces it. */
+    private suspend fun finish(wake: Wake, outcome: WakeOutcome): WakeOutcome {
+        val acknowledged = ack(wake, outcome)
+        emitQuietly(LifecycleEvent.WakeFinished(wake.wakeId, outcome.kind.wireName, outcome.cause?.wireName, acknowledged))
+        return outcome
+    }
+
+    /** One wake ack; `false` when it did not go out (no `wakeId` to key it, or the call failed). */
+    private suspend fun ack(wake: Wake, outcome: WakeOutcome): Boolean {
+        val wakeId = wake.wakeId ?: return false
+        return try {
+            acknowledger.acknowledge(deviceIds.current(), wakeId, outcome)
             true
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {
             false
         }
-        emitQuietly(LifecycleEvent.WakeReceived(wake.type, wake.dealId?.value, wake.proveAfter?.toString(), acknowledged))
-        val s = sessionOrStart() ?: return true
-        cycle(s, wake)
-        return true
+    }
+
+    /**
+     * Registers this install's push token (`PUT …/devices/{deviceId}`, contract d455888 §3.2): the core adds the device
+     * id, platform, client version and capabilities ([DeviceRegistry.capabilities]). The app decides when: after login,
+     * on a new token, on start when anything changed (§3.3). [apns] is required with [PushProvider.APNS] and refused
+     * otherwise. Returns `null` when the backend took it, else why not. Needs no running loop, only a DMarket session.
+     */
+    suspend fun registerDevice(pushToken: String, provider: PushProvider, apns: ApnsTarget? = null): DealCallError? =
+        registryCall { it.register(deviceIds.current(), pushToken, provider, apns) }
+
+    /**
+     * Removes this install from the registry (`DELETE …/devices/{deviceId}`): on logout while the DMarket session still
+     * works, and on a Steam account unlink or switch (§3.3). An unknown id is a success too.
+     */
+    suspend fun unregisterDevice(): DealCallError? = registryCall { it.unregister(deviceIds.current()) }
+
+    private suspend fun registryCall(call: suspend (DeviceRegistry) -> Unit): DealCallError? {
+        val registry = deviceRegistry ?: return DealCallError(DealCallErrorKind.UNAVAILABLE)
+        return try {
+            call(registry)
+            null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IllegalArgumentException) {
+            DealCallError(DealCallErrorKind.OTHER)
+        } catch (e: Throwable) {
+            e.toDealCallError()
+        }
     }
 
     /**
@@ -425,9 +524,10 @@ class P2pTracker(
     }
 
     /**
-     * One cycle in [s]'s scope, under its lock and within [cycleDeadline]; `null` when the session stopped under it.
-     * A [wake] or a [manual] update forces the heartbeat first: both always sync. The proof gate is set for this cycle,
-     * and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
+     * One cycle in [s]'s scope, under its lock and within [cycleDeadline] (and [ends], when the host set one);
+     * `null` when the session stopped under it. A [wake] or a [manual] update forces the heartbeat first: both always
+     * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
+     * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
      */
     private suspend fun cycle(
         s: Session,
@@ -435,9 +535,11 @@ class P2pTracker(
         manual: Boolean = false,
         allowCellularProof: Boolean = false,
         onScreen: Boolean = false,
+        allowProof: Boolean = true,
+        ends: TimeMark? = null,
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
@@ -461,20 +563,35 @@ class P2pTracker(
         }
     }
 
-    /** [body] as one cycle: under [s]'s lock, with a fresh probe and the proof gate set, within [cycleDeadline]. */
+    /**
+     * [body] as one cycle: under [s]'s lock, with a fresh probe, the proof gate and the heartbeat's device state set,
+     * within [cycleDeadline] and what is left to [ends], counted once the lock is held.
+     */
     private suspend fun locked(
         s: Session,
         allowCellularProof: Boolean = false,
         onScreen: Boolean = false,
+        wake: Wake? = null,
+        allowProof: Boolean = true,
+        ends: TimeMark? = null,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
         val cycleProbe = CycleProbe()
         probe = cycleProbe
-        s.loop.proofsDeferred = !proofsAllowed(allowCellularProof)
+        val metered = runCatching { network.metered() }.getOrNull()
+        val option = runCatching { cellularProofs() }.getOrNull()
+        s.loop.proofsDeferred = !(metered == false || allowCellularProof || option == true)
+        s.loop.proofsOutOfBudget = !allowProof
+        s.loop.heartbeatContext = TradeTrackerLoop.HeartbeatContext(
+            wakeId = wake?.wakeId,
+            network = metered?.let { if (it) NetworkType.CELLULAR else NetworkType.WIFI },
+            backgroundProveAllowed = option,
+        )
         if (onScreen) s.loop.mode = TrackerMode.Foreground
+        val limit = ends?.let { minOf(cycleDeadline, -it.elapsedNow()) } ?: cycleDeadline
         val completed = try {
-            withTimeoutOrNull(cycleDeadline) {
+            withTimeoutOrNull(limit) {
                 body()
                 true
             } ?: false
@@ -516,13 +633,6 @@ class P2pTracker(
         }
     }
 
-    /** Whether a proof may run now: an unmetered network, the user's option, or this update's own permission. */
-    private fun proofsAllowed(allowCellularProof: Boolean): Boolean {
-        // No answer from the platform reads as metered, and no answer from the host as the option off.
-        val metered = runCatching { network.metered() }.getOrDefault(true)
-        return !metered || allowCellularProof || runCatching { cellularProofs() }.getOrDefault(false)
-    }
-
     /** The first reason the run fell short, by what the user can do about it; `null` when it ran through. */
     private fun failureOf(dealId: DealId, loop: TradeTrackerLoop, run: CycleRun): UpdateFailure? {
         val probe = run.probe
@@ -538,6 +648,31 @@ class P2pTracker(
             dealId.value in probe.reportFailed -> UpdateFailure.DMARKET
             probe.failed -> UpdateFailure.OTHER
             else -> null
+        }
+    }
+
+    /**
+     * The final outcome of [wake]'s cycle (contract d455888 §6.4, §4.3), by the first reason it fell short. A proof
+     * held or failed matters only on a wake that is not for a `create_offer`: a `directive` wake is never `deferred`,
+     * and its proof is not its work.
+     */
+    private fun wakeOutcomeOf(wake: Wake, loop: TradeTrackerLoop, run: CycleRun): WakeOutcome {
+        val probe = run.probe
+        val block = loop.blockingState
+        val proofs = !wake.isDirective
+        return when {
+            !run.completed -> WakeOutcome.failed(WakeCause.BUDGET)
+            block == TrackerBlock.STEAM_SESSION_MISSING || block == TrackerBlock.STEAM_ACCOUNT_MISMATCH ->
+                WakeOutcome.failed(WakeCause.STEAM_SESSION)
+            loop.steamCredentialUnavailable && loop.needsReLogin -> WakeOutcome.failed(WakeCause.STEAM_SESSION)
+            block == TrackerBlock.DM_SESSION_MISSING -> WakeOutcome.failed(WakeCause.AUTH)
+            block != TrackerBlock.NONE || !probe.heartbeat || probe.dmarketRateLimited -> WakeOutcome.failed(WakeCause.NETWORK)
+            proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
+            proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
+            proofs && probe.proofDeferred -> WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
+            probe.failed || probe.steamReadFailed || probe.steamRateLimited || probe.reportFailed.isNotEmpty() ->
+                WakeOutcome.failed(WakeCause.OTHER)
+            else -> WakeOutcome.DONE
         }
     }
 
@@ -557,7 +692,7 @@ class P2pTracker(
             is LifecycleEvent.CycleFailed -> probe.failed = true
             is LifecycleEvent.RateLimited -> {
                 val steam = event.surface == "steam"
-                if (steam) probe.steamRateLimited = true
+                if (steam) probe.steamRateLimited = true else probe.dmarketRateLimited = true
                 val wait = (if (steam) steamCooldown else dmarketCooldown).refused(clock.now(), event.retryAfterSeconds)
                 probe.retryAfter = maxOf(probe.retryAfter ?: Duration.ZERO, wait)
             }
@@ -570,8 +705,14 @@ class P2pTracker(
             is LifecycleEvent.TradeStatusReportDeferred -> deal(event.dealId) {
                 if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING)
             }
-            is LifecycleEvent.ProofDeferred -> deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
-            is LifecycleEvent.ProofSuppressed -> deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
+            is LifecycleEvent.ProofDeferred -> {
+                probe.proofDeferred = true
+                deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
+            }
+            is LifecycleEvent.ProofSuppressed -> {
+                if (event.reason == ProofSkipReason.WAKE_BUDGET.message) probe.proofOutOfBudget = true
+                deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
+            }
             is LifecycleEvent.ProofFailed -> {
                 probe.proofFailed += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
@@ -607,6 +748,9 @@ class P2pTracker(
          * write when each answers in seconds. A slower run answers [CreateOfferResult.CreateInFlight] and still creates.
          */
         val DEFAULT_DELIVERY_TIMEOUT: Duration = 60.seconds
+
+        /** How long a stopped wake waits for its `failed` ack before it lets the stop through. */
+        private val STOPPED_ACK_TIMEOUT: Duration = 5.seconds
 
         private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
         private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account, or its loop did not start"

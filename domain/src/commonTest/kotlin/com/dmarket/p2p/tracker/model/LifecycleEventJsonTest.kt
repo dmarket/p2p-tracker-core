@@ -207,6 +207,15 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun wake_finished_carries_the_final_ack() {
+        val json = parse(LifecycleEvent.WakeFinished("w-1", "failed", "os_killed", acknowledged = true))
+        assertEquals("WakeFinished", json["event"]?.jsonPrimitive?.content)
+        assertEquals("w-1", json["wakeId"]?.jsonPrimitive?.content)
+        assertEquals("failed", json["outcome"]?.jsonPrimitive?.content)
+        assertEquals("os_killed", json["cause"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun proof_deferred_and_rate_limited_carry_their_fields() {
         val deferred = parse(LifecycleEvent.ProofDeferred("d-1", "offer"))
         assertEquals("ProofDeferred", deferred["event"]?.jsonPrimitive?.content)
@@ -402,6 +411,7 @@ class LifecycleEventJsonTest {
             ),
             LifecycleEvent.CycleFailed("storage unavailable"),
             LifecycleEvent.WakeReceived("wake_all", null, null, acknowledged = false),
+            LifecycleEvent.WakeFinished("w-1", "failed", "os_killed", acknowledged = true),
             LifecycleEvent.ProofDeferred("d-1", "offer"),
             LifecycleEvent.RateLimited("steam", null),
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),

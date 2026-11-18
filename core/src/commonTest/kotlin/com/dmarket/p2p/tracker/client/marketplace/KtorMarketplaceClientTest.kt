@@ -10,17 +10,22 @@ import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.WakeCause
+import com.dmarket.p2p.tracker.model.WakeOutcome
+import com.dmarket.p2p.tracker.model.marketplace.ApnsTarget
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
+import com.dmarket.p2p.tracker.model.marketplace.PushProvider
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
+import com.dmarket.p2p.tracker.runtime.DeviceRegistry
 import com.dmarket.p2p.tracker.support.FakeMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
 import io.ktor.client.HttpClient
@@ -850,5 +855,74 @@ class KtorMarketplaceClientTest {
         date = null
         assertEquals(DmarketOfferAnswer(false, null), client.answerInRealTime(OfferId("1")))
         assertEquals(listOf(at), dates)
+    }
+
+    // ---- wake ack and device registry (contract d455888 §6.4, §3.2) ------------------------------
+
+    private class Sent(val method: HttpMethod, val url: String, val body: String?)
+
+    private fun recording(sent: MutableList<Sent>, status: HttpStatusCode = HttpStatusCode.OK) = MockEngine { request ->
+        sent += Sent(request.method, request.url.toString(), (request.body as? TextContent)?.text)
+        respond(content = "", status = status)
+    }
+
+    @Test
+    fun a_wake_ack_posts_its_outcome_and_cause_under_the_wake_id() = runTest {
+        val sent = mutableListOf<Sent>()
+        val client = KtorMarketplaceClient(createHttpClient(recording(sent)), baseUrl, authenticator)
+
+        client.acknowledge(DeviceId("dev-1"), "w-1", WakeOutcome.DONE)
+        client.acknowledge(DeviceId("dev-1"), "w-1", WakeOutcome.failed(WakeCause.BUDGET))
+
+        assertEquals(listOf(HttpMethod.Post, HttpMethod.Post), sent.map { it.method })
+        assertTrue(sent.all { it.url == "$extBase/wake-ack" })
+        assertEquals("""{"wakeId":"w-1","deviceId":"dev-1","outcome":"done"}""", sent[0].body)
+        assertEquals("""{"wakeId":"w-1","deviceId":"dev-1","outcome":"failed","cause":"os_killed"}""", sent[1].body)
+    }
+
+    @Test
+    fun register_puts_the_contract_body_and_unregister_deletes_by_device_id() = runTest {
+        val sent = mutableListOf<Sent>()
+        val client = KtorMarketplaceClient(createHttpClient(recording(sent)), baseUrl, authenticator)
+        val registry = DeviceRegistry(client, platform = "android", clientVersion = "2.1.0", steamWrites = true)
+
+        registry.register(DeviceId("dev-1"), "fcm-token", PushProvider.FCM, apns = null)
+        registry.unregister(DeviceId("dev-1"))
+
+        assertEquals(HttpMethod.Put, sent[0].method)
+        assertEquals("$extBase/devices/dev-1", sent[0].url)
+        assertEquals(
+            """{"platform":"android","pushProvider":"fcm","pushTokenType":"token","pushToken":"fcm-token",""" +
+                """"clientVersion":"2.1.0","capabilities":["wake_v1","steam_writes"]}""",
+            sent[0].body,
+        )
+        assertEquals(HttpMethod.Delete, sent[1].method)
+        assertEquals("$extBase/devices/dev-1", sent[1].url)
+    }
+
+    @Test
+    fun an_apns_registration_carries_its_endpoint_and_topic_and_no_token_type() = runTest {
+        val sent = mutableListOf<Sent>()
+        val client = KtorMarketplaceClient(createHttpClient(recording(sent)), baseUrl, authenticator)
+        val registry = DeviceRegistry(client, platform = "ios", clientVersion = "2.1.0", steamWrites = false)
+
+        registry.register(DeviceId("dev-2"), "apns-token", PushProvider.APNS, ApnsTarget("sandbox", "com.dmarket.dmarket"))
+
+        assertEquals(
+            """{"platform":"ios","pushProvider":"apns","pushToken":"apns-token","clientVersion":"2.1.0",""" +
+                """"capabilities":["wake_v1"],"apnsEnvironment":"sandbox","apnsTopic":"com.dmarket.dmarket"}""",
+            sent.single().body,
+        )
+        assertFailsWith<IllegalArgumentException> {
+            registry.register(DeviceId("dev-2"), "fcm-token", PushProvider.FCM, ApnsTarget("sandbox", "t"))
+        }
+        assertFailsWith<IllegalArgumentException> { registry.register(DeviceId("dev-2"), "apns-token", PushProvider.APNS, apns = null) }
+        assertEquals(1, sent.size, "a refused registration sends nothing")
+    }
+
+    @Test
+    fun a_registry_refusal_surfaces_as_a_server_error() = runTest {
+        val client = KtorMarketplaceClient(createHttpClient(recording(mutableListOf(), HttpStatusCode.BadRequest)), baseUrl, authenticator)
+        assertFailsWith<MarketplaceServerErrorException> { client.unregisterDevice(DeviceId("dev-1")) }
     }
 }

@@ -59,6 +59,13 @@ enum class ProofSkipReason(val message: String) {
     NETWORK_DEFERRED("the proof waits for an unmetered network or the user's cellular opt-in"),
 
     /**
+     * The host gave this wake no time for a proof (`P2pTracker.onPush` with `allowProof = false`: an iOS background
+     * push has about 30 s). Like [NETWORK_DEFERRED], neither [unprovable] nor [corroborated]: the transition waits,
+     * unreported, for a cycle that may prove.
+     */
+    WAKE_BUDGET("the wake has no time for a proof"),
+
+    /**
      * The prover has failed often enough in a row to be parked. Carries a deadline — see
      * `LifecycleEvent.ProofSuppressed.retryAfterSeconds`.
      */
@@ -152,6 +159,7 @@ object ProofMintPolicy {
      *   on the *chain* rather than on any single proof.
      * @param cycleDeadline when this cycle must stop minting, or `null` for no bound.
      * @param networkDeferred whether the mobile proof gate is closed ([ProofSkipReason.NETWORK_DEFERRED]).
+     * @param wakeBudget whether the wake gave no time for a proof ([ProofSkipReason.WAKE_BUDGET]).
      */
     fun decide(
         intent: ProofIntent,
@@ -164,10 +172,11 @@ object ProofMintPolicy {
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
         networkDeferred: Boolean = false,
+        wakeBudget: Boolean = false,
     ): ProofMintVerdict = when {
         intent in refused -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED)
         isCorroborated(intent, now, accepted, acceptedTtlMs) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
-        else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred)
+        else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred, wakeBudget)
     }
 
     /**
@@ -208,6 +217,7 @@ object ProofMintPolicy {
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
         networkDeferred: Boolean = false,
+        wakeBudget: Boolean = false,
     ): ProofMintVerdict {
         val retryAt = progress?.retryAt
         // A window ending exactly at `now` has elapsed — the same boundary rule `parkedUntil` uses.
@@ -217,7 +227,7 @@ object ProofMintPolicy {
                 retryAfterSeconds = CooldownLadder.retryAfterSeconds(retryAt, now),
             )
         }
-        return spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred)
+        return spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred, wakeBudget)
     }
 
     /**
@@ -234,12 +244,14 @@ object ProofMintPolicy {
         mintedThisCycle: Boolean,
         cycleDeadline: Instant?,
         networkDeferred: Boolean = false,
+        wakeBudget: Boolean = false,
     ): ProofMintVerdict = when {
         // Ahead of the two affordability gates because it is not about affording anything: a host with no
         // prover does not become able to prove when the breaker clears or the next cycle starts, and
         // saying "parked" or "budget spent" about it would send the operator after the wrong cause.
         !proverAvailable -> ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER)
         // Ahead of the breaker: nothing is spent on a metered network, so a parked prover is not the reason.
+        wakeBudget -> ProofMintVerdict.Skip(ProofSkipReason.WAKE_BUDGET)
         networkDeferred -> ProofMintVerdict.Skip(ProofSkipReason.NETWORK_DEFERRED)
         proverParkedUntil != null -> ProofMintVerdict.Skip(
             ProofSkipReason.PROVER_PARKED,

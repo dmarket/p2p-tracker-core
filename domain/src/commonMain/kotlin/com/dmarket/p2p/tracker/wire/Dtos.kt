@@ -34,13 +34,19 @@ data class HeartbeatRequestDto(
     @SerialName("deviceId") val deviceId: String,
     /** The mobile device's state (contract 27427d2 §5.1, `HeartbeatRequest.tracker_state`); left out when `null` (web, headless). */
     @SerialName("trackerState") val trackerState: TrackerStateDto? = null,
+    /** The wake this heartbeat answers (contract d455888 §5.1, `HeartbeatRequest.wake_id`); left out otherwise. */
+    @SerialName("wakeId") val wakeId: String? = null,
 )
 
-/** `TrackerState` of contract 27427d2 §7: only the Steam session is sent so far. */
+/** `TrackerState` of contract d455888 §7. */
 @Serializable
 data class TrackerStateDto(
     /** `SteamSessionState`: `STEAM_SESSION_STATE_ALIVE` | `…_NEEDS_REFRESH` | `…_GONE` | `…_OTHER_ACCOUNT`. */
     @SerialName("steamSession") val steamSession: String? = null,
+    /** `NetworkType`: `NETWORK_TYPE_WIFI` | `NETWORK_TYPE_CELLULAR`, prefixed like `SteamSessionState`. */
+    @SerialName("network") val network: String? = null,
+    /** The user's "proofs on mobile data" option (DMA-540); not a capability. */
+    @SerialName("backgroundProveAllowed") val backgroundProveAllowed: Boolean? = null,
 )
 
 @Serializable
@@ -373,4 +379,29 @@ data class DealActionResponseDto(
     @SerialName("reasonCode") val reasonCode: String? = null,
     /** `POST /create-trade` only: the deal's `create_offer` directive, when the call recorded the delivery. */
     @SerialName("createOffer") val createOffer: CreateOfferDto? = null,
+)
+
+/** `PUT /p2p/ext/devices/{deviceId}` body (contract d455888 §3.2); `apns*` only for an APNs device. */
+@Serializable
+data class RegisterDeviceRequestDto(
+    @SerialName("platform") val platform: String,
+    @SerialName("pushProvider") val pushProvider: String,
+    @SerialName("pushTokenType") val pushTokenType: String? = null,
+    @SerialName("pushToken") val pushToken: String,
+    @SerialName("clientVersion") val clientVersion: String,
+    @SerialName("capabilities") val capabilities: List<String>,
+    @SerialName("apnsEnvironment") val apnsEnvironment: String? = null,
+    @SerialName("apnsTopic") val apnsTopic: String? = null,
+)
+
+/**
+ * `POST /p2p/ext/wake-ack` body (contract d455888 §6.4 `{wakeId, outcome, cause?}`). [deviceId] is `AckWakeRequest`'s
+ * field 2 in the §7 proto sketch; the route text does not name it.
+ */
+@Serializable
+data class WakeAckRequestDto(
+    @SerialName("wakeId") val wakeId: String,
+    @SerialName("deviceId") val deviceId: String,
+    @SerialName("outcome") val outcome: String,
+    @SerialName("cause") val cause: String? = null,
 )

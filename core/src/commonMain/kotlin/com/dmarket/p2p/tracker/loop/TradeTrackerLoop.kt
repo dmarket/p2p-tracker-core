@@ -67,6 +67,7 @@ import com.dmarket.p2p.tracker.model.marketplace.DirectiveStatus
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.InventoryReport
+import com.dmarket.p2p.tracker.model.marketplace.NetworkType
 import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofResult
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
@@ -1281,6 +1282,22 @@ class TradeTrackerLoop(
     var proofsDeferred: Boolean = false
 
     /**
+     * The wake gave no time for a proof: none is minted and a decisive report that needs one waits unsent
+     * ([ProofSkipReason.WAKE_BUDGET]). Set by `P2pTracker` before each cycle.
+     */
+    var proofsOutOfBudget: Boolean = false
+
+    /**
+     * What the mobile heartbeat says beside the Steam session (contract d455888 §5.1): the wake it answers, the
+     * network and the user's cellular option. Set by `P2pTracker` before each cycle; the network and the option go only
+     * inside `trackerState`, which rides with the Steam session ([LoopConfig.steamSessionInVault]).
+     */
+    var heartbeatContext: HeartbeatContext = HeartbeatContext()
+
+    /** See [heartbeatContext]. */
+    data class HeartbeatContext(val wakeId: String? = null, val network: NetworkType? = null, val backgroundProveAllowed: Boolean? = null)
+
+    /**
      * Whether the last cycle that needed Steam found no Steam credential: the session is gone, or its refresh failed.
      * [blockingState] and [needsReLogin] say which; this flag also covers a refresh that failed for another reason.
      */
@@ -2109,6 +2126,9 @@ class TradeTrackerLoop(
             steamId = steamId,
             deviceId = deviceId.current(),
             steamSession = if (config.steamSessionInVault) steamSessionState() else null,
+            network = heartbeatContext.network,
+            backgroundProveAllowed = heartbeatContext.backgroundProveAllowed,
+            wakeId = heartbeatContext.wakeId,
         )
         // Read before the request leaves: a lease the backend takes while answering cannot have started earlier, so a
         // slow answer shortens the window this device counts and never stretches it.
@@ -3237,6 +3257,7 @@ class TradeTrackerLoop(
                     mintedThisCycle,
                     proofDeadline,
                     proofsDeferred,
+                    proofsOutOfBudget,
                 )
             if (verdict is ProofMintVerdict.Skip) {
                 emitProofSkip(demand.dealId, FreshProofDemand.AXIS.wireName, verdict)
@@ -3385,6 +3406,7 @@ class TradeTrackerLoop(
                 mintedThisCycle = mintedThisCycle,
                 cycleDeadline = proofDeadline,
                 networkDeferred = proofsDeferred,
+                wakeBudget = proofsOutOfBudget,
             )
             if (verdict is ProofMintVerdict.Skip) {
                 // An ALREADY_ACCEPTED skip still counts as verified, so the report it corroborates goes out.

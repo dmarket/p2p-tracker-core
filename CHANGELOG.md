@@ -33,10 +33,16 @@ GitHub Release.
 - Android: the tracker runs the directives the backend leases, and creates and cancels Steam offers on the session in its vault when `AndroidTracker.install(steamWrites = true)`. `steamWrites` is off by default; `reportUnsentCreates` sets whether a create that never reached Steam is reported `failed` (DMA-662).
 - Android: a Steam offer create or cancel starts only inside its directive's lease (2 min unless the backend sends `leaseDuration`), counted on a clock that runs through sleep; with under 30 s left the tracker heartbeats first, and a lease that heartbeat does not renew gets no write. `MobileTrackerPlatform.elapsedClock` is that clock (DMA-662).
 - Android: before a sync's Steam offer creates the tracker reads the account's active sent offers once and, for each create, reports an offer to the same partner with the same assets that no other deal holds instead of creating a second one. `SteamReadClient.sentOffers(credential, historicalCutoff)` is the new read, and `SteamWriteConfig.bindLookbackMarginMs` (10 min) widens how far back it looks for an accepted offer (DMA-662).
+- Mobile: `P2pTracker.onPush(payload, deadline, allowProof)` returns a `WakeOutcome` (`done`, `deferred` or `failed` with a `WakeCause`) and acknowledges the wake on `POST /exchange/v1/p2p/ext/wake-ack`: `done` on receipt, then the final outcome. It reads the contract's wake (`v`, `wakeId`, `transactionId`, `deadline`), drops a wake past its `deadline` without a sync, and with `allowProof = false` runs no proof (DMA-540).
+- Mobile: `P2pTracker.registerDevice(pushToken, provider, apns)` and `unregisterDevice()` register this install's push token on `PUT`/`DELETE /exchange/v1/p2p/ext/devices/{deviceId}` with the capabilities `wake_v1` and, when Steam writes are on, `steam_writes`. Call them after login and on a new token, and on logout before the DMarket session ends (DMA-540).
+- The mobile heartbeat sends the `wakeId` it answers and `trackerState.network` and `trackerState.backgroundProveAllowed` (DMA-540).
+- New lifecycle event `WakeFinished`; `WakeReceived` gains `wakeId`, `transactionId`, `reason` and `expired` (DMA-540).
 
 ### Changed
 
 - The mobile tracker is assembled in common code: `MobileTracker` over a `MobileTrackerPlatform`, which `AndroidTrackerPlatform` now extends. `AndroidTrackerStores` is renamed `MobileTrackerStores`; `AndroidTracker.install` is unchanged (DMA-661).
+- Android: `P2pTrackerWorker` gives each wake 9 minutes and puts its outcome in the work's output data (`outcome`, `cause`) (DMA-540).
+- `WakeAcknowledger.acknowledge` takes the wake id and its `WakeOutcome` (DMA-540).
 - Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 
