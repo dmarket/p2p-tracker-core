@@ -42,4 +42,12 @@ class CredentialMarketplaceAuthenticatorTest {
         CredentialMarketplaceAuthenticator(provider).refreshOnUnauthorized("refused-jwt")
         assertEquals(listOf<String?>("refused-jwt"), provider.rejectedTokens)
     }
+
+    @Test
+    fun the_same_token_back_is_not_a_refresh() = runTest {
+        val auth = authenticator(fakeMarketplaceCredential("old"))
+        assertFalse(auth.refreshOnUnauthorized("old"), "the refused token again is no new credential")
+        assertTrue(auth.refreshOnUnauthorized("other"))
+        assertTrue(auth.refreshOnUnauthorized(null))
+    }
 }

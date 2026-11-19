@@ -57,6 +57,7 @@ GitHub Release.
 
 ### Fixed
 
+- A DMarket access token the server refused with a 401 while its `exp` was still ahead is no longer resent on every cycle: it is held back for 15 minutes (`DefaultMarketplaceCredentialProvider.Config.refusedAccessHold`), across restarts through two new defaulted `MarketplaceRefreshStateStore` methods. A refresh that then fails with a non-401 shows a connection error for four attempts and the sign-in prompt on the fifth. A host provider that answers a 401 with the refused token itself now gets one request and no retries (DMA-1007).
 - Token rotation keeps each DMarket cookie's own attributes (`HttpOnly`, `domain`, `path`, `sameSite`) (DMA-815).
 - The web vault keeps the Steam credential in `storage.session` and removes the old copy. A host that opens `storage.session` to content scripts with `setAccessLevel` must close it first (DMA-817).
 - Partner persona names for the impersonation check are read from `IPlayerService/GetPlayerLinkDetails`, so an offer to a renamed account is now flagged. New config field `SteamEndpointsConfig.getPlayerLinkDetailsPath` (DMA-857).

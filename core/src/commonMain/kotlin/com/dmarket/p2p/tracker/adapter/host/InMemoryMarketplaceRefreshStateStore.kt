@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.adapter.host
 
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceRefreshStateStore
+import com.dmarket.p2p.tracker.port.marketplace.RefusedAccessToken
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Instant
@@ -21,6 +22,7 @@ class InMemoryMarketplaceRefreshStateStore : MarketplaceRefreshStateStore {
     private var rejected: String? = null
     private var lastRefreshed: Instant? = null
     private var failures: Int = 0
+    private var refusedAccess: RefusedAccessToken? = null
 
     override suspend fun rejectedRefreshFingerprint(): String? = mutex.withLock { rejected }
 
@@ -33,4 +35,8 @@ class InMemoryMarketplaceRefreshStateStore : MarketplaceRefreshStateStore {
     override suspend fun transientFailureCount(): Int = mutex.withLock { failures }
 
     override suspend fun setTransientFailureCount(count: Int) = mutex.withLock { failures = count }
+
+    override suspend fun refusedAccess(): RefusedAccessToken? = mutex.withLock { refusedAccess }
+
+    override suspend fun setRefusedAccess(value: RefusedAccessToken?) = mutex.withLock { refusedAccess = value }
 }

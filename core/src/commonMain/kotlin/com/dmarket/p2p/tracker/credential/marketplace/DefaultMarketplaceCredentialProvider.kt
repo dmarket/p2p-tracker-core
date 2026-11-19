@@ -13,11 +13,13 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceRefreshStateStore
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenStore
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceTokenStore.WriteOutcome
+import com.dmarket.p2p.tracker.port.marketplace.RefusedAccessToken
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 /**
@@ -45,8 +47,10 @@ import kotlin.time.Instant
  *    not "somebody rotated", and treating it as such would discard the only live pair in existence.
  * 4. **One retry on refusal**, because the value we presented may simply have been superseded mid-flight.
  * 5. **Rate limit** on our own rotations, persisted ([Config.minRefreshInterval]).
- * 6. **A persisted refusal latch** keyed on the refused token's fingerprint, so a signed-out state costs zero
- *    requests across worker restarts and un-latches itself the moment the store holds a different token.
+ * 6. **Persisted refusal latches** keyed on the refused token's fingerprint, so a signed-out state costs zero
+ *    requests across worker restarts and un-latches itself the moment the store holds a different token: one for
+ *    the refresh token, and one for an access token DMarket answered with a 401 while its `exp` still lay ahead,
+ *    which is not handed out again for [Config.refusedAccessHold].
  * 7. **Optional deference** to a live competing writer ([Config.deferWhileOtherActorActive]), proactive only.
  *
  * **What none of this closes — and it is confirmed, not hypothetical.** The backend DOES void the predecessor
@@ -67,7 +71,7 @@ import kotlin.time.Instant
  * ## Never throws; `null` is load-bearing
  *
  * Every path returns a credential or `null`. `null` means "do not send a DMarket request": the loop's
- * pre-heartbeat guard and the 401 authenticator are both null checks, so returning a token known to be dead
+ * pre-heartbeat guard and the 401 authenticator both read `null` as "stop", so returning a token known to be dead
  * would produce `1 + maxRetries` rejected requests on every wake instead of one clean missing-connection
  * verdict.
  */
@@ -89,12 +93,15 @@ class DefaultMarketplaceCredentialProvider(
      * @param refreshTokenMinLife a refresh token with less than this left counts as spent.
      * @param minRefreshInterval minimum spacing between two of our own refreshes.
      * @param maxTransientFailures after this many consecutive non-refusal failures, stop attempting, so a
-     *   permanently broken endpoint surfaces as a connection error instead of costing one futile request per
-     *   wake forever.
+     *   permanently broken endpoint stops costing one futile request per wake forever. For an access token
+     *   DMarket refused, the failures before the cap read as a connection error and the one that reaches it as
+     *   logged out.
      * @param deferWhileOtherActorActive consult [MarketplaceTokenStore.otherActorLikelyActive] before a
      *   *proactive* refresh (never before a forced one). Off by default: the API refresh is the mechanism, and
      *   making it conditional on the user's browsing would be the tab dependency this design exists to remove.
      *   It is the containment lever if site-logout reports appear before the frontend fix lands.
+     * @param refusedAccessHold how long an access token DMarket refused with a 401 is not handed out again. Once it
+     *   passes, the token is offered once more, so a 401 that was a gateway blip heals by itself.
      */
     data class Config(
         val usableSkew: Duration,
@@ -103,6 +110,7 @@ class DefaultMarketplaceCredentialProvider(
         val minRefreshInterval: Duration,
         val maxTransientFailures: Int = 5,
         val deferWhileOtherActorActive: Boolean = false,
+        val refusedAccessHold: Duration = 15.minutes,
     )
 
     private val mutex = Mutex()
@@ -110,20 +118,40 @@ class DefaultMarketplaceCredentialProvider(
     override var lastRefreshFailedLoggedOut: Boolean = false
         private set
 
-    override suspend fun current(): MarketplaceCredential? = acquire(force = false)
+    override var lastFailureTransient: Boolean = false
+        private set
 
-    // The library owns refresh here, so which token was refused changes nothing: the store re-read under the lock
-    // already tells a rotation by the page apart.
-    override suspend fun forceRefresh(rejectedToken: String?): MarketplaceCredential? = acquire(force = true)
+    /** The persisted [RefusedAccessToken], read once per instance (one storage read per wake), kept in step on write. */
+    private var refusal: RefusedAccessToken? = null
+    private var refusalLoaded = false
+
+    override suspend fun current(): MarketplaceCredential? = acquire(force = false, rejectedToken = null)
+
+    // A 401 for the token the store still holds marks it refused for [Config.refusedAccessHold]; a 401 for a token
+    // the store has since replaced adopts the replacement instead of rotating over it.
+    override suspend fun forceRefresh(rejectedToken: String?): MarketplaceCredential? = acquire(force = true, rejectedToken)
 
     // ---- acquisition -------------------------------------------------------------------------------
 
-    private suspend fun acquire(force: Boolean): MarketplaceCredential? {
+    private suspend fun acquire(force: Boolean, rejectedToken: String?): MarketplaceCredential? {
+        lastFailureTransient = false
         val view = (readStore() ?: return null).view()
         val now = clock.now()
+        if (!refusalLoaded) {
+            refusal = runCatching { state.refusedAccess() }.getOrNull()
+            refusalLoaded = true
+        }
+        // Marked before any network call, so the verdict survives a worker killed mid-refresh.
+        if (rejectedToken != null && rejectedToken == view.accessToken && !view.refused(now)) {
+            TokenFingerprint.of(rejectedToken)?.let { RefusedAccessToken(it, now) }?.let {
+                state.setRefusedAccess(it)
+                refusal = it
+            }
+        }
+        val insist = force && (rejectedToken == null || view.refused(now))
 
-        // The happy path, and the only one that touches nothing but the token store.
-        if (!force && !view.needsRefresh(now)) return view.aliveOrNull(now)
+        // The happy path: no network.
+        if (!insist && !view.needsRefresh(now)) return view.aliveOrNull(now)
 
         // Nothing to refresh from, or the durable half is spent: interactive login, zero network.
         //
@@ -141,8 +169,9 @@ class DefaultMarketplaceCredentialProvider(
         // is persisted precisely so that verdict survives a restart. Once the access token beside it dies
         // there is nothing left to be optimistic about, and the host's re-login signal
         // (`needsMarketplaceReLogin`) reads this flag — leaving it false would show a signed-out user a
-        // "cannot reach DMarket" state forever instead of a sign-in prompt. The other guards deliberately do
-        // NOT set it: a rate limit or a broken gateway is no evidence about the session.
+        // "cannot reach DMarket" state forever instead of a sign-in prompt. The other guards set it only
+        // for an access token DMarket itself refused (via `usableOrNull`): a rate limit or a broken gateway is
+        // no evidence about the session.
         //
         // Read the latch once and thread it down: the locked re-check needs the same recorded value, and
         // re-reading it would be a second `storage.local` round trip on every refresh.
@@ -150,19 +179,19 @@ class DefaultMarketplaceCredentialProvider(
         if (rejected != null && rejected == TokenFingerprint.of(refreshToken)) {
             return view.usableOrNull(now) ?: loggedOut()
         }
-        if (!force && throttled(now)) return view.usableOrNull(now)
-        // `force` is exempt from the failure cap on purpose: the cap's own resets all sit downstream of it, so
-        // without an exemption a client that once hit it could never try again — not after a restart, not on a
-        // 401, not on a debug force tick. The 401 path and force tick are the escape hatch.
+        if (!insist && throttled(now)) return view.usableOrNull(now)
+        // An insisting call is exempt from the failure cap on purpose: the cap's own resets all sit downstream of
+        // it, so without an exemption a client that once hit it could never try again. A 401 (once per refusal
+        // hold, since the refused token is not sent in between) and the debug force tick are the escape hatch.
         val failures = state.transientFailureCount()
-        if (!force && failures >= config.maxTransientFailures) return view.usableOrNull(now)
-        // `!force` is load-bearing here, not tidiness: deference is a PROACTIVE-only courtesy. The 401 path
+        if (!insist && failures >= config.maxTransientFailures) return view.usableOrNull(now)
+        // `!insist` is load-bearing here, not tidiness: deference is a PROACTIVE-only courtesy. The 401 path
         // and the debug force tick must always be able to insist, because the site's own refresh is driven by
         // its response interceptor — an open but IDLE tab never refreshes, so deferring to it unconditionally
         // would leave a 401 unrecoverable for exactly as long as the user keeps that tab open.
-        if (!force && config.deferWhileOtherActorActive && otherActorActive()) return view.usableOrNull(now)
+        if (!insist && config.deferWhileOtherActorActive && otherActorActive()) return view.usableOrNull(now)
 
-        return refreshUnderLock(force, rejected, failures)
+        return refreshUnderLock(force, rejectedToken, rejected, failures)
     }
 
     /**
@@ -174,23 +203,28 @@ class DefaultMarketplaceCredentialProvider(
      * here. It cannot cover a service worker being terminated, and neither can anything else client-side:
      * that window is dominated by the network round trip.
      */
-    private suspend fun refreshUnderLock(force: Boolean, rejectedFingerprint: String?, failures: Int): MarketplaceCredential? =
-        mutex.withLock {
-            // Re-read: the competing writer, or our own concurrent caller, may have rotated while we waited.
-            val view = (readStore() ?: return@withLock null).view()
-            val now = clock.now()
-            if (!force && !view.needsRefresh(now)) return@withLock view.aliveOrNull(now)
+    private suspend fun refreshUnderLock(
+        force: Boolean,
+        rejectedToken: String?,
+        rejectedFingerprint: String?,
+        failures: Int,
+    ): MarketplaceCredential? = mutex.withLock {
+        // Re-read: the competing writer, or our own concurrent caller, may have rotated while we waited.
+        val view = (readStore() ?: return@withLock null).view()
+        val now = clock.now()
+        val insist = force && (rejectedToken == null || view.refused(now))
+        if (!insist && !view.needsRefresh(now)) return@withLock view.aliveOrNull(now)
 
-            val presented = view.refreshToken ?: return@withLock loggedOut()
-            // Re-check the latch against the fingerprint the caller already read, without another store round trip:
-            // a queued caller must see the refusal its predecessor just recorded, and a refusal does not rotate the
-            // store — so an unchanged token is exactly the case to bail on.
-            if (rejectedFingerprint != null && rejectedFingerprint == TokenFingerprint.of(presented)) {
-                return@withLock view.usableOrNull(now) ?: loggedOut()
-            }
-
-            withContext(NonCancellable) { exchange(presented, view, failures, allowRetry = true) }
+        val presented = view.refreshToken ?: return@withLock loggedOut()
+        // Re-check the latch against the fingerprint the caller already read, without another store round trip:
+        // a queued caller must see the refusal its predecessor just recorded, and a refusal does not rotate the
+        // store — so an unchanged token is exactly the case to bail on.
+        if (rejectedFingerprint != null && rejectedFingerprint == TokenFingerprint.of(presented)) {
+            return@withLock view.usableOrNull(now) ?: loggedOut()
         }
+
+        withContext(NonCancellable) { exchange(presented, view, failures, allowRetry = true) }
+    }
 
     /**
      * One refresh exchange, plus at most one retry when the refusal turns out to be about a token the store
@@ -226,10 +260,18 @@ class DefaultMarketplaceCredentialProvider(
         } catch (_: Throwable) {
             // Everything else is transient by construction — 5xx, 429, a timeout, a WAF 403, a gateway that
             // does not mount the route. None of it is evidence about the session, so the logged-out flag is
-            // left alone; the counter is what stops a permanently broken endpoint from being retried on every
-            // wake forever. Written from the count the caller already read — no second round trip.
+            // left alone unless the access token was refused and the budget is spent; the counter is what stops a
+            // permanently broken endpoint from being retried on every wake forever. Written from the count the
+            // caller already read — no second round trip.
             state.setTransientFailureCount(failures + 1)
-            return view.usableOrNull(clock.now())
+            val now = clock.now()
+            // A refused token cannot be handed back, so while the budget lasts this is a connection error, not a
+            // sign-out; once it is spent, `usableOrNull` reports logged out.
+            if (view.refused(now) && failures + 1 < config.maxTransientFailures) {
+                lastFailureTransient = true
+                return null
+            }
+            return view.usableOrNull(now)
         }
         return applyRefreshed(pair, presented, failures)
     }
@@ -310,23 +352,35 @@ class DefaultMarketplaceCredentialProvider(
      */
     private inner class TokenView(val accessToken: String?, val refreshToken: String?, private val refreshExpiry: Instant?) {
         val accessExpiry: Instant? by lazy { accessToken?.let { MarketplaceTokenJwt.expiresAtOrNull(it) } }
+        private val accessFingerprint: String? by lazy { TokenFingerprint.of(accessToken) }
 
-        fun needsRefresh(now: Instant): Boolean = accessToken == null || needsRefresh(accessExpiry, now)
+        /** DMarket refused this access token with a 401 less than [Config.refusedAccessHold] ago. */
+        fun refused(now: Instant): Boolean {
+            val marker = refusal ?: return false
+            return marker.fingerprint == accessFingerprint && now < marker.at + config.refusedAccessHold
+        }
+
+        fun needsRefresh(now: Instant): Boolean = refused(now) || accessToken == null || needsRefresh(accessExpiry, now)
 
         fun refreshTokenSpent(now: Instant): Boolean {
             val at = refreshExpiry ?: return false // unknown expiry → assume usable
             return at - config.refreshTokenMinLife <= now
         }
 
-        /** The token if it can still legitimately be sent, else `null` — never one we know is dead. */
-        fun usableOrNull(now: Instant): MarketplaceCredential? = usableOrNull(accessToken, accessExpiry, now)
+        /**
+         * The token if it can still legitimately be sent, else `null` — never one we know is dead. A token DMarket
+         * refused inside the hold is dead whatever its `exp` says, and that is a logged-out verdict.
+         */
+        fun usableOrNull(now: Instant): MarketplaceCredential? =
+            if (refused(now)) loggedOut() else usableOrNull(accessToken, accessExpiry, now)
 
         /**
          * [usableOrNull], and clear the host's re-login signal when it yields something.
          *
          * The single accessor for "hand this token out": it owns both the usable floor and the flag, so the
          * two can never be applied inconsistently across the dozen return sites they used to be spelled out
-         * at. A `null` deliberately does NOT set the flag — only a corroborated refusal does.
+         * at. A `null` sets the flag only for a corroborated refusal: of the refresh token, or (through
+         * [usableOrNull]) of this access token.
          */
         fun aliveOrNull(now: Instant): MarketplaceCredential? = usableOrNull(now)?.also { lastRefreshFailedLoggedOut = false }
     }

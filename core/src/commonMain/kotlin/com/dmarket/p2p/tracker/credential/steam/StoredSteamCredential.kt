@@ -257,4 +257,10 @@ object DeviceVaultKeys {
      * per wake forever and surfaces as a connection error instead.
      */
     const val LOOP_MARKETPLACE_REFRESH_FAILURES = "loop_marketplace_refresh_failures"
+
+    /**
+     * Stores `<fingerprint>|<epochMs>` of the DMarket access token the server last refused with a 401, so a
+     * revoked session is not resent on every wake after a respawn. A fingerprint, never the token.
+     */
+    const val LOOP_MARKETPLACE_ACCESS_REFUSED = "loop_marketplace_access_refused"
 }

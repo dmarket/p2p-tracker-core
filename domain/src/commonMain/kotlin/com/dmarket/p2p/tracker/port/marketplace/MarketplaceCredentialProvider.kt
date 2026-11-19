@@ -24,7 +24,8 @@ import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
  * - **Never throws.** A transient failure is reported by returning the still-usable token, or `null`.
  * - **`null` means "do not send a DMarket request"** — and it is load-bearing, not advisory. The loop's
  *   pre-heartbeat guard is `current() == null`, and `MarketplaceAuthenticator.refreshOnUnauthorized()` is
- *   a null check on [forceRefresh]. An implementation that returns a token it knows is dead (because a
+ *   a null check on [forceRefresh] (it also declines a retry when [forceRefresh] hands back the refused
+ *   token). An implementation that returns a token it knows is dead (because a
  *   retry latch or a rate limit stopped it from getting a live one) therefore does not degrade
  *   gracefully: it produces `1 + maxRetries` rejected requests on every single wake, forever. When in
  *   doubt, return `null`.
@@ -46,8 +47,9 @@ interface MarketplaceCredentialProvider {
      * Re-acquire after DMarket refused [rejectedToken] with an HTTP 401, via
      * `MarketplaceAuthenticator.refreshOnUnauthorized(rejectedToken)`. A host-owned implementation passes
      * [rejectedToken] on, so the host refreshes only while that token is still its current one and otherwise
-     * answers with the token it already holds; the library's own one refreshes regardless. `null` when the
-     * refused request carried no token.
+     * answers with the token it already holds; the library's own one does the same against its store, and does not
+     * hand a token it holds back out for a while once DMarket refused it. `null` when the refused request carried
+     * no token.
      *
      * Returns `null` to let the 401 propagate — which is the right answer both when the user is logged out
      * and when the implementation has already established that refreshing cannot currently succeed.
@@ -66,7 +68,8 @@ interface MarketplaceCredentialProvider {
 
     /**
      * `true` when the last `null` from [current] or [forceRefresh] came from a failure the implementation knows is
-     * temporary and says nothing about the session (the mobile host's supplier threw: no network, a locked Keychain).
+     * temporary and says nothing about the session (the mobile host's supplier threw: no network, a locked Keychain;
+     * or the library's own refresh failed with a non-401 while the access token it holds was refused).
      * The loop then counts a DMarket connection failure and retries on a later cycle, with no sign-in prompt and no
      * missing-connection state. `false` by default: an implementation that cannot tell the two apart leaves every
      * `null` to the missing-connection path, as before.

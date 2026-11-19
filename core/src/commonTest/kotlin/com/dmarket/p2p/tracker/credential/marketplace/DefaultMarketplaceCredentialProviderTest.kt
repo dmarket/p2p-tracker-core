@@ -11,10 +11,13 @@ import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceTokenRefreshClient
 import com.dmarket.p2p.tracker.support.FakeMarketplaceTokenStore
 import com.dmarket.p2p.tracker.support.jwtExpiringAt
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -486,5 +489,180 @@ class DefaultMarketplaceCredentialProviderTest {
         // Second call, still needing a refresh: the rate limit (armed by the failure) must hold it off.
         p.current()
         assertEquals(1, client.presented.size, "a useless refresh must not be retried immediately")
+    }
+
+    // ---- a refused access token whose exp is still ahead (DMA-1007) ----------------------------
+
+    private fun http(status: Int) = HttpStatusException(status, "POST", "https://api.example/refresh-token", null, null)
+
+    @Test
+    fun a_refused_live_token_with_a_refused_refresh_is_not_handed_out_again() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val access = s.stored!!.accessToken!!
+        val refusing = FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401))
+        val p = provider(s, refusing, state)
+
+        assertNull(p.forceRefresh(access))
+        assertTrue(p.lastRefreshFailedLoggedOut)
+        assertEquals(1, refusing.presented.size)
+
+        val second = FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401))
+        val p2 = provider(s, second, state)
+        assertNull(p2.current(), "a token DMarket refused must not go out again")
+        assertNull(p2.forceRefresh(access))
+        assertTrue(second.presented.isEmpty())
+        assertTrue(p2.lastRefreshFailedLoggedOut)
+    }
+
+    @Test
+    fun a_refused_live_token_with_a_failing_refresh_is_transient_then_logged_out() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val access = s.stored!!.accessToken!!
+        val client = FakeMarketplaceTokenRefreshClient(failWith = http(503))
+
+        val first = provider(s, client, state)
+        assertNull(first.forceRefresh(access))
+        assertTrue(first.lastFailureTransient, "attempt 1")
+        assertFalse(first.lastRefreshFailedLoggedOut)
+        for (attempt in 2..4) {
+            val p = provider(s, client, state)
+            assertNull(p.current())
+            assertTrue(p.lastFailureTransient, "attempt $attempt")
+            assertFalse(p.lastRefreshFailedLoggedOut, "attempt $attempt")
+        }
+        val last = provider(s, client, state)
+        assertNull(last.current())
+        assertFalse(last.lastFailureTransient)
+        assertTrue(last.lastRefreshFailedLoggedOut)
+
+        val after = provider(s, client, state)
+        assertNull(after.current())
+        assertEquals(5, client.presented.size)
+    }
+
+    @Test
+    fun a_refused_token_is_offered_again_only_after_the_hold() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val access = s.stored!!.accessToken!!
+        val client = FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401))
+        assertNull(provider(s, client, state).forceRefresh(access))
+
+        clock.advance(14.minutes)
+        assertNull(provider(s, client, state).current())
+        clock.advance(2.minutes)
+        assertEquals(access, provider(s, client, state).current()?.token)
+
+        assertNull(provider(s, client, state).forceRefresh(access), "a second refusal")
+        clock.advance(14.minutes)
+        assertNull(provider(s, client, state).current(), "the second refusal restarts the hold")
+        clock.advance(2.minutes)
+        assertEquals(access, provider(s, client, state).current()?.token)
+    }
+
+    @Test
+    fun past_the_cap_a_hold_probe_still_reaches_the_refresh() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore().apply { setTransientFailureCount(5) }
+        val s = store(accessExp = now + 3.days)
+        val client = FakeMarketplaceTokenRefreshClient(failWith = http(503))
+        provider(s, client, state).forceRefresh(s.stored!!.accessToken)
+        assertEquals(1, client.presented.size)
+    }
+
+    @Test
+    fun a_different_access_token_clears_the_refusal() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val refusing = FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401))
+        provider(s, refusing, state).forceRefresh(s.stored!!.accessToken)
+
+        val other = jwtExpiringAt(now + 2.days)
+        s.stored = StoredMarketplaceTokens(other, "refresh-1", now + 30.days)
+        val client = FakeMarketplaceTokenRefreshClient()
+        val p = provider(s, client, state)
+        assertEquals(other, p.current()?.token)
+        assertTrue(client.presented.isEmpty())
+        assertFalse(p.lastRefreshFailedLoggedOut)
+    }
+
+    @Test
+    fun a_401_for_a_token_the_store_no_longer_holds_adopts_the_stores_token() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val client = FakeMarketplaceTokenRefreshClient(nextPair = pair(now + 24.hours))
+
+        val credential = provider(s, client, state).forceRefresh(jwtExpiringAt(now + 1.days))
+
+        assertEquals(s.stored?.accessToken, credential?.token)
+        assertTrue(client.presented.isEmpty(), "no rotation over a token the site already replaced")
+        assertNull(state.refusedAccess())
+    }
+
+    @Test
+    fun a_queued_forced_caller_adopts_its_predecessors_rotation() = runTest {
+        val s = store(accessExp = now + 3.days)
+        val t1 = s.stored!!.accessToken!!
+        val gate = CompletableDeferred<Unit>()
+        val client = object : FakeMarketplaceTokenRefreshClient(nextPair = pair(now + 24.hours)) {
+            override suspend fun refresh(refreshToken: String, accessTokenOrNull: String?): MarketplaceTokenPair {
+                gate.await()
+                return super.refresh(refreshToken, accessTokenOrNull)
+            }
+        }
+        val p = provider(s, client)
+
+        val a = async { p.forceRefresh(t1) }
+        val b = async { p.forceRefresh(t1) }
+        testScheduler.runCurrent()
+        gate.complete(Unit)
+
+        val first = a.await()?.token
+        val second = b.await()?.token
+        val rotated = s.stored?.accessToken
+        assertNotEquals(t1, rotated)
+        assertEquals(rotated, first)
+        assertEquals(rotated, second)
+        assertEquals(1, client.presented.size)
+    }
+
+    @Test
+    fun a_refused_live_token_with_a_working_refresh_hands_out_the_new_one() = runTest {
+        val s = store(accessExp = now + 3.days)
+        val fresh = pair(now + 24.hours)
+        val client = FakeMarketplaceTokenRefreshClient(nextPair = fresh)
+        val p = provider(s, client)
+
+        assertEquals(fresh.accessToken, p.forceRefresh(s.stored!!.accessToken)?.token)
+        assertEquals(1, client.presented.size)
+        assertFalse(p.lastRefreshFailedLoggedOut)
+        assertFalse(p.lastFailureTransient)
+    }
+
+    @Test
+    fun a_refused_refresh_keeps_a_live_access_token_until_it_is_itself_refused() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 5.minutes) // inside the headroom, still sendable
+        val access = s.stored!!.accessToken!!
+        provider(s, FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401)), state).current()
+
+        val client = FakeMarketplaceTokenRefreshClient()
+        assertEquals(access, provider(s, client, state).current()?.token, "a refused refresh alone says nothing about it")
+
+        val p = provider(s, client, state)
+        assertNull(p.forceRefresh(access), "once DMarket refuses the access token itself, it is not sent again")
+        assertTrue(p.lastRefreshFailedLoggedOut)
+        assertNull(provider(s, client, state).current())
+        assertTrue(client.presented.isEmpty())
+    }
+
+    @Test
+    fun a_null_rejected_token_marks_nothing() = runTest {
+        val state = InMemoryMarketplaceRefreshStateStore()
+        val s = store(accessExp = now + 3.days)
+        val client = FakeMarketplaceTokenRefreshClient(failWith = MarketplaceRefreshRejectedException(401))
+        provider(s, client, state).forceRefresh(null)
+        assertNull(state.refusedAccess())
     }
 }

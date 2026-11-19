@@ -5,12 +5,12 @@ import kotlin.time.Instant
 /**
  * The little bit of refresh bookkeeping that must survive a process restart.
  *
- * All three entries exist for the same reason: on the web target the service worker dies between wakes, so
+ * Every entry exists for the same reason: on the web target the service worker dies between wakes, so
  * anything held in memory is forgotten roughly once a minute. A guard that resets that often is not a
  * guard — it is a per-wake retry, which is precisely the defect this library already fixed once on the
  * Steam side (a refused session mint repeating on every wake, forever).
  *
- * **Nothing here is a credential.** The refused refresh token is remembered by
+ * **Nothing here is a credential.** A refused token is remembered by
  * [com.dmarket.p2p.tracker.model.TokenFingerprint], not verbatim, because the backing store is
  * contractually non-secret ([com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore]).
  *
@@ -54,4 +54,17 @@ interface MarketplaceRefreshStateStore {
     suspend fun setTransientFailureCount(count: Int) {
         // no-op by default
     }
+
+    /**
+     * The access token DMarket last refused with a 401, while its own `exp` still lay ahead (a session revoked
+     * server-side), or `null`. The provider does not hand that token out again until a hold has passed.
+     */
+    suspend fun refusedAccess(): RefusedAccessToken? = null
+
+    suspend fun setRefusedAccess(value: RefusedAccessToken?) {
+        // no-op by default
+    }
 }
+
+/** An access token DMarket refused, by [fingerprint] ([com.dmarket.p2p.tracker.model.TokenFingerprint]), and when. */
+data class RefusedAccessToken(val fingerprint: String, val at: Instant)

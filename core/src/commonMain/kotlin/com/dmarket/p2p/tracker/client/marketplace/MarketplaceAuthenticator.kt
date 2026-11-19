@@ -60,7 +60,8 @@ internal const val AUTHORIZATION_HEADER = "Authorization"
  * that refreshed in the meantime answers with its newer token instead of refreshing a second time. Surfacing of the logged-out state (`needsMarketplaceReLogin`) is unchanged — the provider owns
  * that flag.
  *
- * Both methods are null checks on the provider's return value, which is why
+ * Both methods read the provider's `null` as "no token" (and a 401 answered with the refused token itself as
+ * no new one), which is why
  * [MarketplaceCredentialProvider] requires `null` rather than a known-dead token: a non-null dead token
  * here turns one clean missing-connection verdict into `1 + maxRetries` rejected requests per wake.
  */
@@ -71,14 +72,16 @@ class CredentialMarketplaceAuthenticator(private val provider: MarketplaceCreden
         val refreshed = provider.forceRefresh(rejectedToken)
         // A refresh that failed for a temporary reason is no "unauthorized" verdict: the call fails as a network blip would.
         if (refreshed == null && provider.lastFailureTransient) throw MarketplaceTokenUnavailableException()
-        return refreshed != null
+        // The refused token handed straight back is no new credential: resending it only earns another 401.
+        return refreshed != null && refreshed.token != rejectedToken
     }
 }
 
 /**
  * Thrown by [CredentialMarketplaceAuthenticator] when the refresh after a 401 failed for a temporary reason
- * ([MarketplaceCredentialProvider.lastFailureTransient]): the request fails like a network error, not as
- * unauthorized, so it raises no sign-in prompt.
+ * ([MarketplaceCredentialProvider.lastFailureTransient]: a host supplier that threw, or the library's own refresh
+ * failing with a non-401): the request fails like a network error, not as unauthorized, so it raises no sign-in
+ * prompt.
  */
 class MarketplaceTokenUnavailableException : RuntimeException("DMarket token temporarily unavailable")
 

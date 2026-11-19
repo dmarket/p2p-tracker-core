@@ -70,7 +70,8 @@ class HostTokenMarketplaceCredentialProvider(
  * `supply(rejected)`: DMarket answered 401 to a request carrying `rejected`. Refresh only if `rejected` is still the
  * current token, inside the app's single-flight refresh; if it is not (the app refreshed meanwhile), return the
  * current token without refreshing. If the app's own rule says a refused token ends the session (Android: a current
- * token no 2xx ever confirmed), end it and return `null`.
+ * token no 2xx ever confirmed), end it and return `null`. Returning `rejected` itself is read as no new token: the
+ * request is not retried with it.
  *
  * Return `null` when there is no session; the tracker then stops and refreshes nothing itself. On mobile a throw is
  * not "no session" but a temporary failure (network, a locked Keychain): the tracker keeps the session, shows no

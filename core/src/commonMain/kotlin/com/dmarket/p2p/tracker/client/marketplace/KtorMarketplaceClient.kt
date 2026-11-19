@@ -351,7 +351,8 @@ class KtorMarketplaceClient(
      * persistent/transient gateway 401 no longer fires back-to-back). Any outcome where auth is still
      * rejected surfaces as [MarketplaceUnauthorizedException] (the loop's "missing connection" signal)
      * rather than a raw Ktor exception:
-     * - `refreshOnUnauthorized()` returns `false` (logged out, or the transport already refreshed+failed), or
+     * - `refreshOnUnauthorized()` returns `false` (logged out, the transport already refreshed+failed, or the
+     *   provider handed back the very token DMarket refused), or
      * - every retry still returns 401 (the refreshed token is still invalid).
      * A non-401 error from a retry propagates unchanged.
      */

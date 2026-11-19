@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.credential.marketplace
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceRefreshStateStore
+import com.dmarket.p2p.tracker.port.marketplace.RefusedAccessToken
 import kotlin.time.Instant
 
 /**
@@ -11,7 +12,7 @@ import kotlin.time.Instant
  * in-memory guard into a per-wake retry.
  *
  * Written once in common code rather than per platform: [DeviceKeyValueStore] already has an actual on
- * every target. Nothing stored here is a credential — the refused refresh token is remembered by
+ * every target. Nothing stored here is a credential — a refused token is remembered by
  * fingerprint — which is what makes this store (contractually non-secret) the right home for it.
  */
 class PersistedMarketplaceRefreshStateStore(private val storage: DeviceKeyValueStore) : MarketplaceRefreshStateStore {
@@ -42,6 +43,22 @@ class PersistedMarketplaceRefreshStateStore(private val storage: DeviceKeyValueS
             storage.remove(DeviceVaultKeys.LOOP_MARKETPLACE_REFRESH_FAILURES)
         } else {
             storage.set(DeviceVaultKeys.LOOP_MARKETPLACE_REFRESH_FAILURES, count.toString())
+        }
+    }
+
+    /** Stored as `<fingerprint>|<epochMs>`; anything else reads as `null`. */
+    override suspend fun refusedAccess(): RefusedAccessToken? {
+        val raw = storage.get(DeviceVaultKeys.LOOP_MARKETPLACE_ACCESS_REFUSED) ?: return null
+        val fingerprint = raw.substringBefore('|', "").takeIf { it.isNotBlank() } ?: return null
+        val at = raw.substringAfter('|').toLongOrNull() ?: return null
+        return RefusedAccessToken(fingerprint, Instant.fromEpochMilliseconds(at))
+    }
+
+    override suspend fun setRefusedAccess(value: RefusedAccessToken?) {
+        if (value == null) {
+            storage.remove(DeviceVaultKeys.LOOP_MARKETPLACE_ACCESS_REFUSED)
+        } else {
+            storage.set(DeviceVaultKeys.LOOP_MARKETPLACE_ACCESS_REFUSED, "${value.fingerprint}|${value.at.toEpochMilliseconds()}")
         }
     }
 }
