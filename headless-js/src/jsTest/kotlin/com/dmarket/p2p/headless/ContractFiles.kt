@@ -21,3 +21,6 @@ suspend fun importEntry(): dynamic {
     val url = pathToFileURL(join(buildDir("HEADLESS_DIST_DIR"), "p2p-tracker-headless.mjs")).href as String
     return js("import(url)").unsafeCast<Promise<dynamic>>().await()
 }
+
+/** The built package's entry file, for a process of its own to import. */
+fun entryUrl(): String = pathToFileURL(join(buildDir("HEADLESS_DIST_DIR"), "p2p-tracker-headless.mjs")).href as String

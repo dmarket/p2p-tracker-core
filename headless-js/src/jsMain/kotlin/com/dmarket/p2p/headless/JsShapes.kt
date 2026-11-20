@@ -65,7 +65,7 @@ internal fun SteamPushResult.toJs(): dynamic {
     return o
 }
 
-/** The tracker's state without either secret. `dealDeadlines` maps each deal id to its deadline. */
+/** The tracker's state without any secret. `dealDeadlines` maps each deal id to its deadline. */
 internal fun HeadlessTrackerState.toJs(): dynamic {
     val o = plainObject()
     o.hasTradingApiKey = hasTradingApiKey
@@ -82,5 +82,8 @@ internal fun HeadlessTrackerState.toJs(): dynamic {
     val deadlines = plainObject()
     dealDeadlines.forEach { (deal, deadline) -> deadlines[deal.value] = deadline.toEpochMilliseconds().toDouble() }
     o.dealDeadlines = deadlines
+    // Whether the proxy pushed with the token is unreachable, never the proxy itself.
+    o.steamProxyUnreachable = steamProxyUnreachable
+    o.steamProxyUnreachableSinceMs = steamProxyUnreachableSince.epochMs()
     return o
 }

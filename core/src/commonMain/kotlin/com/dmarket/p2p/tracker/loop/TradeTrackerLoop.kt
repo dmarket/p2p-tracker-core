@@ -1069,6 +1069,8 @@ class TradeTrackerLoop(
         is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
         // Unreachable: a paused create is dropped before any write.
         CreateOfferResult.CreatesPaused -> outcome(DirectiveStatus.FAILED, error = CREATES_PAUSED_DROP_REASON)
+        // Unreachable: a create that was not sent is deferred in runCreate, before an outcome is made.
+        is CreateOfferResult.NotSent -> outcome(DirectiveStatus.FAILED, error = result.reason)
     }
 
     private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
@@ -2975,6 +2977,13 @@ class TradeTrackerLoop(
             // doomed creates they attempt. A bound offer is no write, so it says nothing about the surface.
             if (bound == null) recordCreateResult(partner, result)
             resolveCreateWaiter(directive, result)
+            // Never sent (the account's Steam proxy could not be reached): deferred like a create the token is too
+            // short for, so it is never reported failed, and the claim goes with nothing written. The chain stops:
+            // the next create for this partner would go the same way.
+            if (result is CreateOfferResult.NotSent) {
+                emitDeferred(directive.directiveId, directive.dealId, result.reason, retryAfterSeconds = null)
+                return@withDealClaim WriteAttempt(stopChain = true, reason = result.reason) to ClaimEnd.Released
+            }
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {
                 val error = (result as CreateOfferResult.Failed).error

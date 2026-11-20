@@ -2,8 +2,11 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.node.nodePath
 import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.nodeStream
 import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.headless.node.wsWebSocket
+import com.dmarket.p2p.headless.proxy.openSteamTunnel
+import com.dmarket.p2p.tracker.net.SteamProxy
 import kotlin.js.Promise
 
 /**
@@ -17,6 +20,9 @@ internal class ProverSessionRecord {
     var closeCode: Int? = null
     var closeReason: String? = null
     var targetError: String? = null
+
+    /** Why the tunnel through the account's Steam proxy did not open, in the tunnel's own words. */
+    var proxyError: String? = null
     var targetStatus: Int? = null
     var signingError: String? = null
 
@@ -155,3 +161,81 @@ internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> P
 
 /** How long the target's TCP dial may take: Steam answers a connect in well under a second. */
 internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000
+
+/**
+ * The target leg through the account's Steam proxy: the transport's generic `connectTcp(host, port, { connect })` from
+ * `transport/dist/index.js` under [assetsDir], whose `connect` is a `CONNECT` tunnel through [proxy] ([openSteamTunnel])
+ * adapted to the transport's socket, as its own Node connector adapts a direct one. The tunnel's failure goes to
+ * [onProxyError] in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials
+ * Steam directly instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
+ */
+internal fun proxiedTcpConnector(
+    assetsDir: String,
+    proxy: SteamProxy,
+    onProxyError: (String) -> Unit,
+): (host: String, port: Int) -> Promise<Any?> {
+    val url = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "index.js")).href as String
+    val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
+    val dial: dynamic = js(
+        """
+        (function (url, open, onProxyError, adapt) {
+          let loading = null;
+          return (host, port) => {
+            if (loading === null) loading = import(url);
+            return loading.then((module) => module.connectTcp(host, port, {
+              connect: (targetHost, targetPort) => open(targetHost, targetPort).then(adapt, (error) => {
+                onProxyError(error && error.message ? error.message : 'the tunnel did not open');
+                throw error;
+              }),
+            }));
+          };
+        })
+        """,
+    )
+    return dial(url, open, onProxyError, tunnelSocket).unsafeCast<(String, Int) -> Promise<Any?>>()
+}
+
+/**
+ * An open tunnel's Node socket as the transport's `TcpSocket` (`readable`, `writable`, `close`): the adaptation the
+ * transport's own Node connector makes of a direct socket, made here of one that is already connected. The two
+ * directions are adapted apart, so the read side's end does not end the write side, and a socket error reaches both.
+ */
+private val tunnelSocket: dynamic = js(
+    """
+    (function (stream) {
+      return function (socket) {
+        const readable = stream.Readable.toWeb(stream.Readable.from(socket.iterator({ destroyOnReturn: false }), { objectMode: false }));
+        const writable = new WritableStream({
+          start(controller) {
+            socket.on('error', (error) => controller.error(error));
+          },
+          write(data) {
+            return new Promise((resolve, reject) => socket.write(data, (error) => (error ? reject(error) : resolve())));
+          },
+          close() {
+            return new Promise((resolve, reject) => {
+              const cleanup = stream.finished(socket, { readable: false }, (error) => {
+                cleanup();
+                error ? reject(error) : resolve();
+              });
+              socket.end();
+            });
+          },
+          abort() {
+            socket.destroy();
+          },
+        });
+        return {
+          readable,
+          writable,
+          close() {
+            if (socket.closed) return Promise.resolve();
+            const closed = new Promise((resolve) => socket.once('close', () => resolve()));
+            socket.destroy();
+            return closed;
+          },
+        };
+      };
+    })
+    """,
+)(nodeStream)

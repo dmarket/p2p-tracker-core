@@ -8,12 +8,13 @@ import kotlin.time.Instant
 
 /**
  * When the next proof may start, after the failures [waitAfter] makes wait. A proof that comes back, or a newly held
- * key, clears the wait.
+ * key, clears the wait; so does another Steam proxy, or none, when the wait is the proxy's.
  */
 class ProverBackoff {
     private var notBefore: Instant? = null
     private var consecutive = 0
     private var reason: String? = null
+    private var proxyWait = false
 
     /** Why proofs wait, and until when; `null` when one may start at [now]. */
     fun blocked(now: Instant): String? {
@@ -33,6 +34,7 @@ class ProverBackoff {
         val wait = waitAfter(failure, consecutive) ?: return
         consecutive++
         reason = failure.summary
+        proxyWait = failure is ProofFailure.ProxyUnreachable
         notBefore = if (wait == Duration.INFINITE) Instant.DISTANT_FUTURE else now + wait
     }
 
@@ -40,6 +42,12 @@ class ProverBackoff {
         notBefore = null
         consecutive = 0
         reason = null
+        proxyWait = false
+    }
+
+    /** The host pushed another Steam proxy, or none: a wait for the old one's sake is over. A notary's wait stays. */
+    fun proxyChanged() {
+        if (proxyWait) succeeded()
     }
 
     /** A new key may answer the notary's 401: let the next proof try it. An update block stays. */
@@ -71,6 +79,8 @@ class ProverBackoff {
                 else -> null
             }
             is ProofFailure.NotaryUnreachable -> backoff(consecutive)
+            // Each try would fork a prover and open a notary session only to fail at the Steam leg.
+            is ProofFailure.ProxyUnreachable -> backoff(consecutive)
             is ProofFailure.VersionMismatch -> Duration.INFINITE
             else -> null
         }

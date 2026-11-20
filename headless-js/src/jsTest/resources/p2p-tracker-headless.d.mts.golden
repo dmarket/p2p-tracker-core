@@ -7,7 +7,7 @@ export declare function failedCancelKinds(): any;
 export declare function headlessVersion(): string;
 export declare function maxClockSkewMs(): number;
 export declare function minWriteTokenLifetimeMs(): number;
-export declare function pushSteamToken(handle: any, accessToken: string): Promise<any>;
+export declare function pushSteamToken(handle: any, accessToken: string, options?: any): Promise<any>;
 export declare function pushTradingApiKey(handle: any, publicKey: string, secretKey: string): Promise<any>;
 export declare function reasons(): any;
 export declare function runProverChild(): void;

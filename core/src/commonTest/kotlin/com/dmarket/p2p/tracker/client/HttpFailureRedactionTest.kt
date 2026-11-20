@@ -151,4 +151,18 @@ class HttpFailureRedactionTest {
 
         assertEquals("""{"ok":true}""", client.get("https://h/p").bodyAsText())
     }
+
+    @Test
+    fun a_proxy_failure_is_read_off_the_transport_cause_and_nothing_else_is() {
+        assertEquals(
+            "could not connect to the proxy: ECONNREFUSED",
+            proxyFailure("STEAM_PROXY_UNREACHABLE: could not connect to the proxy: ECONNREFUSED"),
+        )
+        assertEquals(
+            "the proxy answered CONNECT with HTTP 407",
+            proxyFailure("STEAM_PROXY_UNREACHABLE: the proxy answered CONNECT with HTTP 407 <- something under it"),
+        )
+        assertEquals(null, proxyFailure("ECONNREFUSED: connect ECONNREFUSED 1.2.3.4:443"))
+        assertEquals(null, proxyFailure("UND_ERR_SOCKET: other side closed"))
+    }
 }

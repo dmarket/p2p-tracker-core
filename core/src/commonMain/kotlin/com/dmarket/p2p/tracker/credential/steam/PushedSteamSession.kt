@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.PushedSteamToken
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamTokenCheck
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.notary.SteamProofCookieSource
@@ -22,6 +23,20 @@ sealed interface SteamPushResult {
 
     /** The token is not one this library takes ([PushedSteamToken]); [reason] never quotes it. */
     data class Invalid(val reason: String) : SteamPushResult
+}
+
+/** What a token push does with the Steam proxy held before it. */
+sealed interface SteamProxyUpdate {
+    /** A renewal: the held proxy stays, or none if none was held. */
+    data object Keep : SteamProxyUpdate
+
+    /** No proxy from now on: Steam is reached directly. Only ever on the host's explicit word. */
+    data object Clear : SteamProxyUpdate
+
+    /** [proxy] from now on. */
+    class Use(val proxy: SteamProxy) : SteamProxyUpdate {
+        override fun toString(): String = "Use(<redacted>)"
+    }
 }
 
 /**
@@ -50,16 +65,28 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
 
     // No @Volatile: JS is single-threaded; JVM callers share a single coroutine scope per loop.
     private var held: SteamCredential? = null
+    private var heldProxy: SteamProxy? = null
     private var linkedNameCounts = false
 
     /** The held token, live or expired; `null` before the first accepted push. */
     val credential: SteamCredential? get() = held
 
+    /**
+     * The proxy the held token's Steam traffic goes through, pushed with it; `null` to connect directly. A secret
+     * like the token: lib machinery, kept off every host-facing surface.
+     */
+    val proxy: SteamProxy? get() = heldProxy
+
     /** `true` while a token is held and has not expired. */
     fun ready(): Boolean = held?.let { it.expiresAt > clock.now() } ?: false
 
-    /** Checks [token], then holds it when it belongs to the linked account — see the class note. */
-    suspend fun push(token: String): SteamPushResult {
+    /**
+     * Checks [token], then holds it when it belongs to the linked account — see the class note — and applies [proxy]
+     * to the proxy held before it: the token and the address Steam sees it from are one identity, so a refused token
+     * changes neither. [SteamProxyUpdate.Keep], the default, is a renewal: the held proxy stays, so a push that names
+     * none never moves the account back to the host's address; only [SteamProxyUpdate.Clear] does.
+     */
+    suspend fun push(token: String, proxy: SteamProxyUpdate = SteamProxyUpdate.Keep): SteamPushResult {
         val credential = when (val check = PushedSteamToken.check(token, clock.now())) {
             is SteamTokenCheck.Accepted -> check.credential
             is SteamTokenCheck.Refused -> return SteamPushResult.Invalid(check.reason)
@@ -70,6 +97,11 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
             val expected = linked ?: held?.subjectSteamId
             if (expected != null && expected != subject) return@withLock SteamPushResult.WrongAccount(subject, linked)
             held = credential
+            heldProxy = when (proxy) {
+                SteamProxyUpdate.Keep -> heldProxy
+                SteamProxyUpdate.Clear -> null
+                is SteamProxyUpdate.Use -> proxy.proxy
+            }
             SteamPushResult.Held(subject, credential.expiresAt)
         }
     }

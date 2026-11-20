@@ -4,6 +4,8 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.net.SteamProxy
+import com.dmarket.p2p.tracker.runtime.SteamRoute
 import com.dmarket.p2p.tracker.support.FakeClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -63,6 +65,42 @@ class HostedNotaryProverTest {
         assertFalse(TOKEN in json, "the request JSON carries no token")
         assertFalse(TOKEN in sent.toString() || SESSION_ID in sent.toString(), "toString redacts both Steam values")
         assertEquals(listOf(headers), host.signed)
+    }
+
+    @Test
+    fun a_proof_takes_the_routes_proxy_and_tells_the_route_how_it_went() = runTest {
+        val proxy = SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128")
+        val route = SteamRoute(clock) { proxy }
+        val host = RecordingHost(HostedProofOutcome.Failed(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED")))
+        val prover = HostedNotaryProver(host, signer, clock, SESSION_ID, route = route)
+
+        val failure = assertFailsWith<HostedProofException> { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+        assertIs<ProofFailure.ProxyUnreachable>(failure.failure)
+        assertEquals(proxy, host.proofs.single().steamProxy)
+        assertFalse("s3cret" in host.proofs.single().toString() || "203.0.113.7" in host.proofs.single().toString())
+        assertTrue(route.isUnreachable)
+        assertEquals("could not connect to the proxy: ECONNREFUSED", route.detail)
+
+        host.answer = HostedProofOutcome.Proved("cHJvb2Y=")
+        prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+        assertFalse(route.isUnreachable, "a proof made through the proxy went through it")
+    }
+
+    @Test
+    fun the_proxy_failure_is_the_steam_legs_more_exact_word() {
+        assertEquals(
+            ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"),
+            ProofFailures.classify(
+                targetError = "the proxy answered CONNECT with HTTP 407",
+                proxyError = "the proxy answered CONNECT with HTTP 407",
+                message = "io error",
+            ),
+        )
+        assertEquals(
+            ProofFailure.UpgradeRefused(401),
+            ProofFailures.classify(upgradeStatus = 401, proxyError = "x"),
+            "the notary's word first",
+        )
     }
 
     @Test

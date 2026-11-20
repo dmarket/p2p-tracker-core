@@ -38,6 +38,8 @@ GitHub Release.
 - Mobile: `P2pTracker.registerDevice(pushToken, provider, apns)` and `unregisterDevice()` register this install's push token on `PUT`/`DELETE /exchange/v1/p2p/ext/devices/{deviceId}` with the capabilities `wake_v1` and, when Steam writes are on, `steam_writes`. Call them after login and on a new token, and on logout before the DMarket session ends (DMA-540).
 - The mobile heartbeat sends the `wakeId` it answers and `trackerState.network` and `trackerState.backgroundProveAllowed` (DMA-540).
 - New lifecycle event `WakeFinished`; `WakeReceived` gains `wakeId`, `transactionId`, `reason` and `expired` (DMA-540).
+- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
+- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create not sent for it is deferred (`SteamWriteDeferred` with `reasons().steamProxyUnreachable`), never reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so. `CreateOfferResult.NotSent` is the core's result for such a create (DMA-1012).
 
 ### Changed
 
@@ -46,6 +48,10 @@ GitHub Release.
 - `WakeAcknowledger.acknowledge` takes the wake id and its `WakeOutcome` (DMA-540).
 - Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
+
+### Fixed
+
+- A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
 
 ## [1.3.0-beta] - 2026-11-10
 

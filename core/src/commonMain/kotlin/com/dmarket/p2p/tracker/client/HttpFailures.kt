@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.client
 
 import com.dmarket.p2p.tracker.net.NetworkRedaction
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_CODE
 import io.ktor.client.HttpClientConfig
 import io.ktor.client.plugins.HttpRequestTimeoutException
 import io.ktor.client.plugins.HttpResponseValidator
@@ -55,6 +56,15 @@ class HttpTransportException internal constructor(
     val redactedUrl: String,
     val detail: String? = null,
 ) : HttpCallFailureException("$kind${detail?.let { " ($it)" }.orEmpty()} on $method $redactedUrl")
+
+/**
+ * A connection the Steam transport could not open through the account's proxy ([com.dmarket.p2p.tracker.net.SteamProxy]):
+ * no connection to the proxy, no answer from it, or a `CONNECT` it refused. The request **never reached Steam**, and
+ * nothing fell back to a direct connection. [detail] says what failed in fixed words and an error code, never the
+ * proxy's address or credentials.
+ */
+class SteamProxyUnreachableException internal constructor(val method: String, val redactedUrl: String, val detail: String) :
+    HttpCallFailureException("steam proxy unreachable ($detail) on $method $redactedUrl")
 
 /**
  * What a transport failure's own message does not say, read off its platform cause: on the JS engine, the
@@ -150,8 +160,11 @@ fun HttpClientConfig<*>.sanitizeHttpFailures(
                     serverDate = cause.response.headers[HttpHeaders.Date],
                 )
                 else -> {
-                    if (!describeTransportCauses) return@handleResponseExceptionWithRequest
                     val detail = cause.transportCause() ?: return@handleResponseExceptionWithRequest
+                    // Told apart whatever the client asked for: a request that never left through the proxy is
+                    // not one Steam failed to answer.
+                    proxyFailure(detail)?.let { throw SteamProxyUnreachableException(request.method.value, redactedUrl(), it) }
+                    if (!describeTransportCauses) return@handleResponseExceptionWithRequest
                     throw HttpTransportException(
                         kind = cause.message ?: cause::class.simpleName ?: "transport failure",
                         method = request.method.value,
@@ -162,4 +175,15 @@ fun HttpClientConfig<*>.sanitizeHttpFailures(
             }
         }
     }
+}
+
+/**
+ * The detail of a proxy failure in [transportCause]'s text, which leads with the error's code: the Steam transport
+ * codes the errors of its tunnel [STEAM_PROXY_UNREACHABLE_CODE] and words them itself, with no address in them.
+ * Capped and redacted all the same. `null` for any other failure.
+ */
+internal fun proxyFailure(transportCause: String): String? {
+    if (!transportCause.startsWith(STEAM_PROXY_UNREACHABLE_CODE)) return null
+    val detail = transportCause.removePrefix(STEAM_PROXY_UNREACHABLE_CODE).removePrefix(":").substringBefore(" <- ").trim()
+    return NetworkRedaction.redactBody(detail.ifEmpty { "no detail" }, maxLen = TRANSPORT_DETAIL_MAX_LEN)
 }

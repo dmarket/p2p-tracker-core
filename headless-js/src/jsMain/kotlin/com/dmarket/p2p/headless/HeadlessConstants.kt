@@ -10,6 +10,7 @@ import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
 import com.dmarket.p2p.tracker.notary.PROOF_TOKEN_EXPIRING_REASON
 import com.dmarket.p2p.tracker.runtime.HeadlessTracker
 
@@ -25,7 +26,8 @@ import com.dmarket.p2p.tracker.runtime.HeadlessTracker
  * - `tokenExpiringDefer`: a create deferred because the token expires before it could be confirmed;
  * - `proofTokenExpiring`: a proof not started because the token is too close to its expiry (it appears inside
  *   a longer reason);
- * - `noProver`: a proof suppressed because the tracker makes none.
+ * - `noProver`: a proof suppressed because the tracker makes none;
+ * - `steamProxyUnreachable`: a create not sent because the Steam proxy pushed with the token could not be reached.
  */
 @JsExport
 fun reasons(): dynamic = REASONS
@@ -36,6 +38,7 @@ private val REASONS: dynamic = frozen(
     "tokenExpiringDefer" to TOKEN_EXPIRING_DEFER_REASON,
     "proofTokenExpiring" to PROOF_TOKEN_EXPIRING_REASON,
     "noProver" to ProofSkipReason.NO_PROVER.message,
+    "steamProxyUnreachable" to STEAM_PROXY_UNREACHABLE_REASON,
 )
 
 /** The `kind` of a failed-cancel check, by name: `alreadyInactive`, `alreadyTraded`, `stillOpen`, `unread`. */

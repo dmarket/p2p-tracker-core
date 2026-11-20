@@ -11,6 +11,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /** How long each notary refusal holds the next proof back, by the notary's own table. */
 class ProverBackoffTest {
@@ -22,6 +23,7 @@ class ProverBackoffTest {
         ProofFailure.UpgradeRefused(599) to 30.seconds,
         ProofFailure.SessionClosed(1013, "queue full") to 30.seconds,
         ProofFailure.NotaryUnreachable("ECONNREFUSED") to 30.seconds,
+        ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED") to 30.seconds,
         // Sent only by the deferred admission gate: mapped now, so its return needs no release.
         ProofFailure.UpgradeRefused(403) to 60.seconds,
         ProofFailure.SessionClosed(4029) to 60.seconds,
@@ -82,5 +84,18 @@ class ProverBackoffTest {
         assertNotNull(backoff.blocked(T0 + 1.seconds))
         backoff.keyChanged()
         assertNull(backoff.blocked(T0 + 1.seconds))
+    }
+
+    @Test
+    fun another_proxy_ends_a_proxys_wait_and_leaves_the_notarys_alone() {
+        val now = Instant.fromEpochSeconds(1_781_611_200)
+        val proxyDown = ProverBackoff().apply { failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), now) }
+        assertNotNull(proxyDown.blocked(now))
+        proxyDown.proxyChanged()
+        assertNull(proxyDown.blocked(now))
+
+        val notaryDown = ProverBackoff().apply { failed(ProofFailure.NotaryUnreachable("ECONNREFUSED"), now) }
+        notaryDown.proxyChanged()
+        assertNotNull(notaryDown.blocked(now), "a busy notary is not the proxy's to clear")
     }
 }

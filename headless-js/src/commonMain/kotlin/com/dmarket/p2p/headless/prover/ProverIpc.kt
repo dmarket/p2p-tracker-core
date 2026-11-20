@@ -55,7 +55,8 @@ data class ProverSettings(
  *
  * The SDK sends [ToChild.Prove]; the child asks for its upgrade headers ([FromChild.HeadersWanted]) just before it
  * connects to the notary, gets them in [ToChild.Headers], and answers [FromChild.Proved] or [FromChild.Failed].
- * The Steam token and the signed headers cross this channel and nothing else: never argv, the environment or a log.
+ * The Steam token, its proxy and the signed headers cross this channel and nothing else: never argv, the environment
+ * or a log.
  */
 object ProverIpc {
     val json: Json = Json {
@@ -75,7 +76,11 @@ object ProverIpc {
 
 @Serializable
 sealed interface ToChild {
-    /** Prove [request] with [steamAccessToken]; [id] tags every message about this proof. */
+    /**
+     * Prove [request] with [steamAccessToken]; [id] tags every message about this proof. [steamProxy] is the URL of
+     * the proxy the Steam leg must tunnel through (`null`: dial Steam directly), a secret like the token: it travels
+     * here and nowhere else, never in [settings], argv or the environment.
+     */
     @Serializable
     @SerialName("prove")
     data class Prove(
@@ -84,8 +89,10 @@ sealed interface ToChild {
         val steamAccessToken: String,
         val steamSessionId: String,
         val settings: ProverSettings,
+        val steamProxy: String? = null,
     ) : ToChild {
-        override fun toString(): String = "Prove(id=$id, request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>)"
+        override fun toString(): String = "Prove(id=$id, request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>, " +
+            "steamProxy=${steamProxy?.let { "<redacted>" }})"
     }
 
     /** The signed upgrade headers for proof [id], or why there are none ([error]). */

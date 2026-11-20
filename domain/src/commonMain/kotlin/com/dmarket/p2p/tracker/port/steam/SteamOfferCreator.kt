@@ -87,4 +87,12 @@ sealed interface CreateOfferResult {
      * sent and nothing was reported, so the backend leases the create again once the pause is lifted.
      */
     data object CreatesPaused : CreateOfferResult
+
+    /**
+     * Not sent: the request could not leave this host the way it must, so it **never reached Steam** — the Steam
+     * proxy the account's traffic goes through could not be reached, and nothing falls back to a direct connection.
+     * Nothing is reported, like a deferred create: the lease lapses and the backend re-leases it. [reason] is a fixed
+     * text that names no address and no credential.
+     */
+    data class NotSent(val reason: String) : CreateOfferResult
 }

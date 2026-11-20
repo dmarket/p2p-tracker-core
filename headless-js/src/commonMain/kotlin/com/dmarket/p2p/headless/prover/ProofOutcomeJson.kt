@@ -43,6 +43,7 @@ object ProofOutcomeJson {
         is ProofFailure.NotaryUnreachable -> copy(detail = ProverOutput.redact(detail))
         is ProofFailure.VersionMismatch -> copy(detail = ProverOutput.redact(detail))
         is ProofFailure.SteamFailed -> copy(detail = ProverOutput.redact(detail))
+        is ProofFailure.ProxyUnreachable -> copy(detail = ProverOutput.redact(detail))
         is ProofFailure.LimitsExceeded -> copy(detail = ProverOutput.redact(detail))
         is ProofFailure.ProverKilled -> copy(detail = detail?.let(ProverOutput::redact))
         is ProofFailure.NotStarted -> copy(reason = ProverOutput.redact(reason))
