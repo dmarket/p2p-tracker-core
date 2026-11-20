@@ -22,6 +22,7 @@ const FACADE = [
   'runProverChild',
   'start',
   'steamNotLinkedCode',
+  'steamProxyInvalidCode',
   'stop',
   'trackerState',
 ];

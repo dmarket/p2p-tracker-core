@@ -49,4 +49,10 @@ sealed interface CancelOfferResult {
 
     /** The cancel did not land: a `strError`, any other EResult, or a body that is not one of Steam's answers. */
     data class Refused(val error: String) : CancelOfferResult
+
+    /**
+     * The transport could not send the cancel at all — the account's Steam proxy could not be reached — so it never
+     * reached Steam: the offer is as it was, and nothing about it needs reading. Deferred, never reported failed.
+     */
+    data class NotSent(val reason: String) : CancelOfferResult
 }

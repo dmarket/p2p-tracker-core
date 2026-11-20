@@ -79,6 +79,7 @@ class HeadlessTrackerProxyTest {
         when {
             request.url.encodedPath.endsWith("/tradeoffer/new/send") ->
                 respond("""{"tradeofferid":"555","needs_mobile_confirmation":true}""", headers = json)
+            request.url.encodedPath.endsWith("/tradeoffer/555/cancel") -> respond("""{"tradeofferid":"555"}""", headers = json)
             else -> respond("""{"response":{}}""", headers = json)
         }
     }
@@ -186,6 +187,41 @@ class HeadlessTrackerProxyTest {
         )
         assertEquals(1, events<LifecycleEvent.SteamProxyRecovered>().size)
         assertFalse(tracker.state().steamProxyUnreachable)
+        assertTrue(reports().none { "\"failed\"" in (it.body as OutgoingContent.ByteArrayContent).bytes().decodeToString() })
+    }
+
+    @Test
+    fun a_cancel_the_proxy_kept_from_going_out_is_deferred_unread_and_unreported_and_runs_once_it_is_back() = runTest {
+        heartbeatBody = """
+            {"activeTracking":[{"dealId":"deal-1","watch":["GetTradeOffer"],"role":"seller"}],
+             "directives":[{"directiveId":"dir-c","action":"cancel_offer","dealId":"deal-1","steamOfferId":"555"}],
+             "ttlSeconds":100,"linkedSteamId":"$STEAM_ID"}
+        """.trimIndent()
+        down = true
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token, SteamProxyUpdate.Use(proxy))
+        tracker.cycle()
+
+        assertTrue(steamSent.isEmpty())
+        assertTrue(reports().isEmpty(), "a cancel that never reached Steam is not reported failed")
+        val deferred = events<LifecycleEvent.SteamWriteDeferred>().single()
+        assertEquals(
+            listOf("cancel_offer", "dir-c", "deal-1", STEAM_PROXY_UNREACHABLE_REASON),
+            listOf(deferred.kind, deferred.directiveId, deferred.dealId, deferred.reason),
+        )
+        assertTrue(events<LifecycleEvent.DirectiveExecuted>().isEmpty(), "no outcome at all")
+        assertTrue(events<LifecycleEvent.DirectiveDropped>().isEmpty(), "not dropped as a cancel Steam may have taken")
+        assertTrue(events<LifecycleEvent.FailedCancelChecked>().isEmpty(), "its offer is not read through the dead proxy")
+        assertEquals(listOf("deal-1"), events<LifecycleEvent.SteamProxyUnreachable>().single().dealIds)
+
+        down = false
+        clock.advance(2.minutes)
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(1, steamSent.count { (request, _) -> request.url.encodedPath.endsWith("/tradeoffer/555/cancel") })
+        val executed = events<LifecycleEvent.DirectiveExecuted>().single()
+        assertEquals(listOf("cancel_offer", "SUCCESS"), listOf(executed.kind, executed.status))
         assertTrue(reports().none { "\"failed\"" in (it.body as OutgoingContent.ByteArrayContent).bytes().decodeToString() })
     }
 

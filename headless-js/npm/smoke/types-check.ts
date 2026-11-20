@@ -16,6 +16,7 @@ import {
     runProverChild,
     start,
     steamNotLinkedCode,
+    steamProxyInvalidCode,
     stop,
     trackerState,
     type HeadlessTrackerOptions,
@@ -220,9 +221,10 @@ const reasonTexts: string[] = Object.values(reasons());
 const createOffer: "create_offer" = directiveActions().createOffer;
 const alreadyTraded: "already_traded" = failedCancelKinds().alreadyTraded;
 const notLinked: "P2P_STEAM_NOT_LINKED" = steamNotLinkedCode();
+const proxyInvalid: "STEAM_PROXY_INVALID" = steamProxyInvalidCode();
 // @ts-expect-error the constants are frozen
 reasons().noProver = "changed";
 const durations: [number, number] = [minWriteTokenLifetimeMs(), maxClockSkewMs()];
 const version: string = headlessVersion();
 const childEntry: () => void = runProverChild;
-void [reasonTexts, createOffer, alreadyTraded, notLinked, durations, version, childEntry, host];
+void [reasonTexts, createOffer, alreadyTraded, notLinked, proxyInvalid, durations, version, childEntry, host];

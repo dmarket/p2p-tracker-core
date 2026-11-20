@@ -27,7 +27,8 @@ import com.dmarket.p2p.tracker.runtime.HeadlessTracker
  * - `proofTokenExpiring`: a proof not started because the token is too close to its expiry (it appears inside
  *   a longer reason);
  * - `noProver`: a proof suppressed because the tracker makes none;
- * - `steamProxyUnreachable`: a create not sent because the Steam proxy pushed with the token could not be reached.
+ * - `steamProxyUnreachable`: a create or a cancel not sent because the Steam proxy pushed with the token could not be
+ *   reached.
  */
 @JsExport
 fun reasons(): dynamic = REASONS
@@ -56,6 +57,15 @@ private val DIRECTIVE_ACTIONS: dynamic = frozen(*DirectiveAction.entries.map { i
 /** The gateway's error code for a heartbeat refused because the DMarket account links no Steam account. */
 @JsExport
 fun steamNotLinkedCode(): String = HeadlessTracker.STEAM_NOT_LINKED_CODE
+
+/**
+ * The `code` of the error `pushSteamToken` rejects with when its `proxy` is neither `null` nor an `http://` URL with a
+ * host and a port: the rejection a host traces back to the proxy it was given rather than to its own call.
+ */
+@JsExport
+fun steamProxyInvalidCode(): String = STEAM_PROXY_INVALID_CODE
+
+internal const val STEAM_PROXY_INVALID_CODE = "STEAM_PROXY_INVALID"
 
 /** Under this much token life no create or proof starts, and the tracker stops claiming the device present. */
 @JsExport

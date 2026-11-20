@@ -15,13 +15,16 @@ import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
+import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
+import com.dmarket.p2p.tracker.port.steam.SteamOfferCanceller
 import com.dmarket.p2p.tracker.port.steam.SteamOfferCreator
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeCredentialVault
 import com.dmarket.p2p.tracker.support.FakeDeviceIdStore
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.FakeScheduler
+import com.dmarket.p2p.tracker.support.FakeSteamOfferCanceller
 import com.dmarket.p2p.tracker.support.FakeSteamOfferCreator
 import com.dmarket.p2p.tracker.support.FakeSteamReadClient
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
@@ -34,11 +37,11 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 
 /**
- * A create the transport could not send ([CreateOfferResult.NotSent]: the account's Steam proxy was unreachable) never
- * reached Steam, so it is deferred like a create the token is too short for: never reported, its claim released, and
- * run again when the backend re-leases it.
+ * A write the transport could not send ([CreateOfferResult.NotSent], [CancelOfferResult.NotSent]: the account's Steam
+ * proxy was unreachable) never reached Steam, so it is deferred like a create the token is too short for: never
+ * reported, its claim released, and run again when the backend re-leases it.
  */
-class NotSentCreateTest {
+class NotSentWriteTest {
     private val partner = SteamId("76561199497281579")
 
     private fun create(id: String, deal: String) = Directive(
@@ -74,7 +77,20 @@ class NotSentCreateTest {
         val claims: DealWriteClaimStore,
     )
 
-    private fun setup(creator: SteamOfferCreator, reportUnsentCreates: Boolean, vararg directives: Directive): Setup {
+    private fun cancel(id: String, deal: String) = Directive(
+        directiveId = DirectiveId(id),
+        action = DirectiveAction.CANCEL_OFFER,
+        dealId = DealId(deal),
+        steamOfferId = OfferId("offer-$id"),
+    )
+
+    private fun setup(
+        creator: SteamOfferCreator,
+        reportUnsentCreates: Boolean,
+        vararg directives: Directive,
+        canceller: SteamOfferCanceller = FakeSteamOfferCanceller(),
+        checkFailedCancels: Boolean = false,
+    ): Setup {
         val clock = FakeClock()
         val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = directives.toList()))
         val events = RecordingEventObserver()
@@ -86,6 +102,7 @@ class NotSentCreateTest {
                 TrackerMode.Background,
                 reportUnsentCreates = reportUnsentCreates,
                 unansweredCreateGrace = 2.minutes,
+                checkFailedCancels = checkFailedCancels,
             ),
             marketplace = mp,
             steamReader = FakeSteamReadClient(),
@@ -98,6 +115,7 @@ class NotSentCreateTest {
             clock = clock,
             deviceId = FakeDeviceIdStore(),
             offerCreator = creator,
+            offerCanceller = canceller,
             progress = InMemoryTrackerProgressStore(),
             claims = claims,
             directivesEnabled = true,
@@ -157,5 +175,37 @@ class NotSentCreateTest {
             s.events.events.filterIsInstance<LifecycleEvent.SteamWriteDeferred>().all { it.reason == STEAM_PROXY_UNREACHABLE_REASON },
             "a proxy failure opens no cooldown: ${s.events.events}",
         )
+    }
+
+    @Test
+    fun a_cancel_not_sent_is_deferred_unread_and_never_reported_whether_or_not_failed_cancels_are_checked() = runTest {
+        for (checkFailedCancels in listOf(false, true)) {
+            val canceller = FakeSteamOfferCanceller(result = CancelOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON))
+            val s = setup(
+                ProxyCreator(),
+                reportUnsentCreates = false,
+                cancel("c-1", "deal-1"),
+                canceller = canceller,
+                checkFailedCancels = checkFailedCancels,
+            )
+
+            s.loop.runOnce()
+
+            assertEquals(1, canceller.attempts)
+            assertEquals(emptyList(), s.mp.directiveOutcomes, "checkFailedCancels=$checkFailedCancels")
+            val deferred = s.events.events.filterIsInstance<LifecycleEvent.SteamWriteDeferred>().single()
+            assertEquals(
+                listOf("cancel_offer", "c-1", "deal-1", STEAM_PROXY_UNREACHABLE_REASON),
+                listOf(deferred.kind, deferred.directiveId, deferred.dealId, deferred.reason),
+            )
+            assertTrue(s.events.events.none { it is LifecycleEvent.DirectiveExecuted || it is LifecycleEvent.DirectiveDropped })
+            assertTrue(s.events.events.none { it is LifecycleEvent.FailedCancelChecked }, "nothing to read: the offer is as it was")
+            assertTrue(s.claims.all().none { it.dealId == DealId("deal-1") }, "the claim goes with nothing written")
+
+            canceller.result = CancelOfferResult.Cancelled
+            s.loop.forceHeartbeatNow()
+            s.loop.runOnce()
+            assertEquals("SUCCESS", s.mp.directiveOutcomes.single { it.directiveId == DirectiveId("c-1") }.status.name)
+        }
     }
 }

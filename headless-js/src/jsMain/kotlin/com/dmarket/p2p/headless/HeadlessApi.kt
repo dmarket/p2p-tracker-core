@@ -139,8 +139,8 @@ fun pushTradingApiKey(handle: Any, publicKey: String, secretKey: String): Promis
  * - `null`: no proxy from now on, Steam reached directly.
  * A token that is not held changes neither. Every Steam call and every proof's Steam leg tunnels through the held
  * proxy; one that cannot fails with a cause of its own and is never sent directly. The proxy is write-only: no
- * result, state, event or error carries it. A `proxy` that is not such a URL is refused (the promise rejects), naming
- * the rule broken and never the value.
+ * result, state, event or error carries it. A `proxy` that is not such a URL is refused (the promise rejects with an
+ * error coded [STEAM_PROXY_INVALID_CODE]), naming the rule broken and never the value.
  */
 @Suppress("NON_EXPORTABLE_TYPE")
 @JsExport
@@ -161,7 +161,8 @@ fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefine
 
 /**
  * What [pushSteamToken]'s options do with the held proxy: keep it (no `proxy`, or `undefined`), drop it (`null`), or
- * replace it (a URL, parsed). Refusals name the rule, never the value.
+ * replace it (a URL, parsed). Refusals name the rule, never the value; those of the proxy's value are coded
+ * [STEAM_PROXY_INVALID_CODE], the options' own shape is the caller's to get right and is not.
  */
 private fun steamProxyOption(options: dynamic): SteamProxyUpdate {
     if (options === undefined || options === null) return SteamProxyUpdate.Keep
@@ -171,10 +172,17 @@ private fun steamProxyOption(options: dynamic): SteamProxyUpdate {
     return when {
         proxy === undefined -> SteamProxyUpdate.Keep
         proxy === null -> SteamProxyUpdate.Clear
-        jsTypeOf(proxy) == "string" -> SteamProxyUpdate.Use(SteamProxy.parse(proxy.unsafeCast<String>()))
-        else -> throw IllegalArgumentException("proxy must be a string or null")
+        jsTypeOf(proxy) == "string" -> try {
+            SteamProxyUpdate.Use(SteamProxy.parse(proxy.unsafeCast<String>()))
+        } catch (e: IllegalArgumentException) {
+            throw e.proxyInvalid()
+        }
+        else -> throw IllegalArgumentException("proxy must be a string or null").proxyInvalid()
     }
 }
+
+/** This refusal, coded [STEAM_PROXY_INVALID_CODE] as a JS error's `code`. */
+private fun IllegalArgumentException.proxyInvalid(): IllegalArgumentException = also { it.asDynamic().code = STEAM_PROXY_INVALID_CODE }
 
 /** What the tracker holds right now, as a plain object without either secret. */
 @JsExport

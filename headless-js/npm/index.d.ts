@@ -102,8 +102,8 @@ export interface TrackerState {
     readonly dealDeadlines: Readonly<Record<string, number>>;
     /**
      * Whether the last attempt through the Steam proxy pushed with the token failed. While it is, nothing reaches
-     * Steam — nothing falls back to a direct connection — and no create is sent or reported failed. Cleared when a
-     * connection gets through it, or another proxy (or none) is pushed. The proxy itself is never readable back.
+     * Steam — nothing falls back to a direct connection — and no create or cancel is sent or reported failed. Cleared
+     * when a connection gets through it, or another proxy (or none) is pushed. The proxy itself is never readable back.
      */
     readonly steamProxyUnreachable: boolean;
     /** Since when, while `steamProxyUnreachable`. */
@@ -171,8 +171,9 @@ export declare function pushTradingApiKey(
  * when absent, replaced by a URL, dropped by `null`). Every Steam call and
  * every proof's Steam leg then tunnels through that proxy and fails rather than go direct: a failure is reported as
  * the `SteamProxyUnreachable` event (`SteamProxyRecovered` ends it), `steamProxyUnreachable` in the state, a create
- * deferred with `reasons().steamProxyUnreachable` (never reported failed), and a proof's `proxy_unreachable`. Rejects
- * a `proxy` that is neither `null` nor an `http://` URL with a host and a port, naming the rule and never the value; resolves
+ * or a cancel deferred (`SteamWriteDeferred`) with `reasons().steamProxyUnreachable` — never sent, read or reported
+ * failed — and a proof's `proxy_unreachable`. Rejects a `proxy` that is neither `null` nor an `http://` URL with a host
+ * and a port with an `Error` whose `code` is `steamProxyInvalidCode()`, naming the rule and never the value; resolves
  * `invalid` where the host cannot route Steam through a proxy.
  */
 export declare function pushSteamToken(
@@ -212,6 +213,12 @@ export declare function directiveActions(): Readonly<{
 
 /** The gateway's error code for a heartbeat refused because the DMarket account links no Steam account. */
 export declare function steamNotLinkedCode(): "P2P_STEAM_NOT_LINKED";
+
+/**
+ * The `code` of the `Error` `pushSteamToken` rejects with when `options.proxy` is neither `null` nor an `http://` URL
+ * with a host and a port. Its message names the rule broken, never the value. No other rejection carries it.
+ */
+export declare function steamProxyInvalidCode(): "STEAM_PROXY_INVALID";
 
 /** Under this much token life no create or proof starts. */
 export declare function minWriteTokenLifetimeMs(): number;

@@ -122,17 +122,20 @@ class SteamProxyFacadeTest {
         val handle = host.proxiedTracker()
         val secret = "http://trader:s3cret-pass@203.0.113.7:3128"
 
-        val refusals: List<Pair<dynamic, String>> = listOf(
-            Pair(proxyOption("socks5://trader:s3cret-pass@203.0.113.7:1080"), "SOCKS is not supported"),
-            Pair(proxyOption("http://trader:s3cret-pass@203.0.113.7"), "host and a port"),
-            Pair(js("({proxy: 3128})"), "proxy must be a string or null"),
-            Pair(js("({proxi: 'http://trader:s3cret-pass@203.0.113.7:3128'})"), "unknown option: proxi"),
+        // The proxy's value is refused coded, for a host to tell from its own mistakes; the options' shape is not.
+        val refusals: List<Triple<dynamic, String, String?>> = listOf(
+            Triple(proxyOption("socks5://trader:s3cret-pass@203.0.113.7:1080"), "SOCKS is not supported", steamProxyInvalidCode()),
+            Triple(proxyOption("http://trader:s3cret-pass@203.0.113.7"), "host and a port", steamProxyInvalidCode()),
+            Triple(js("({proxy: 3128})"), "proxy must be a string or null", steamProxyInvalidCode()),
+            Triple(js("({proxi: 'http://trader:s3cret-pass@203.0.113.7:3128'})"), "unknown option: proxi", null),
+            Triple(js("'http://trader:s3cret-pass@203.0.113.7:3128'"), "options must be an object", null),
         )
-        for (refusal in refusals) {
-            val rule = refusal.second
-            val failure = runCatching { pushSteamToken(handle, steamToken(), refusal.first).await() }.exceptionOrNull()
+        for ((options, rule, code) in refusals) {
+            val failure = runCatching { pushSteamToken(handle, steamToken(), options).await() }.exceptionOrNull()
             val message = failure?.message ?: "resolved"
             assertTrue(rule in message, message)
+            assertTrue(js("(function (e) { return e instanceof Error; })")(failure) as Boolean, message)
+            assertEquals(code, failure.asDynamic().code as String?, message)
             assertNoProxyIn(listOf(message), "s3cret", "trader", "203.0.113.7")
         }
         assertEquals(null, trackerState(handle).steamTokenSteamId, "a refused proxy holds no token either")
