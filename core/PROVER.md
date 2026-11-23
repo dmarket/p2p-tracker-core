@@ -264,6 +264,88 @@ What would close it: a `revealRequestBody: BodyReveal` on `RevealPolicy`, mirror
 `revealResponseBody`. Raise it against `dmarket/steam-provenance` at the pinned release's `gitHead`; when
 it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the acknowledgement flag.
 
+## The native prover on Android
+
+The same pinned package carries the prover's C ABI for Android under `native/android/`: for `arm64-v8a`,
+`armeabi-v7a` and `x86_64`, `libprovenance_client_cffi.so` (and a `.a` we do not use), the header
+`include/provenance_client.h`, `BUILD.json` (the source commit and the SHA-256 of every file there),
+`toolchain.txt` (NDK r30, API 24) and the notices. It is a blocking C library with no JNI and no transport: the
+JNI layer and the connections are ours. Its contract is `client-cffi/README.md` in steam-provenance at the
+package's `gitHead`.
+
+### Where it ships
+
+The module `:prover-android` (Maven `com.dmarket.p2p:trade-tracker-prover-android`, same `GROUP` and
+`VERSION_NAME`) is a plain `com.android.library`: the Kotlin Multiplatform Android library plugin of AGP 9.3.1 has
+no `externalNativeBuild` and no `ndkVersion`. `:core`'s `androidMain` depends on it, so the app gets it through
+`trade-tracker-core`; the jvm and js targets never see it. Its AAR carries, per ABI,
+`jni/<abi>/libprovenance_client_cffi.so` (the package's bytes, unstripped) and `jni/<abi>/libprovenance_jni.so`
+(ours). AGP's built-in Kotlin needs KGP and AGP in one class loader, so the root build loads
+`com.android.library` with `apply false` beside the Kotlin plugins.
+
+### How the `.so` are checked
+
+`:prover-android:verifyProverNativeLibs` (`VerifyProverNativeLibs` in
+[`build-logic/src/main/kotlin/TlsnProver.kt`](../build-logic/src/main/kotlin/TlsnProver.kt)) runs after
+`:core:verifyTlsnProver` and before anything in the module builds. The package's `SHA256SUMS` does not cover
+`native/`, so the chain is: the lockfile integrity ties the whole tarball to `TlsnProverPin.INTEGRITY`
+(check 1 above), then
+
+1. `BUILD.json`'s `gitHead` equals the installed `package.json`'s `gitHead` and `VERSION`'s `GIT_SHA`, and its
+   platform is `android`;
+2. each `.so`, the header and both notices match the SHA-256 `BUILD.json` lists, and `BUILD.json` lists the
+   library for exactly the three ABIs;
+3. the committed copies under [`../licenses/steam-provenance-android/`](../licenses/steam-provenance-android/)
+   are the package's notices byte for byte.
+
+Any miss fails the build; one changed byte in a `.so` does. The task then stages the libraries as the module's
+generated `jniLibs` and the header for CMake. `packaging.jniLibs.keepDebugSymbols` keeps AGP from stripping the
+package's `.so`, so the AAR holds the bytes `BUILD.json` hashes.
+
+### The JNI layer
+
+`prover-android/src/main/cpp/provenance_jni.c`, built by CMake 4.1.2 with NDK 30.0.16248370 for API 24 and
+`-Wl,-z,max-page-size=16384` (LOAD alignment 0x4000 on every ABI), linked dynamically by name against the
+package's library, which has no SONAME (`DT_NEEDED libprovenance_client_cffi.so`). The NDK and CMake must be
+in the Android SDK (`sdkmanager "ndk;30.0.16248370" "cmake;4.1.2"`; CI installs them). Without them the module
+configures without its native build, so JVM/JS tasks, lint and `check` still run, and `requireProverNdk` fails
+every task that packages native libraries: no AAR builds without `libprovenance_jni.so`.
+
+`NativeProverBridge` (package `com.dmarket.p2p.tracker.adapter.notary`) loads `provenance_client_cffi`, then
+`provenance_jni`, and declares the ABI as `external fun`s over `Long` handles: context, cancel, stream, MPC and
+proxy issuance with a deadline and progress, response and headers, material export/import, presentation and
+`wake`. Every owned buffer is copied into a Java array and freed with `pc_buffer_free` before the call
+returns; a failing call throws `NativeProverException` with a `NativeProverStatus`. Issuance blocks and throws
+`IllegalStateException` on the main thread. `consumer-rules.pro` keeps the names JNI binds.
+
+Streams follow the README's transport contract without entering the JVM from a callback. Each stream's C
+userdata holds a bounded read ring and write ring (64 KiB by default) and one pending token each for read,
+write, flush and close; the five callbacks only copy between the rings and the borrowed buffers, park a token
+when they must wait, and wake an earlier token when a retry succeeds. `NativeProverStream` runs two daemon
+threads over a host `NativeProverTransport` (blocking `read`, `write`, `shutdownOutput`, `close`): the reader
+fills the read ring, the writer drains the write ring to the connection. Both call into C, which calls `pc_wake`
+outside its lock. Flush answers OK only once the write ring is written out; close shuts the write side after
+that. The prover's release (end of issuance, cancellation, timeout, failure, or freeing an unused stream) stops
+both threads and closes the transport; the ring memory is freed when both the prover and the worker have let
+go. The real transports (authenticated WSS to the notary, TCP to Steam) and the `NotaryProver` built on this
+are not here yet.
+
+### Testing on a device
+
+Host tests cannot load an Android `.so`. `prover-android/src/androidTest` runs on an emulator or device:
+
+```bash
+ANDROID_SERIAL=emulator-5554 ./gradlew :prover-android:connectedDebugAndroidTest
+```
+
+It loads both libraries, creates and frees handles, releases an unused stream, holds a proxy issuance on a
+pending read over an in-memory loopback until its deadline (`TIMEOUT`), wakes it with served bytes (it then
+fails on them well before its deadline), cancels one, checks the main-thread refusal, and reads malformed
+material as `CODEC`. It does not present real material: the package has no stored material to restore offline
+(steam-provenance's `release/tests/native-fixture.mjs` writes placeholder bytes for packaging tests, and its
+`client-cffi` tests issue material against a live local notary), so a positive `pc_present` needs a fixture
+saved from such a run.
+
 ## Bumping the prover
 
 1. Pick the release: `npm view @dmarket/steam-provenance dist-tags` to find it, then
@@ -279,6 +361,9 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
    `@dmarket/p2p-tracker-headless` alike.
 4. `./gradlew kotlinUpgradeYarnLock` — refreshes your local `kotlin-js-store/yarn.lock`. It is not tracked,
    but when it exists the Kotlin/JS lockfile check fails the build until it matches the new dependency.
+   If `verifyTlsnProver` then reports two package entries in `build/js/yarn.lock`, some generated
+   `package.json` still names the old version (their tasks can stay up to date across the bump): run
+   `./gradlew jsPackageJson jsTestPackageJson --rerun kotlinUpgradeYarnLock` once.
 5. `./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution`
    — the checks above run here; confirm the logged `GIT_SHA` is the one from step 2.
 6. Re-check the package's `pkg/client_wasm.d.ts` against what `WasmProverModule.kt` sends. The
@@ -289,7 +374,11 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
    table, the `SHA-256 (pkg/client_wasm_bg.wasm)` line and the `npm pack` command under *Statically linked
    dependencies*. Then `git grep -n -e '<old version>' -e '<old GIT_SHA>' -e '<old WASM_SHA256>'` must find
    nothing outside `CHANGELOG.md` history.
-8. Add a `CHANGELOG.md` entry naming the new `GIT_SHA`.
+8. Copy `native/android/THIRD_PARTY_NOTICES.md` and `RUST_STDLIB_LICENSE.html` of the new package over
+   [`../licenses/steam-provenance-android/`](../licenses/steam-provenance-android/) (`verifyProverNativeLibs`
+   fails until they match) and update the `gitHead` in the Android section of `THIRD_PARTY_NOTICES.md`.
+   `./gradlew :prover-android:assembleRelease` must pass, and the device test (below) should.
+9. Add a `CHANGELOG.md` entry naming the new `GIT_SHA`.
 
 ## License
 
