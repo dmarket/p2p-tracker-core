@@ -51,6 +51,8 @@ import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
@@ -3516,6 +3518,24 @@ class TradeTrackerLoopTest {
         threeProofLoop(notary, events = events).runOnce()
 
         assertEquals(3, notary.proven.size, "instant failures must not park the deals behind them")
+        assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
+    }
+
+    @Test
+    fun slow_failures_behind_an_unreachable_steam_proxy_do_not_arm_the_breaker() = runTest {
+        // A dead proxy says nothing about the prover, and a park armed by it would run its whole rung after the
+        // proxy is back. Past `countedFailureMinMs` and inside the cycle's proof deadline, so only the proxy
+        // carve-out keeps them from counting.
+        val clock = FakeClock()
+        val notary = FakeNotaryProver().apply {
+            proveThrows = HostedProofException(ProofFailure.ProxyUnreachable("the Steam proxy refused the tunnel"))
+            onProve = { clock.advance(2.seconds) }
+        }
+        val events = RecordingEventObserver()
+
+        threeProofLoop(notary, clock, events = events).runOnce()
+
+        assertEquals(3, notary.proven.size, "proxy failures must not park the deals behind them")
         assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
     }
 

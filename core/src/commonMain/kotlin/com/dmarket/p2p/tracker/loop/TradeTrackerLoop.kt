@@ -86,7 +86,9 @@ import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
 import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
+import com.dmarket.p2p.tracker.notary.HostedProofException
 import com.dmarket.p2p.tracker.notary.OnlineBudgetLesson
+import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
 import com.dmarket.p2p.tracker.policy.CadencePolicy
 import com.dmarket.p2p.tracker.policy.CreateChain
@@ -3722,8 +3724,12 @@ class TradeTrackerLoop(
             // prover's health. The case this is for is a stale proving context right after a host reload,
             // which failed two proofs in 7 ms and 15 ms and parked nine healthy deals for it. The clock is
             // re-read rather than reusing `now`: `now` predates the attempt, and the fold must measure it.
+            //
+            // A Steam proxy that could not be reached is excluded too: the proof never got past the proxy, so it
+            // says nothing about the prover, and a park it armed would outlast the proxy's recovery.
             val spentEnough = clock.now() - attemptStartedAt >= config.tunables.notary.breaker.countedFailureMinMs.milliseconds
-            if (failure !is CancellationException && spentEnough) {
+            val proxyDown = failure is HostedProofException && failure.failure is ProofFailure.ProxyUnreachable
+            if (failure !is CancellationException && spentEnough && !proxyDown) {
                 notaryThrottle.onResult(generated = false, now = clock.now())
             }
             // A refusal that names the online budget it needed is the one failure on this path that teaches
