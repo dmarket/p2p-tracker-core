@@ -25,7 +25,7 @@ class NativeProverBridgeDeviceTest {
     private val config = """{"abi_version":1,"server_name":"example.com"}""".toByteArray()
 
     /** The far end in memory: records what the prover writes, serves what [serve] queues. */
-    private class Loopback : NativeProverTransport {
+    private class Loopback(private val writeDelayMs: Long = 0) : NativeProverTransport {
         val written = AtomicInteger()
         val firstWrite = CountDownLatch(1)
         val closed = AtomicBoolean()
@@ -43,6 +43,7 @@ class NativeProverBridgeDeviceTest {
         }
 
         override fun write(buffer: ByteArray, length: Int) {
+            if (writeDelayMs > 0) Thread.sleep(writeDelayMs)
             written.addAndGet(length)
             firstWrite.countDown()
         }
@@ -110,6 +111,43 @@ class NativeProverBridgeDeviceTest {
         assertTrue("timed out after $elapsedMs ms", elapsedMs in 1_400..10_000)
         assertTrue(stream.awaitStopped(5_000))
         assertTrue(transport.closed.get())
+    }
+
+    @Test
+    fun tinyQueuesCarryTheSameBytesThroughPendingWritesAndWrappedRings() {
+        fun writtenBeforeTimeout(transport: Loopback, stream: NativeProverStream): Int {
+            assertEquals(NativeProverStatus.TIMEOUT, issueProxyExpectingFailure(stream, deadlineMs = 1_500).status)
+            assertTrue(stream.awaitStopped(5_000))
+            return transport.written.get()
+        }
+        val roomy = Loopback()
+        val expected = writtenBeforeTimeout(roomy, NativeProverStream(roomy))
+        // 16-byte rings and a slow connection: the prover's writes fill the ring, park on PENDING and resume on
+        // the worker's wake, and every ring index wraps.
+        val tight = Loopback(writeDelayMs = 5)
+        val written = writtenBeforeTimeout(tight, NativeProverStream(tight, queueCapacity = 16))
+        assertTrue("only $expected bytes: the ring never filled", expected > 16)
+        assertEquals(expected, written)
+    }
+
+    @Test
+    fun progressReachesTheListenerWhichMayCancel() {
+        val transport = Loopback()
+        val stream = NativeProverStream(transport)
+        val cancel = NativeProverBridge.cancelNew()
+        val calls = java.util.Collections.synchronizedList(mutableListOf<Pair<Int, Int>>())
+        try {
+            val e =
+                issueProxyExpectingFailure(stream, deadlineMs = 60_000, cancel = cancel) { mode, index, _, _ ->
+                    calls += mode to index
+                    NativeProverBridge.cancel(cancel)
+                }
+            assertEquals(NativeProverStatus.CANCELLED, e.status)
+            assertEquals(1 to 0, calls.first()) // proxy, first stage
+            assertTrue(stream.awaitStopped(5_000))
+        } finally {
+            NativeProverBridge.cancelFree(cancel)
+        }
     }
 
     @Test
