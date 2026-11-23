@@ -41,6 +41,9 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
 
     @Volatile private var failure: Throwable? = null
 
+    /** Set by [close] and by the socket's end: no more frames are queued or waited for. */
+    @Volatile private var closed = false
+
     @Volatile private var upgradeStatus: Int? = null
 
     /** The notary's close code after the `101`, with [closeReason]; `null` while it has not closed. */
@@ -63,8 +66,10 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
 
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
             onBytes(0, bytes.size.toLong())
-            // Blocks OkHttp's reader thread while the prover has not caught up: read-side back-pressure.
-            runCatching { incoming.put(Chunk.Data(bytes.toByteArray())) }
+            // Holds OkHttp's reader thread while the prover has not caught up (read-side back-pressure), but never past
+            // the release: nobody reads a cancelled proof's queue.
+            val chunk = Chunk.Data(bytes.toByteArray())
+            while (!closed && !incoming.offer(chunk, OFFER_WAIT_MS, TimeUnit.MILLISECONDS)) Unit
         }
 
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -74,7 +79,10 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
             end(Chunk.End)
         }
 
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = end(Chunk.End)
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            closed = true
+            end(Chunk.End)
+        }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
             failure = t
@@ -106,6 +114,7 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
         onBytes(length.toLong(), 0)
         while (socket.queueSize() > 0) {
             failure?.let { throw IOException("the notary socket failed", it) }
+            if (closed) throw IOException("the notary socket was closed")
             LockSupport.parkNanos(DRAIN_POLL_NANOS)
         }
     }
@@ -115,6 +124,7 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
     }
 
     override fun close() {
+        closed = true
         socket.cancel()
         end(Chunk.Failed)
     }
@@ -139,6 +149,7 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
         private const val NORMAL_CLOSE = 1000
         private const val INCOMING_FRAMES = 256
         private const val DRAIN_POLL_NANOS = 100_000L
+        private const val OFFER_WAIT_MS = 100L
 
         /**
          * Opens the notary's socket at [url] offering [subprotocol] and `bearer.<token>` (the DMarket token, opaque to
