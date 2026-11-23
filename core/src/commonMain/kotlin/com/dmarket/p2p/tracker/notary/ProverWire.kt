@@ -1,5 +1,11 @@
 package com.dmarket.p2p.tracker.notary
 
+import com.dmarket.p2p.tracker.config.NotaryConfig
+import com.dmarket.p2p.tracker.game.GameAdapter
+import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.port.notary.NotaryTokenProvider
+import com.dmarket.p2p.tracker.port.notary.SteamProofCookieSource
+
 /**
  * One prove-and-present request handed to a prover (the web's `WasmProverModule`, the native
  * `NativeNotaryProver`): everything needed to run a single issuance and build the selective-disclosure
@@ -152,4 +158,53 @@ private fun ProveRequest.fillCredentials(template: String): String {
     steamSessionCookie?.let { filled = filled.replace(COOKIE_PLACEHOLDER, it) }
     steamSessionId?.let { filled = filled.replace(SESSION_ID_PLACEHOLDER, it) }
     return filled
+}
+
+/**
+ * The [ProveRequest] for proving [kind] for [binding], shared by every prover so they size and fill it alike. Resolves
+ * what can fail before any prover work starts: the DMarket token for the notary, the read's spec, and the Steam web
+ * session a cookie-authenticated read needs (one read of the jar, so the cookie and the `sessionid` describe one
+ * session). The send budget is sized here because its one input is the token's length, which the spec never holds.
+ */
+internal suspend fun prepareProveRequest(
+    config: NotaryConfig,
+    tokenProvider: NotaryTokenProvider,
+    mapper: SteamProofReadMapper,
+    adapter: GameAdapter,
+    cookies: SteamProofCookieSource,
+    binding: ProvenReadBinding,
+    kind: ProvenReadKind,
+    subjectSteamId: SteamId,
+    steamAccessToken: String,
+): ProveRequest {
+    val notaryToken = tokenProvider.notaryToken()
+    val spec = mapper.readSpec(kind, binding, subjectSteamId, adapter)
+    val session = if (spec.needsSessionCookie) {
+        requireNotNull(cookies.currentSession()) { "$kind is cookie-authenticated but there is no Steam web session on this device" }
+    } else {
+        null
+    }
+    val sessionId = if (spec.needsSessionId) {
+        requireNotNull(session?.sessionId) {
+            "$kind needs the Steam sessionid and there is none"
+        }
+    } else {
+        null
+    }
+    return ProveRequest(
+        notaryUrl = config.notaryUrl,
+        transport = config.transport,
+        notaryToken = notaryToken,
+        proxyBaseUrl = config.proxyBaseUrl,
+        spec = spec,
+        steamAccessToken = steamAccessToken,
+        maxSentData = ProvenSentBudget.sentBudget(spec, config, steamAccessToken.length),
+        maxRecvData = spec.maxRecvDataOverride ?: config.maxRecvData,
+        // Already resolved against the config by the mapper: it is a learned minimum, not a per-read override.
+        maxRecvDataOnline = spec.maxRecvDataOnline,
+        maxRecvRecordsOnline = config.maxRecvRecordsOnline,
+        rootStorePem = config.rootStorePem,
+        steamSessionCookie = session?.cookieHeader,
+        steamSessionId = sessionId,
+    )
 }

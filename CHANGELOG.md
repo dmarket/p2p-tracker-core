@@ -39,6 +39,7 @@ GitHub Release.
 - Mobile: `P2pTracker.registerDevice(pushToken, provider, apns)` and `unregisterDevice()` register this install's push token on `PUT`/`DELETE /exchange/v1/p2p/ext/devices/{deviceId}` with the capabilities `wake_v1` and, when Steam writes are on, `steam_writes`. Call them after login and on a new token, and on logout before the DMarket session ends (DMA-540).
 - The mobile heartbeat sends the `wakeId` it answers and `trackerState.network` and `trackerState.backgroundProveAllowed` (DMA-540).
 - New lifecycle event `WakeFinished`; `WakeReceived` gains `wakeId`, `transactionId`, `reason` and `expired` (DMA-540).
+- Android: `AndroidTracker.install(nativeProofs = true)` proves decisive transitions with the native TLSN prover over the host's `OkHttpClient`, in `NotaryConfig.mode` `mpc` or `proxy`; off by default. `AndroidTracker.prover` (`NativeNotaryProver`) gives `progress` and `traffic` per proof and `cancel(dealId)`, which ends the proof with `PROOF_CANCELLED_REASON` (DMA-540).
 
 ### Changed
 

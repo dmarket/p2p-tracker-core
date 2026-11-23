@@ -91,58 +91,12 @@ class WasmNotaryProver(
             // Resolve the credentials and the spec BEFORE loading the prover: all of them can fail (no DMarket
             // session, no Steam web session for a cookie-authed read, a template whose placeholder the binding
             // cannot fill) and failing here costs nothing, while `initialize` fetches and compiles ~10 MB of
-            // WASM and brings up a thread pool.
-            val notaryToken = tokenProvider.notaryToken()
-            val spec = mapper.readSpec(kind, binding, subjectSteamId, adapter)
-            // One read of the jar, not one per value: `sessionid` is part of the same session as the cookie
-            // header, so fetching it separately cost an extra round-trip and opened a window where the two
-            // could describe different sessions.
-            val session = if (spec.needsSessionCookie) {
-                requireNotNull(cookies.currentSession()) {
-                    "$kind is cookie-authenticated but there is no Steam web session on this device"
-                }
-            } else {
-                null
-            }
-            val sessionId = if (spec.needsSessionId) {
-                requireNotNull(session?.sessionId) { "$kind needs the Steam sessionid and there is none" }
-            } else {
-                null
-            }
-
+            // WASM and brings up a thread pool. `prepareProveRequest` is shared with the native prover, so both
+            // size the send budget and fill the credential slots alike.
+            val request =
+                prepareProveRequest(config, tokenProvider, mapper, adapter, cookies, binding, kind, subjectSteamId, steamAccessToken)
             module.initialize(config.threadCount, config.issuanceMode, config.transport)
-            val bytes = module.prove(
-                WasmProveRequest(
-                    notaryUrl = config.notaryUrl,
-                    transport = config.transport,
-                    notaryToken = notaryToken,
-                    proxyBaseUrl = config.proxyBaseUrl,
-                    spec = spec,
-                    steamAccessToken = steamAccessToken,
-                    // Sized to the request actually being issued, per-read override included — `ProvenSentBudget`
-                    // owns the whole rule (why it can only spend less, and which reads it declines to touch).
-                    // It is resolved HERE rather than in the mapper, unlike `maxRecvDataOnline` below, because
-                    // the one input it needs is the token length and the spec is credential-free by
-                    // construction. That is not the drift risk the mapper comment warns about: the rule is a
-                    // pure tested object, so a second platform's prover calls it rather than re-deriving it.
-                    maxSentData = ProvenSentBudget.sentBudget(spec, config, steamAccessToken.length),
-                    maxRecvData = spec.maxRecvDataOverride ?: config.maxRecvData,
-                    // No `?: config` fallback, unlike the two above: the mapper already resolved this one
-                    // against the config, because it is a learned *minimum* rather than a per-read override.
-                    maxRecvDataOnline = spec.maxRecvDataOnline,
-                    // Straight off the config, unlike the byte budget above, because it carries no per-read and
-                    // no per-response decision: there is no `*Override` for it on the read template and no
-                    // lesson that raises it (`OnlineBudgetLesson` reads bytes out of the refusal, not records).
-                    // A field on `ProvenReadSpec` would therefore be a value copied through a pure type that
-                    // never gets to decide anything. `maxSentData` is not in the spec for a *different* reason
-                    // now that it is sized per proof — it decides plenty, but on an input (the token length)
-                    // that a credential-free type cannot be handed.
-                    maxRecvRecordsOnline = config.maxRecvRecordsOnline,
-                    rootStorePem = config.rootStorePem,
-                    steamSessionCookie = session?.cookieHeader,
-                    steamSessionId = sessionId,
-                ),
-            )
+            val bytes = module.prove(request)
             ProofSubmission(dealId = binding.dealId, proofPayload = Base64.encode(bytes))
         }
     }

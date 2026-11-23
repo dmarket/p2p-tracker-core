@@ -1,6 +1,8 @@
 package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
+import com.dmarket.p2p.tracker.adapter.notary.MarketplaceNotaryTokenProvider
+import com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver
 import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
@@ -22,6 +24,8 @@ import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
+import com.dmarket.p2p.tracker.notary.NativeNotaryProver
+import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.host.Scheduler
@@ -34,6 +38,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Builds the DMarket client over the host's own HTTP stack (on Android, the app's `OkHttpClient`). The client must
@@ -84,6 +89,8 @@ private object NoWakeScheduler : Scheduler {
  *   leased `create_offer` / `cancel_offer` is dropped unreported and its lease lapses.
  * @param reportUnsentCreates [LoopConfig.reportUnsentCreates]: whether a `create_offer` that never reached Steam is
  *   reported `failed`.
+ * @param proofEngine the native prover's platform part; `null` (the default) keeps the no-op prover, so decisive
+ *   transitions are reported client-side. Given, [tracker] proves through a [NativeNotaryProver] over it ([prover]).
  */
 class MobileTracker(
     val platform: MobileTrackerPlatform,
@@ -94,7 +101,15 @@ class MobileTracker(
     private val steamWrites: Boolean = false,
     private val reportUnsentCreates: Boolean = true,
     private val backgroundProofs: () -> Boolean = cellularProofs,
+    private val proofEngine: NativeProverEngine? = null,
 ) {
+    /**
+     * The native prover [tracker] built over [proofEngine], or `null` without one: its `progress` and `traffic` are what
+     * a progress screen and a traffic counter read, its `cancel` what a Cancel button calls.
+     */
+    @Volatile var prover: NativeNotaryProver? = null
+        private set
+
     /** The tracker [tracker] built last; the host's [importSteamSession] and [onLogout] go through it once there is one. */
     @Volatile private var built: P2pTracker? = null
 
@@ -165,6 +180,17 @@ class MobileTracker(
         // The session is the vault's, through the client's jar: one `steamLoginSecure` and one `sessionid` per request.
         val offerCreator = HeaderSessionSteamOfferCreator(steamHttp, cookies, community, Cs2GameAdapter(config.game))
         val offerCanceller = HeaderSessionSteamOfferCanceller(steamHttp, cookies, community)
+        // One prover for the process: its semaphore is the device's proof cap across accounts' loops.
+        val notary = proofEngine?.let {
+            NativeNotaryProver(
+                config = config.notary,
+                tokenProvider = MarketplaceNotaryTokenProvider(platform.marketplaceCredentials),
+                engine = it,
+                clock = platform.clock,
+                minTokenLifetime = MIN_PROOF_TOKEN_LIFETIME,
+            )
+        }
+        prover = notary
         val loopFor: suspend (SteamId, EventObserver) -> TradeTrackerLoop = { account, observer ->
             val stores = platform.stores(account, config)
             TradeTrackerCore(GameRegistry.v1(config.game)).createLoop(
@@ -199,6 +225,7 @@ class MobileTracker(
                 notaryThrottle = stores.notaryThrottle,
                 loopState = stores.loopState,
                 eventObserver = observer,
+                notary = notary ?: NoOpNotaryProver,
                 directivesEnabled = true,
                 leaseClock = platform.elapsedClock,
             )
@@ -221,5 +248,10 @@ class MobileTracker(
                 DeviceRegistry(it, platform.surface.platformWireName, clientVersion, steamWrites)
             },
         ).also { built = it }
+    }
+
+    private companion object {
+        /** The bar the headless tracker's proofs and every create meet: no proof starts on a token closer to its expiry. */
+        val MIN_PROOF_TOKEN_LIFETIME: Duration = 30.minutes
     }
 }

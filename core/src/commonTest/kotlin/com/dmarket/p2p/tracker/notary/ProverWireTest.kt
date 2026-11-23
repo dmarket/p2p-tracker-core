@@ -123,3 +123,58 @@ class ProverWireTest {
         assertTrue(SESSION_ID_PLACEHOLDER in unfilled)
     }
 }
+
+/** The C ABI's JSON (`client-cffi/src/config.rs`): one mode's limits, snake_case, a policy with every field set. */
+class NativeProverJsonTest {
+    private val spec = SteamProofReadMapper(NotaryConfig()).readSpec(
+        source = TradeStatusSource.HISTORY,
+        binding = ProvenReadBinding(dealId = DealId("d1"), tradeId = TradeId("trade-1")),
+        subjectSteamId = SteamId("76561198000000001"),
+        adapter = Cs2GameAdapter(),
+    )
+    private val request = ProveRequest(
+        notaryUrl = "wss://notary.test/",
+        notaryToken = "dmarket-token",
+        proxyBaseUrl = "wss://proxy.test",
+        spec = spec,
+        steamAccessToken = "steam-token",
+        maxSentData = 4_096,
+        maxRecvData = 16_384,
+        maxRecvDataOnline = 512,
+        maxRecvRecordsOnline = 3,
+    )
+
+    private fun json(text: String) = kotlinx.serialization.json.Json.parseToJsonElement(text) as kotlinx.serialization.json.JsonObject
+
+    @Test
+    fun mpc_config_carries_the_request_and_the_mpc_limits_only() {
+        val config = json(nativeConfigJson(IssuanceMode.MPC, request))
+        assertEquals(setOf("abi_version", "server_name", "request", "mpc"), config.keys)
+        assertEquals("1", config["abi_version"].toString())
+        val mpc = config["mpc"] as kotlinx.serialization.json.JsonObject
+        assertEquals(setOf("max_sent_data", "max_recv_data", "max_recv_data_online", "max_recv_records_online"), mpc.keys)
+        assertEquals("512", mpc["max_recv_data_online"].toString())
+        val http = config["request"] as kotlinx.serialization.json.JsonObject
+        assertTrue("steam-token" in http["uri"].toString())
+        assertEquals("[]", http["headers"].toString())
+    }
+
+    @Test
+    fun proxy_config_carries_the_plaintext_limits_and_pem_roots_become_der_hex() {
+        val pem = "-----BEGIN CERTIFICATE-----\nAAEC\n/w==\n-----END CERTIFICATE-----\n"
+        val config = json(nativeConfigJson(IssuanceMode.PROXY, request.copy(rootStorePem = pem)))
+        assertEquals(setOf("max_sent_data", "max_recv_data"), (config["proxy"] as kotlinx.serialization.json.JsonObject).keys)
+        assertTrue("mpc" !in config)
+        assertEquals("[\"000102ff\"]", config["roots_der_hex"].toString())
+    }
+
+    @Test
+    fun the_policy_sets_every_field_and_withholds_the_target() {
+        val policy = json(nativePolicyJson(spec.proverRevealPolicy()))
+        assertEquals("false", policy["reveal_request_target"].toString())
+        assertTrue("redact_request_header_values" in policy && "reveal_response_headers" in policy && "body" in policy)
+        val all = json(nativePolicyJson(spec.proverRevealPolicy().copy(responseBody = ResponseBodyReveal.All)))
+        assertEquals("\"all\"", all["body"].toString())
+        assertTrue("json_paths" !in all)
+    }
+}

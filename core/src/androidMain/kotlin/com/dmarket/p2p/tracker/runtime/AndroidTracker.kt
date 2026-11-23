@@ -2,11 +2,14 @@ package com.dmarket.p2p.tracker.runtime
 
 import android.content.Context
 import com.dmarket.p2p.tracker.adapter.WebViewSteamCookies
+import com.dmarket.p2p.tracker.adapter.notary.OkHttpNativeProverEngine
 import com.dmarket.p2p.tracker.client.marketplace.androidMarketplaceClient
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
+import com.dmarket.p2p.tracker.notary.NativeNotaryProver
+import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -53,6 +56,8 @@ object AndroidTracker {
      * @param reportUnsentCreates whether a `create_offer` that never reached Steam is reported `failed`.
      * @param backgroundProofs the user's "background checks on mobile data" option: the opt-in for a wake or a
      *   background cycle, and the heartbeat's `backgroundProveAllowed`; defaults to [cellularProofs].
+     * @param nativeProofs whether decisive transitions are proven with the native TLSN prover (notary over [hostOkHttp]'s
+     *   WebSocket, Steam over TCP); off by default, which keeps the no-op prover. See [prover].
      */
     fun install(
         context: Context,
@@ -64,6 +69,7 @@ object AndroidTracker {
         steamWrites: Boolean = false,
         reportUnsentCreates: Boolean = true,
         backgroundProofs: () -> Boolean = cellularProofs,
+        nativeProofs: Boolean = false,
     ) = install(
         AndroidTrackerPlatform(context, tokens),
         linkedAccount,
@@ -73,6 +79,7 @@ object AndroidTracker {
         steamWrites,
         reportUnsentCreates,
         backgroundProofs,
+        if (nativeProofs) OkHttpNativeProverEngine(hostOkHttp ?: OkHttpClient()) else null,
     )
 
     /** [install] over a ready [platform]; host tests build it over fake prefs and a fake Keystore. */
@@ -85,6 +92,7 @@ object AndroidTracker {
         steamWrites: Boolean = false,
         reportUnsentCreates: Boolean = true,
         backgroundProofs: () -> Boolean = cellularProofs,
+        proofEngine: NativeProverEngine? = null,
     ) {
         installation = MobileTracker(
             platform = platform,
@@ -99,8 +107,15 @@ object AndroidTracker {
             steamWrites = steamWrites,
             reportUnsentCreates = reportUnsentCreates,
             backgroundProofs = backgroundProofs,
+            proofEngine = proofEngine,
         )
     }
+
+    /**
+     * The native prover once the tracker is built with `nativeProofs`, else `null`: `progress` (stage, fraction, bytes
+     * per running proof) for the progress screen, `traffic` for the data counter, `cancel(dealId)` for its Cancel.
+     */
+    val prover: NativeNotaryProver? get() = installation?.prover
 
     /**
      * The app's user just signed in to Steam in the app's WebView (`steamSignedIn`, a Steam sign-in to DMarket
