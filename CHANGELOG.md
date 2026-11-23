@@ -41,6 +41,7 @@ GitHub Release.
 
 ### Changed
 
+- The bundled TLSN prover is `@dmarket/steam-provenance` 1.2.0 (`GIT_SHA` 21864905497b64532eb2b40efa99a56695a9a895); `pkg/` and `transport/` are unchanged (DMA-540).
 - The mobile tracker is assembled in common code: `MobileTracker` over a `MobileTrackerPlatform`, which `AndroidTrackerPlatform` now extends. `AndroidTrackerStores` is renamed `MobileTrackerStores`; `AndroidTracker.install` is unchanged (DMA-661).
 - Android: `P2pTrackerWorker` gives each wake 9 minutes and puts its outcome in the work's output data (`outcome`, `cause`) (DMA-540).
 - `WakeAcknowledger.acknowledge` takes the wake id and its `WakeOutcome` (DMA-540).
