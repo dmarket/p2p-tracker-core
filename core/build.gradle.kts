@@ -43,6 +43,8 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.androidx.work.runtime.ktx)
+            // The native TLSN prover (the steam-provenance C ABI + our JNI layer), published as its own AAR.
+            implementation(project(":prover-android"))
         }
         jsMain.dependencies {
             implementation(libs.ktor.client.js)

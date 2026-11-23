@@ -38,3 +38,6 @@ vanniktech-maven-publish-plugin = { module = "com.vanniktech:gradle-maven-publis
 [plugins]
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+# Loaded on the root classpath beside the Kotlin plugin, for the same reason: the plain Android library
+# (:prover-android) runs AGP's built-in Kotlin, which needs KGP and AGP in one class loader.
+android-library = { id = "com.android.library", version.ref = "androidGradlePlugin" }

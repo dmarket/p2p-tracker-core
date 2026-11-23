@@ -80,3 +80,22 @@ links additional third-party crates beyond TLSNotary (its full transitive depend
 does not enumerate them. The `@dmarket/steam-provenance` package does: its `THIRD_PARTY_NOTICES.md` is
 generated from the crate graph the `.wasm` is compiled from and reproduces each crate's license notice.
 Read it from the pinned version (`npm pack @dmarket/steam-provenance@1.2.0`).
+
+---
+
+## TLSN prover for Android — from `@dmarket/steam-provenance`
+
+The Maven artifact `com.dmarket.p2p:trade-tracker-prover-android` (an AAR, pulled in by
+`trade-tracker-core`'s Android variant) **redistributes** the prover's C ABI for Android from the same pinned
+npm release: `jni/<abi>/libprovenance_client_cffi.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, byte for
+byte as the package ships them under `native/android/`. The build checks each against the SHA-256 the
+package's `native/android/BUILD.json` lists and against the source commit (`gitHead`
+`21864905497b64532eb2b40efa99a56695a9a895`).
+
+**License.** The same `Apache-2.0 OR MIT` terms as the WASM prover above. The shared libraries statically
+link Rust crates and the Rust standard library; the package's notices for them are reproduced unchanged:
+
+- [`licenses/steam-provenance-android/THIRD_PARTY_NOTICES.md`](licenses/steam-provenance-android/THIRD_PARTY_NOTICES.md)
+- [`licenses/steam-provenance-android/RUST_STDLIB_LICENSE.html`](licenses/steam-provenance-android/RUST_STDLIB_LICENSE.html)
+
+The build fails if these copies differ from the pinned package's.
