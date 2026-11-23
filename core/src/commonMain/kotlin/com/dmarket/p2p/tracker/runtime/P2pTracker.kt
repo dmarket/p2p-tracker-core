@@ -90,6 +90,8 @@ import kotlin.time.TimeSource
  * @param random the draws behind the 429 backoff's jitter.
  * @param clearAccountState what [onLogout] erases: the account's state, the Steam credential and the Steam session's
  *   cookies, never the device id.
+ * @param eraseProofs erases the end-of-deal proofs the device keeps ([clearStoredProofs]); also run when
+ *   [linkedAccount] answers `null` (the user unlinked Steam).
  * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
  * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
@@ -112,6 +114,7 @@ class P2pTracker(
     random: Random = Random.Default,
     private val deliveryTimeout: Duration = DEFAULT_DELIVERY_TIMEOUT,
     private val clearAccountState: suspend () -> Unit = {},
+    private val eraseProofs: suspend () -> Unit = {},
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
     private val deviceRegistry: DeviceRegistry? = null,
     private val backgroundProofs: () -> Boolean = cellularProofs,
@@ -222,6 +225,9 @@ class P2pTracker(
         resetDmarketCooldown(null)
         clearAccountState()
     }
+
+    /** Erases the end-of-deal proofs this device keeps for the current account (D2): the app calls it on logout. */
+    suspend fun clearStoredProofs() = eraseProofs()
 
     /**
      * The app's user signed in to Steam in the app (`steamSignedIn`): [cookies] become the Steam session, in place of
@@ -483,6 +489,14 @@ class P2pTracker(
             return startFault(e)
         } ?: run {
             stopLocked()
+            // An unlink: the account's proofs go with it (D2). A logout and a switch erase the whole account store. A
+            // storage fault here must not fail the stop; the next start erases again.
+            try {
+                eraseProofs()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+            }
             return null
         }
         session?.takeIf { it.account == account && it.job.isActive }?.let { return it }

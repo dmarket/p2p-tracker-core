@@ -147,6 +147,12 @@ class MobileTracker(
     }
 
     /**
+     * Erases the end-of-deal proofs this device keeps for the current account (D2), whatever the tracker's state.
+     * Logout ([onLogout]), a Steam account switch and an unlink erase them too.
+     */
+    suspend fun clearStoredProofs() = platform.clearStoredProofs()
+
+    /**
      * A new [P2pTracker] in [scope]. The loop is never scheduled: the tracker drives it, on screen by polling and in
      * the background only on a push. [P2pTracker.onLogout] erases the account state and the Steam credential.
      */
@@ -228,6 +234,7 @@ class MobileTracker(
                 notary = notary ?: NoOpNotaryProver,
                 directivesEnabled = true,
                 leaseClock = platform.elapsedClock,
+                proofArchive = stores.proofArchive,
             )
         }
         return P2pTracker(
@@ -241,6 +248,7 @@ class MobileTracker(
             backgroundProofs = backgroundProofs,
             eventObserver = eventObserver,
             clearAccountState = platform::clearAccountState,
+            eraseProofs = platform::clearStoredProofs,
             importSteamCookies = platform::importSteamSession,
             // The core's DMarket client acks and registers; a host client without those routes gets neither.
             acknowledger = marketplace as? WakeAcknowledger ?: NoOpWakeAcknowledger,

@@ -8,11 +8,13 @@ import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
+import com.dmarket.p2p.tracker.loop.PersistedProofArchiveStore
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
+import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -164,6 +166,38 @@ class MobileTrackerTest {
         val stores = platform.stores(checkNotNull(linked))
         stores.loopState.setNextHeartbeatAt(clock.now() + 5.minutes)
         stores.progress.recordHandledDirectives(setOf(DirectiveId("directive-1")))
+    }
+
+    private suspend fun keepAProof(account: SteamId) =
+        platform.stores(account).proofArchive.keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+
+    private fun proofsKept() = platform.account.entries.keys.any { it == PersistedProofArchiveStore.KEY }
+
+    @Test
+    fun storedProofsGoOnLogoutOnASteamAccountSwitchOnAnUnlinkAndOnRequest() = runTest {
+        val tracker = tracker()
+        tracker.start()
+        keepAProof(alice)
+        assertTrue(proofsKept())
+
+        tracker.clearStoredProofs()
+        assertFalse(proofsKept())
+
+        keepAProof(alice)
+        linked = bob
+        tracker.start()
+        assertFalse(proofsKept(), "a Steam account switch")
+
+        keepAProof(bob)
+        linked = null
+        assertFalse(tracker.start())
+        assertFalse(proofsKept(), "an unlink")
+
+        linked = alice
+        tracker.start()
+        keepAProof(alice)
+        tracker.onLogout()
+        assertFalse(proofsKept(), "a logout")
     }
 
     @Test

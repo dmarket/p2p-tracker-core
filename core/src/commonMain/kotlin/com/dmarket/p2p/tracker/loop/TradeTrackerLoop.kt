@@ -500,6 +500,12 @@ class TradeTrackerLoop(
      * was sent. `null` (web, headless) turns the fence off.
      */
     private val leaseClock: ElapsedClock? = null,
+    /**
+     * Where an end-of-deal proof goes after it was sent ([ProofArchiveStore.endsDeal]): mobile keeps it 30 days from
+     * the deal's final status. Pruned by expiry before each transition proof pass. [NoProofArchive] (web, headless)
+     * keeps nothing.
+     */
+    private val proofArchive: ProofArchiveStore = NoProofArchive,
 ) {
     init {
         // A proven write is a write the PROVER performs — TLSN requires the prover to be the TLS client, so
@@ -3375,6 +3381,8 @@ class TradeTrackerLoop(
         // attests 12, and letting that release a report of 3 is the money bug in reverse. The report simply
         // waits one cycle, by which point either the mark is satisfied or a real change is detected.
         val demandedAxes = freshness.demands.mapTo(HashSet()) { it.dealId to FreshProofDemand.AXIS }
+        // The archive is the device's copy, never a reason to fail the pass.
+        if (plan.proofIntents.isNotEmpty()) runCatching { proofArchive.prune(clock.now()) }
         for (intent in plan.proofIntents) {
             if ((intent.dealId to intent.source) in demandedAxes) {
                 emit(LifecycleEvent.ProofSuppressed(intent.dealId.value, intent.source.wireName, SUPERSEDED_BY_DEMAND))
@@ -3435,7 +3443,7 @@ class TradeTrackerLoop(
             mintedThisCycle = true
             // Null means the backend never saw the proof — generation or delivery failed, and the attempt has
             // already had its say (ProofFailed, the breaker fold, any budget lesson). Retry next tick.
-            val result = mintAndSubmit(binding, intent.source, credential, now, onlineBudgets) ?: run {
+            val result = mintAndSubmit(binding, intent.source, credential, now, onlineBudgets, archive = intent) ?: run {
                 proofFailed += intent.dealId to intent.source
                 // The backend never saw it, so it will never rule on it — same standing as a skip that
                 // submitted nothing. Report the transition unproven and keep retrying the proof.
@@ -3685,6 +3693,7 @@ class TradeTrackerLoop(
         now: Instant,
         onlineBudgets: MutableMap<DealId, Int>,
         demanded: Boolean = false,
+        archive: ProofIntent? = null,
     ): ProofResult? {
         val attemptStartedAt = clock.now()
         // The whole ProofResult, not just its Boolean: the backend's `reason` is the only text that says WHY a
@@ -3692,7 +3701,13 @@ class TradeTrackerLoop(
         // naming the exact defect — invisible to every consumer of the event stream.
         val outcome = runCatching {
             val proof = notary.proveTransition(binding, source, credential)
-            submitForVerdict(proof)
+            submitForVerdict(proof).also {
+                // Sent, whatever the verdict: the device keeps its copy of an end-of-deal proof (D2). [now] is the
+                // cycle that read the final status and proved it, which is when the retention starts.
+                if (archive != null && ProofArchiveStore.endsDeal(archive.source, archive.steamStatusCode)) {
+                    runCatching { proofArchive.keep(archive.dealId, archive.source, archive.steamStatusCode, proof.proofPayload, now) }
+                }
+            }
         }
         // Generation or delivery failed — the backend never saw the proof: retry next tick.
         val result = outcome.getOrElse { failure ->

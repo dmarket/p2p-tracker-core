@@ -140,6 +140,14 @@ object AndroidTracker {
         installation?.onLogout()
     }
 
+    /**
+     * Erases the end-of-deal proofs the device keeps for the current account ([MobileTracker.clearStoredProofs]).
+     * [onLogout], a Steam account switch and an unlink erase them too. Before [install] it does nothing.
+     */
+    suspend fun clearStoredProofs() {
+        installation?.clearStoredProofs()
+    }
+
     /** The tracker, built on the first call; later calls return the same one, whatever they pass. */
     internal fun trackerFor(
         baseUrl: String,

@@ -40,6 +40,7 @@ GitHub Release.
 - The mobile heartbeat sends the `wakeId` it answers and `trackerState.network` and `trackerState.backgroundProveAllowed` (DMA-540).
 - New lifecycle event `WakeFinished`; `WakeReceived` gains `wakeId`, `transactionId`, `reason` and `expired` (DMA-540).
 - Android: `AndroidTracker.install(nativeProofs = true)` proves decisive transitions with the native TLSN prover over the host's `OkHttpClient`, in `NotaryConfig.mode` `mpc` or `proxy`; off by default. `AndroidTracker.prover` (`NativeNotaryProver`) gives `progress` and `traffic` per proof and `cancel(dealId)`, which ends the proof with `PROOF_CANCELLED_REASON` (DMA-540).
+- Mobile: the tracker keeps each end-of-deal proof it sent for 30 days from the deal's final status, in the account's storage; logout, a Steam account switch and an unlink erase it. `AndroidTracker.clearStoredProofs()` (`MobileTracker.clearStoredProofs()`, `P2pTracker.clearStoredProofs()`) erases it on demand (DMA-540).
 
 ### Changed
 
