@@ -19,6 +19,7 @@ import com.dmarket.p2p.tracker.loop.InMemoryLoopStateStore
 import com.dmarket.p2p.tracker.loop.InMemoryTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.LoopStateStore
+import com.dmarket.p2p.tracker.loop.NoProofArchive
 import com.dmarket.p2p.tracker.loop.NotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.OfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedDealWriteClaimStore
@@ -26,6 +27,7 @@ import com.dmarket.p2p.tracker.loop.PersistedNotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedOfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
+import com.dmarket.p2p.tracker.loop.ProofArchiveStore
 import com.dmarket.p2p.tracker.loop.SteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.TrackerProgressStore
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
@@ -133,6 +135,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
         scanReceivedOffers: Boolean = false,
         offerVerifier: DmarketOfferVerifier? = null,
         leaseClock: ElapsedClock? = null,
+        proofArchive: ProofArchiveStore = NoProofArchive,
     ): TradeTrackerLoop {
         val provider = SteamCredentialProvider(
             vault = vault,
@@ -170,6 +173,7 @@ class TradeTrackerCore(private val games: GameRegistry = GameRegistry.v1()) {
             scanReceivedOffers = scanReceivedOffers,
             offerVerifier = offerVerifier,
             leaseClock = leaseClock,
+            proofArchive = proofArchive,
         )
     }
 

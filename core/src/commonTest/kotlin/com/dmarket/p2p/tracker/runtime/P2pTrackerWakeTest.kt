@@ -380,9 +380,7 @@ class P2pTrackerWakeTest {
                 tracker.onPush(wake())
                 val sent = setup.marketplace.heartbeatsSent.map { it.backgroundProveAllowed }
                 assertTrue(
-                    sent.isNotEmpty() && sent.all {
-                        it == background
-                    },
+                    sent.isNotEmpty() && sent.all { it == background },
                     "cellular=$cellular background=$background onScreen=$onScreen: $sent",
                 )
             }

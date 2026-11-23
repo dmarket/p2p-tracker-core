@@ -33,4 +33,4 @@ rootProject.name = "dmarket-p2p-tracker-core"
 // Each npm package is built from one module: the web extension's from :core alone, the headless tracker's
 // from :headless-js. :headless-js depends on :core, never the reverse, so nothing of it reaches the
 // extension's package.
-include(":domain", ":core", ":debug-harness", ":sdk-node", ":headless-js")
+include(":domain", ":core", ":prover-android", ":debug-harness", ":sdk-node", ":headless-js")

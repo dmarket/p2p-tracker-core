@@ -11,15 +11,18 @@ import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.credential.steam.DeviceVaultKeys
 import com.dmarket.p2p.tracker.loop.DealWriteClaimStore
 import com.dmarket.p2p.tracker.loop.LoopStateStore
+import com.dmarket.p2p.tracker.loop.NoProofArchive
 import com.dmarket.p2p.tracker.loop.NotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.OfferGuardStore
 import com.dmarket.p2p.tracker.loop.PersistedDealWriteClaimStore
 import com.dmarket.p2p.tracker.loop.PersistedLoopStateStore
 import com.dmarket.p2p.tracker.loop.PersistedNotaryProofThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedOfferGuardStore
+import com.dmarket.p2p.tracker.loop.PersistedProofArchiveStore
 import com.dmarket.p2p.tracker.loop.PersistedSteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.PersistedTrackerProgressStore
 import com.dmarket.p2p.tracker.loop.PersistedUnprovenClaimStore
+import com.dmarket.p2p.tracker.loop.ProofArchiveStore
 import com.dmarket.p2p.tracker.loop.SteamWriteThrottleStore
 import com.dmarket.p2p.tracker.loop.TrackerProgressStore
 import com.dmarket.p2p.tracker.loop.UnprovenClaimStore
@@ -182,8 +185,12 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
             offerGuard = PersistedOfferGuardStore(storage),
             throttle = PersistedSteamWriteThrottleStore(limits = tunables.steamWrites, storage = storage),
             notaryThrottle = PersistedNotaryProofThrottleStore(limits = tunables.notary.breaker, storage = storage),
+            proofArchive = PersistedProofArchiveStore(storage),
         )
     }
+
+    /** Erases the end-of-deal proofs the current account keeps (D2); the rest of its state stays. */
+    suspend fun clearStoredProofs() = mutex.withLock { accountStore.remove(PersistedProofArchiveStore.KEY) }
 
     /**
      * Logout: erases every key of the current account's state (stores, and whatever else a later part keeps there,
@@ -246,4 +253,6 @@ class MobileTrackerStores(
     val offerGuard: OfferGuardStore,
     val throttle: SteamWriteThrottleStore,
     val notaryThrottle: NotaryProofThrottleStore,
+    /** The end-of-deal proofs this device sent, kept 30 days from the deal's final status (D2). */
+    val proofArchive: ProofArchiveStore = NoProofArchive,
 )

@@ -202,6 +202,7 @@ class TradeTrackerLoopTest {
         offerVerifier: DmarketOfferVerifier? = null,
         // null keeps LoopConfig's own default (2 s, 4 s, 8 s).
         createDirectiveRetryDelays: List<Duration>? = null,
+        proofArchive: ProofArchiveStore = NoProofArchive,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -247,6 +248,7 @@ class TradeTrackerLoopTest {
             offerGuard = offerGuard,
             scanReceivedOffers = scanReceivedOffers,
             offerVerifier = offerVerifier,
+            proofArchive = proofArchive,
         )
     }
 
@@ -3020,6 +3022,24 @@ class TradeTrackerLoopTest {
     }
 
     private fun simulatedNotaryFailure() = IllegalStateException("simulated /notary failure")
+
+    @Test
+    fun a_sent_end_of_deal_proof_is_kept_on_the_device_and_a_mid_deal_one_is_not() = runTest {
+        for ((code, kept) in listOf(7 to true, 3 to false)) {
+            val offerId = OfferId("offer-1")
+            val archive = PersistedProofArchiveStore()
+            val mp = FakeMarketplaceClient(
+                heartbeatResponse = HeartbeatResponse(
+                    activeTracking = listOf(tracked("d1", offerId.value, proofRequired = true)),
+                    ttlSeconds = 60,
+                ),
+            )
+            loop(marketplace = mp, reader = FakeSteamReadClient(initialOffers = mapOf(offerId to code)), proofArchive = archive).runOnce()
+
+            assertEquals(1, mp.proofsSubmitted.size)
+            assertEquals(if (kept) setOf(DealId("d1")) else emptySet(), archive.dealIds(), "offer $code")
+        }
+    }
 
     @Test
     fun delivered_but_unverified_proof_is_not_retried() = runTest {

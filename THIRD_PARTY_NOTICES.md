@@ -31,9 +31,9 @@ agree with the deployed notary, so correlate the two by `GIT_SHA`.
 
 | Field | Value |
 |---|---|
-| npm package | `@dmarket/steam-provenance@1.1.0-SNAPSHOT.2` (pinned in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt)) |
-| `GIT_SHA` / npm `gitHead` | `a6252789dd3db2db09c80076e32836c653fc5e85` |
-| `BUILD_NUM` / `BUILD_URL` | `2234` / `https://circleci.com/gh/dmarket/steam-provenance/2234` |
+| npm package | `@dmarket/steam-provenance@1.2.0` (pinned in [`build-logic/src/main/kotlin/TlsnProver.kt`](build-logic/src/main/kotlin/TlsnProver.kt)) |
+| `GIT_SHA` / npm `gitHead` | `21864905497b64532eb2b40efa99a56695a9a895` |
+| `BUILD_NUM` / `BUILD_URL` | `2431` / `https://circleci.com/gh/dmarket/steam-provenance/2431` |
 | `TLSN_SUBMODULE_SHA` | `unknown` — the CI packaging does not record it; read the pinned `dep/tlsn` revision from that commit |
 | `CLIENT_WASM_VERSION` / `TRANSPORT_VERSION` | `0.1.0` / `0.2.0` |
 | Notary subprotocol | `tlsn.notary.v2`; `tlsn.notary.egress.v1` for Worker egress |
@@ -79,4 +79,24 @@ corresponding license texts are reproduced here:
 links additional third-party crates beyond TLSNotary (its full transitive dependency tree). This file
 does not enumerate them. The `@dmarket/steam-provenance` package does: its `THIRD_PARTY_NOTICES.md` is
 generated from the crate graph the `.wasm` is compiled from and reproduces each crate's license notice.
-Read it from the pinned version (`npm pack @dmarket/steam-provenance@1.1.0-SNAPSHOT.2`).
+Read it from the pinned version (`npm pack @dmarket/steam-provenance@1.2.0`).
+
+---
+
+## TLSN prover for Android — from `@dmarket/steam-provenance`
+
+The Maven artifact `com.dmarket.p2p:trade-tracker-prover-android` (an AAR, pulled in by
+`trade-tracker-core`'s Android variant) **redistributes** the prover's C ABI for Android from the same pinned
+npm release: `jni/<abi>/libprovenance_client_cffi.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, byte for
+byte as the package ships them under `native/android/`. The build checks each against the SHA-256 the
+package's `native/android/BUILD.json` lists and against the source commit (`gitHead`
+`21864905497b64532eb2b40efa99a56695a9a895`). The AAR's other native library, `libprovenance_jni.so`, is
+built from this repository.
+
+**License.** The same `Apache-2.0 OR MIT` terms as the WASM prover above. The shared libraries statically
+link Rust crates and the Rust standard library; the package's notices for them are reproduced unchanged:
+
+- [`licenses/steam-provenance-android/THIRD_PARTY_NOTICES.md`](licenses/steam-provenance-android/THIRD_PARTY_NOTICES.md)
+- [`licenses/steam-provenance-android/RUST_STDLIB_LICENSE.html`](licenses/steam-provenance-android/RUST_STDLIB_LICENSE.html)
+
+The build fails if these copies differ from the pinned package's.

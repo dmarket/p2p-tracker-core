@@ -9,79 +9,8 @@ import kotlin.js.Date
 import kotlin.js.Promise
 import kotlin.math.roundToInt
 
-/**
- * One prove-and-present request handed to a [WasmProverModule]: everything needed to run a single
- * issuance and build the selective-disclosure `Presentation`.
- *
- * [steamAccessToken] is the on-device Steam JWT that authenticates the proven `IEconService` read. It is
- * substituted into the [ProvenReadSpec.path]'s `{token}` slot here, at the IO edge — which is why the spec
- * itself stays credential-free — and it is withheld from the resulting proof because the spec sets
- * `revealRequestTarget = false`.
- */
-data class WasmProveRequest(
-    val notaryUrl: String,
-    val notaryToken: String,
-    val proxyBaseUrl: String,
-    val spec: ProvenReadSpec,
-    val steamAccessToken: String,
-    val maxSentData: Int,
-    val maxRecvData: Int,
-    /**
-     * Response bytes preprocessed for ONLINE decryption; the rest of the body is decrypted deferred. See
-     * `NotaryConfig.maxRecvDataOnline` — the artifact's own default is 2 KiB, and raising it above the real
-     * response size is what takes the body off the deferred path.
-     */
-    val maxRecvDataOnline: Int,
-    /**
-     * Response **records** preprocessed for online decryption, or `null` to send no key and keep the
-     * artifact's own contract default. See `NotaryConfig.maxRecvRecordsOnline` for why `null` is the
-     * default rather than a number: upstream documents no figure for this cap, so a guess could lower it.
-     *
-     * Nullable, unlike [maxRecvDataOnline] beside it, for exactly that reason — the two bound the same
-     * phase but only one of them has a known default to mirror.
-     */
-    val maxRecvRecordsOnline: Int? = null,
-    /**
-     * PEM roots to verify the TARGET's certificate chain against, or `null` to keep the prover's bundled
-     * Mozilla set. See `NotaryConfig.rootStorePem`: non-null is a test-fixture affordance, never production.
-     */
-    val rootStorePem: String? = null,
-    /**
-     * The Steam **web session** `cookie` header value for a cookie-authenticated request, or `null` for the
-     * token-authed reads (which send no cookie at all).
-     *
-     * Substituted into the spec's `{cookie}` slots here, at the IO edge — which is why the spec stays
-     * credential-free — and withheld from the presentation because the header's name is in
-     * `ProvenReadSpec.redactRequestHeaderValues`.
-     */
-    val steamSessionCookie: String? = null,
-    /**
-     * Steam's `sessionid` anti-CSRF token for a community write, or `null` for every read.
-     *
-     * ⚠️ Unlike every other credential on this path, this one is **disclosed** by the resulting proof: it
-     * occupies the request body, and the pinned prover's `RevealPolicy` has no request-body control. See
-     * `SESSION_ID_PLACEHOLDER`.
-     */
-    val steamSessionId: String? = null,
-    val transport: String = "direct",
-) {
-    /**
-     * Redacted: this request carries the Steam access token, the notary bearer token, and — for a community
-     * request — the Steam web session cookie and `sessionid`.
-     *
-     * The `sessionid` is redacted here even though the *proof* discloses it. The two are unrelated: a proof is
-     * a document a verifier receives under a policy, a log line is a string that lands in a crash reporter.
-     *
-     * The PEM is described rather than printed — a root certificate is public, but it is a multi-kilobyte
-     * blob and pasting it into every log line of a failing proof helps nobody.
-     */
-    override fun toString(): String = "WasmProveRequest(notaryUrl=$notaryUrl, notaryToken=<redacted>, proxyBaseUrl=$proxyBaseUrl, " +
-        "transport=$transport, spec=$spec, steamAccessToken=<redacted>, maxSentData=$maxSentData, maxRecvData=$maxRecvData, " +
-        "maxRecvDataOnline=$maxRecvDataOnline, maxRecvRecordsOnline=$maxRecvRecordsOnline, " +
-        "rootStorePem=${rootStorePem?.let { "<${it.length} chars>" }}, " +
-        "steamSessionCookie=${steamSessionCookie?.let { "<redacted>" }}, " +
-        "steamSessionId=${steamSessionId?.let { "<redacted>" }})"
-}
+/** The request type the web prover has always taken, now shared with the native one ([ProveRequest]). */
+typealias WasmProveRequest = ProveRequest
 
 /**
  * The thin, injectable seam over the steam-provenance wasm prover (`client-wasm`) + its WebSocket
@@ -325,133 +254,94 @@ private fun targetStatus(issued: dynamic): Int? {
 private fun asByteArray(bytes: dynamic): ByteArray =
     js("new Int8Array(bytes.buffer, bytes.byteOffset, bytes.length)").unsafeCast<ByteArray>()
 
-// The three wire objects handed to the wasm. Top-level and `internal` rather than private methods so
-// the contract test can assert the REAL objects against the real module — a hand-copied expectation in
-// a test proves only that the copy matches itself, which is exactly how the missing `revealRequestTarget`
-// went unnoticed.
+// The wire objects handed to the wasm. Top-level and `internal` rather than private methods so the contract test
+// can assert the REAL objects against the real module — a hand-copied expectation in a test proves only that the
+// copy matches itself, which is exactly how the missing `revealRequestTarget` went unnoticed. Every value comes
+// from the typed commonMain wire (`ProverWire.kt`), which the native prover maps too; these only build objects.
 
 internal fun issuanceConfig(request: WasmProveRequest): dynamic {
+    val mpc = request.mpcIssuance()
     val issuance: dynamic = js("({})")
-    issuance.serverName = request.spec.serverName
-    issuance.maxSentData = request.maxSentData
-    issuance.maxRecvData = request.maxRecvData
-    // Always set, unlike `rootStore` below: this one has a numeric artifact default (2 KiB) that our config
-    // mirrors, so writing it explicitly makes the effective value visible in the trace line instead of implied
-    // by the artifact build. An absent key here would mean "whatever build 423 happens to default to", which is
-    // the value this experiment is about.
-    // Clamped, because the two caps are now set independently: a read that raises `maxRecvData` is fine, but
-    // the online budget is a slice of the receive ceiling, and a value above it is a config that cannot mean
-    // what it says. Upstream enforces the same invariant, so an unclamped value is a rejected issuance rather
-    // than a subtle one.
-    issuance.maxRecvDataOnline = minOf(request.maxRecvDataOnline, request.maxRecvData)
-    // Set ONLY when configured, and NOT clamped against anything — the opposite treatment to the byte budget
-    // one line up, for the reason `NotaryConfig.maxRecvRecordsOnline` gives: this cap has no documented default
-    // to mirror and no stated relation to the byte caps, so an absent key means "whatever the artifact's own
-    // contract default is" — which is the value every deployment before this field ran on — and a written key
-    // means an operator chose a number deliberately. Clamping it against a byte count would be arithmetic
-    // between two different units, which is how a config stops meaning what it says.
-    request.maxRecvRecordsOnline?.let { issuance.maxRecvRecordsOnline = it }
-    // Set ONLY when configured. The wasm's `RootStore` is `"mozilla" | { pem }` and an ABSENT key keeps the
-    // bundled Mozilla web-PKI set — which is what production runs on, so the untouched path stays byte-for-byte
-    // what every deployment before this had. Writing `"mozilla"` explicitly would be the same thing said less
-    // safely: a typo in that literal is a rejected config rather than a default.
-    request.rootStorePem?.let { pem ->
-        val store: dynamic = js("({})")
-        store.pem = pem
-        issuance.rootStore = store
-    }
+    issuance.serverName = mpc.serverName
+    issuance.maxSentData = mpc.maxSentData
+    issuance.maxRecvData = mpc.maxRecvData
+    // Always set: it has a numeric artifact default (2 KiB) our config mirrors, so the effective value shows in the
+    // trace line instead of being implied by the artifact build.
+    issuance.maxRecvDataOnline = mpc.maxRecvDataOnline
+    // Set ONLY when configured: an absent key keeps the artifact's own contract default.
+    mpc.maxRecvRecordsOnline?.let { issuance.maxRecvRecordsOnline = it }
+    // Set ONLY when configured: the wasm's `RootStore` is `"mozilla" | { pem }`, and an absent key keeps the bundled
+    // Mozilla set production runs on.
+    mpc.rootStorePem?.let { issuance.rootStore = pemRootStore(it) }
     return issuance
 }
 
 /** Proxy has nested plaintext limits and no MPC preprocessing knobs or client-selected route. */
 internal fun proxyIssuanceConfig(request: WasmProveRequest): dynamic {
+    val proxy = request.proxyIssuance()
     val config: dynamic = js("({})")
-    config.serverName = request.spec.serverName
+    config.serverName = proxy.serverName
     val limits: dynamic = js("({})")
-    limits.maxSentData = request.maxSentData
-    limits.maxRecvData = request.maxRecvData
+    limits.maxSentData = proxy.maxSentData
+    limits.maxRecvData = proxy.maxRecvData
     config.limits = limits
-    request.rootStorePem?.let { pem ->
-        val store: dynamic = js("({})")
-        store.pem = pem
-        config.rootStore = store
-    }
+    proxy.rootStorePem?.let { config.rootStore = pemRootStore(it) }
     return config
 }
 
-internal fun httpRequest(request: WasmProveRequest): dynamic {
-    val spec = request.spec
-    val httpRequest: dynamic = js("({})")
-    httpRequest.method = spec.method
-    // The one place the Steam token is joined to the request. `client_core::issue` injects `Host`,
-    // `Accept-Encoding: identity` and `Connection: close` itself, so those are never added here.
-    httpRequest.uri = spec.path.replace(TOKEN_PLACEHOLDER, request.steamAccessToken)
+private fun pemRootStore(pem: String): dynamic {
+    val store: dynamic = js("({})")
+    store.pem = pem
+    return store
+}
 
-    // Headers exist for the cookie-authenticated community surface, which was unreachable while this function
-    // sent none: the prover accepts `headers?: [string, string][]` and nothing here ever filled it, so a read
-    // authenticating by `steamLoginSecure` could not be proven at all.
-    //
-    // Still NO `headers` key when the spec names none — which is every token-authed read, i.e. both trade
-    // axes. They authenticate by query parameter, so an absent key states "this request adds none" more
-    // plainly than an empty array, and it keeps that path byte-for-byte what it was.
-    if (spec.sendHeaders.isNotEmpty()) {
+internal fun httpRequest(request: WasmProveRequest): dynamic {
+    val http = request.proverHttpRequest()
+    val httpRequest: dynamic = js("({})")
+    httpRequest.method = http.method
+    httpRequest.uri = http.uri
+    // NO `headers` key when the read sends none (every token-authed read, both trade axes included): an absent key
+    // states "this request adds none" more plainly than an empty array, and keeps that path byte-for-byte as it was.
+    if (http.headers.isNotEmpty()) {
         val headers = js("([])")
-        spec.sendHeaders.forEach { header ->
+        http.headers.forEach { (name, value) ->
             val pair = js("([])")
-            pair.push(header.name)
-            pair.push(header.valueTemplate.fillCredentials(request))
+            pair.push(name)
+            pair.push(value)
             headers.push(pair)
         }
         httpRequest.headers = headers
     }
-    // Same discipline for the body: absent unless the spec has one, so a GET is unchanged. A write's body is
-    // the one part of a proven request the presentation cannot withhold — see `SESSION_ID_PLACEHOLDER`.
-    spec.body?.let { body ->
+    // Same for the body: absent unless the read has one. A write's body is the one part of a proven request the
+    // presentation cannot withhold — see `SESSION_ID_PLACEHOLDER`.
+    http.body?.let { body ->
         val bytes = js("([])")
-        body.fillCredentials(request).encodeToByteArray().forEach { byte -> bytes.push(byte.toInt() and 0xFF) }
+        body.encodeToByteArray().forEach { byte -> bytes.push(byte.toInt() and 0xFF) }
         httpRequest.body = bytes
     }
     return httpRequest
 }
 
 /**
- * Substitute the IO-edge credential slots — the two that exist so a pure [ProvenReadSpec] can describe a
- * request without holding its secrets.
- *
- * A slot with no value is left as its literal placeholder rather than replaced with `""`: an empty cookie
- * header would produce an *unauthenticated* Steam request that still looks well-formed, and the resulting
- * attestation would faithfully prove a logged-out response. `WasmNotaryProver` fails before this point when a
- * needed credential is missing, so reaching here with one absent is a bug — and a literal `{cookie}` on the
- * wire is a far louder symptom than a silent 401.
- */
-private fun String.fillCredentials(request: WasmProveRequest): String {
-    var filled = this
-    request.steamSessionCookie?.let { filled = filled.replace(COOKIE_PLACEHOLDER, it) }
-    request.steamSessionId?.let { filled = filled.replace(SESSION_ID_PLACEHOLDER, it) }
-    return filled
-}
-
-/**
- * Every field of the wasm `RevealPolicy` is required — a partial policy is rejected at
- * deserialization, not defaulted — so each one is set explicitly from [spec]. That is also the point:
- * a disclosure decision must come from the pure spec, never from a default chosen here.
+ * Every field of the wasm `RevealPolicy` is required — a partial policy is rejected at deserialization, not
+ * defaulted — so each one is set explicitly from the spec's [ProverRevealPolicy].
  */
 internal fun revealPolicy(spec: ProvenReadSpec): dynamic {
+    val reveal = spec.proverRevealPolicy()
     val policy: dynamic = js("({})")
     val redact = js("([])")
-    spec.redactRequestHeaderValues.forEach { redact.push(it) }
+    reveal.redactRequestHeaderValues.forEach { redact.push(it) }
     policy.redactRequestHeaderValues = redact
-    policy.revealRequestTarget = spec.revealRequestTarget
-    policy.revealResponseHeaders = spec.revealResponseHeaders
+    policy.revealRequestTarget = reveal.revealRequestTarget
+    policy.revealResponseHeaders = reveal.revealResponseHeaders
     // The wasm's `BodyReveal` is `"all" | "none" | { jsonPaths }`. `"none"` has no counterpart in
-    // [ResponseBodyReveal] on purpose — a proof disclosing nothing of the response binds no trade — so it is
-    // unreachable from here rather than reachable by an empty list, which is how the old mapping spelled it.
-    val body: dynamic = when (val reveal = spec.responseBodyReveal) {
+    // [ResponseBodyReveal] on purpose: a proof disclosing nothing of the response binds no trade.
+    val body: dynamic = when (val body = reveal.responseBody) {
         ResponseBodyReveal.All -> "all"
         is ResponseBodyReveal.JsonPaths -> {
             val selective: dynamic = js("({})")
             val paths = js("([])")
-            reveal.paths.forEach { paths.push(it) }
+            body.paths.forEach { paths.push(it) }
             selective.jsonPaths = paths
             selective
         }

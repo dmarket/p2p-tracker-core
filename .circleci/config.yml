@@ -52,7 +52,7 @@ version: 2.1
 # releases. Snapshots need no secrets at all.
 #
 # Maven (the Android AARs, plus the JVM/JS/metadata variants, of com.dmarket.p2p:trade-tracker-core and
-# :trade-tracker-domain): publish_maven runs beside publish_npm after the same `hold_release` and uploads to
+# :trade-tracker-domain, and the AAR of :trade-tracker-prover-android, the native prover): publish_maven runs beside publish_npm after the same `hold_release` and uploads to
 # Maven Central through the Sonatype Central Portal (`./gradlew publishToMavenCentral`, plugin
 # com.vanniktech.maven.publish). A stable version becomes a deployment that is released from the Portal;
 # `<x.y.z>-SNAPSHOT` goes to the Central snapshots repository, and a branch snapshot goes there as
@@ -98,6 +98,15 @@ commands:
           paths:
             - ~/.gradle/caches
             - ~/.gradle/wrapper
+  install_prover_ndk:
+    steps:
+      - run:
+          name: Install NDK r30 + CMake 4.1.2 (the native prover's JNI layer)
+          # The image ships the SDK without an NDK. :prover-android builds libprovenance_jni.so with exactly these
+          # (prover-android/build.gradle.kts), and fails any AAR build without them rather than ship one without
+          # the JNI layer. JVM/JS tasks and `check` need neither.
+          # `yes` dies of SIGPIPE once sdkmanager exits; `|| true` keeps that out of the job shell's pipefail.
+          command: (yes || true) | sdkmanager --install "ndk;30.0.16248370" "cmake;4.1.2" > /dev/null
 
 jobs:
   # Single Gradle job: `check` and both JS library distributions share one container, one cache
@@ -116,9 +125,10 @@ jobs:
       # notary the prover talks to (a mismatch surfaces as an opaque MPC failure, not a clean error). See
       # core/PROVER.md.
       - restore_gradle_cache
+      - install_prover_ndk
       - run:
-          name: Check (spotless + JVM/JS tests + kover gate) + both JS library distributions
-          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution --max-workers=2 --no-daemon --stacktrace
+          name: Check (spotless + JVM/JS tests + kover gate) + both JS library distributions + the native prover AAR
+          command: ./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution :prover-android:assembleRelease --max-workers=2 --no-daemon --stacktrace
       - save_gradle_cache
       - run:
           name: Collect test results
@@ -321,6 +331,7 @@ jobs:
       - attach_workspace:
           at: .
       - restore_gradle_cache
+      - install_prover_ndk
       - run:
           name: Publish the Maven artifacts to Maven Central (Sonatype Central Portal)
           command: |

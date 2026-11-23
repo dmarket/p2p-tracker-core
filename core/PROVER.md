@@ -25,7 +25,7 @@ and certificate ceilings retain the prover's finite defaults; the notary also ap
 Tracing identifies `mode=proxy target=notary`. Worker lifecycle, cross-origin isolation, child deadlines
 and concurrency limits still apply.
 
-**Assets:** the pinned 1.1.0-SNAPSHOT.2 package supports MPC, proxy and Worker egress. Selecting proxy
+**Assets:** the pinned 1.2.0 package supports MPC, proxy and Worker egress. Selecting proxy
 with old assets (1.0.1 or earlier, for example through `assetsDir`) fails before WASM compilation, worker
 initialization or the notary upgrade. Headless checks the actual JS exports when creating the tracker; the
 SDK checks once at startup and disables proving with a logged reason on incompatible assets. The bounded
@@ -60,7 +60,7 @@ selects a target address or upstream notary, and never falls back to a direct ro
 
 The package must export `connectEgressNotary` as well as `createProxyProver` / `proveProxy`. A package
 that supports only direct proxy fails before WASM compilation, worker initialization or signing an
-upgrade. The pinned 1.1.0-SNAPSHOT.2 package exports all three; an `assetsDir` override must too.
+upgrade. The pinned 1.2.0 package exports all three; an `assetsDir` override must too.
 
 Egress uses `tlsn.notary.egress.v1` and the existing proxy proof/disclosure API. Browser bearer tokens
 and injected `WebSocketImpl` authentication work as before. A signed gateway must sign the actual
@@ -264,6 +264,153 @@ What would close it: a `revealRequestBody: BodyReveal` on `RevealPolicy`, mirror
 `revealResponseBody`. Raise it against `dmarket/steam-provenance` at the pinned release's `gitHead`; when
 it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the acknowledgement flag.
 
+## The native prover on Android
+
+The same pinned package carries the prover's C ABI for Android under `native/android/`: for `arm64-v8a`,
+`armeabi-v7a` and `x86_64`, `libprovenance_client_cffi.so` (and a `.a` we do not use), the header
+`include/provenance_client.h`, `BUILD.json` (the source commit and the SHA-256 of every file there),
+`toolchain.txt` (NDK r30, API 24) and the notices. It is a blocking C library with no JNI and no transport: the
+JNI layer and the connections are ours. Its contract is `client-cffi/README.md` in steam-provenance at the
+package's `gitHead`.
+
+### Where it ships
+
+The module `:prover-android` (Maven `com.dmarket.p2p:trade-tracker-prover-android`, same `GROUP` and
+`VERSION_NAME`) is a plain `com.android.library`: the Kotlin Multiplatform Android library plugin of AGP 9.3.1 has
+no `externalNativeBuild` and no `ndkVersion`. `:core`'s `androidMain` depends on it, so the app gets it through
+`trade-tracker-core`; the jvm and js targets never see it. Its AAR carries, per ABI,
+`jni/<abi>/libprovenance_client_cffi.so` (the package's bytes, unstripped) and `jni/<abi>/libprovenance_jni.so`
+(ours). AGP's built-in Kotlin needs KGP and AGP in one class loader, so the root build loads
+`com.android.library` with `apply false` beside the Kotlin plugins.
+
+### How the `.so` are checked
+
+`:prover-android:verifyProverNativeLibs` (`VerifyProverNativeLibs` in
+[`build-logic/src/main/kotlin/TlsnProver.kt`](../build-logic/src/main/kotlin/TlsnProver.kt)) runs after
+`:core:verifyTlsnProver` and before anything in the module builds. The package's `SHA256SUMS` does not cover
+`native/`, so the chain is: the lockfile integrity ties the whole tarball to `TlsnProverPin.INTEGRITY`
+(check 1 above), then
+
+1. `BUILD.json`'s `gitHead` equals the installed `package.json`'s `gitHead` and `VERSION`'s `GIT_SHA`, and its
+   platform is `android`;
+2. each `.so`, the header and both notices match the SHA-256 `BUILD.json` lists, and `BUILD.json` lists the
+   library for exactly the three ABIs;
+3. the committed copies under [`../licenses/steam-provenance-android/`](../licenses/steam-provenance-android/)
+   are the package's notices byte for byte.
+
+Any miss fails the build; one changed byte in a `.so` does. The task then stages the libraries as the module's
+generated `jniLibs` and the header for CMake. `packaging.jniLibs.keepDebugSymbols` keeps AGP from stripping the
+package's `.so`, so the AAR holds the bytes `BUILD.json` hashes.
+
+### The JNI layer
+
+`prover-android/src/main/cpp/provenance_jni.c`, built by CMake 4.1.2 with NDK 30.0.16248370 for API 24 and
+`-Wl,-z,max-page-size=16384` (LOAD alignment 0x4000 on every ABI), linked dynamically by name against the
+package's library, which has no SONAME (`DT_NEEDED libprovenance_client_cffi.so`). The NDK and CMake must be
+in the Android SDK (`sdkmanager "ndk;30.0.16248370" "cmake;4.1.2"`; CI installs them). Without them the module
+configures without its native build, so JVM/JS tasks, lint and `check` still run, and `requireProverNdk` fails
+every task that packages native libraries: no AAR builds without `libprovenance_jni.so`.
+
+`NativeProverBridge` (package `com.dmarket.p2p.tracker.adapter.notary`) loads `provenance_client_cffi`, then
+`provenance_jni`, and declares the ABI as `external fun`s over `Long` handles: context, cancel, stream, MPC and
+proxy issuance with a deadline and progress, response and headers, material export/import, presentation and
+`wake`. Every owned buffer is copied into a Java array and freed with `pc_buffer_free` before the call
+returns; a failing call throws `NativeProverException` with a `NativeProverStatus`. Issuance blocks and throws
+`IllegalStateException` on the main thread. `consumer-rules.pro` keeps the names JNI binds.
+
+Streams follow the README's transport contract without entering the JVM from a callback. Each stream's C
+userdata holds a bounded read ring and write ring (64 KiB by default) and one pending token each for read,
+write, flush and close; the five callbacks only copy between the rings and the borrowed buffers, park a token
+when they must wait, and wake an earlier token when a retry succeeds. `NativeProverStream` runs two daemon
+threads over a host `NativeProverTransport` (blocking `read`, `write`, `shutdownOutput`, `close`): the reader
+fills the read ring, the writer drains the write ring to the connection. Both call into C, which calls `pc_wake`
+outside its lock. Flush answers OK only once the write ring is written out; close shuts the write side after
+that. The prover's release (end of issuance, cancellation, timeout, failure, or freeing an unused stream) stops
+both threads and closes the transport; the ring memory is freed when both the prover and the worker have let
+go. The transports and the `NotaryProver` over this are in `:core` (next section).
+
+### The native `NotaryProver`
+
+`NativeNotaryProver` (commonMain, `id = "tlsn"`) holds every rule of a mobile proof; the platform gives only a
+`NativeProverEngine` (connect, issue, present, report what the connections saw). Per proof, in order:
+
+1. a kind outside `NotaryConfig.enabledReads`, `transport = "egress"` (no Worker egress natively) or an engine
+   without its library (`unavailableReason()`: no `.so` for the device's ABI, a `LinkageError` caught once) end at
+   once as `ProofFailure.NotStarted`;
+2. at most `NotaryConfig.maxConcurrency` proofs run (`Semaphore`, one per process); a further one waits;
+3. holding the permit, a Steam token with less than 30 min left ends as `NotStarted` with
+   `PROOF_TOKEN_EXPIRING_REASON`, as `HostedNotaryProver` does for headless;
+4. `prepareProveRequest` (shared with `WasmNotaryProver`) gets the DMarket token for the notary
+   (`MarketplaceNotaryTokenProvider`), the read's spec and the send budget; a failure there is `NotStarted`;
+5. the request becomes the C ABI's JSON in common code (`nativeConfigJson`: `abi_version` 1, `server_name`, the
+   request, `mpc` or `proxy` limits, `roots_der_hex` from `rootStorePem`; `nativePolicyJson`). The policy is
+   always passed: the ABI's default reveals the request target, which carries the Steam token on both trade axes;
+6. the engine issues within 180 s (the extension's `NOTARY_PROOF_TIMEOUT_MS`): past it the coroutine cancels the
+   issuance and the proof is `ProverKilled(SESSION_DEADLINE)`, as is the ABI's own `PC_TIMEOUT`;
+7. the outcome goes through `ProofFailures.classify` (refused upgrade with its status, unreachable notary, version
+   mismatch, notary close code, Steam dial failure or non-2xx response, limits), so the summary keeps the prover's
+   text and the online-budget lesson still reads it.
+
+`cancel(dealId)` ends a running proof as `ProofFailure.Other(PROOF_CANCELLED_REASON)`: a failure, so the loop
+reports the transition unproven and retries later. A cancelled caller cancels the issuance and propagates.
+`progress` (`StateFlow<Map<DealId, ProofProgress>>`: stage 0–6, name, fraction, bytes up/down while it runs) and
+`traffic` (bytes since the prover was built) are for the progress screen and the data counter.
+
+`OkHttpNativeProverEngine` (androidMain) runs each proof on its own context, cancel handle and worker thread. A
+coroutine cancel closes the connections and calls `NativeProverBridge.cancel`, then waits for the worker to free
+every handle.
+
+- **Notary** (`OkHttpNotaryTransport`): a WebSocket on the host's `OkHttpClient` (`AndroidTracker.install`'s
+  `hostOkHttp`, else a plain one; its read timeout lifted), offering `Sec-WebSocket-Protocol: tlsn.notary.v2,
+  bearer.<DMarket token>` (CLIENT_CONTRACT §2). The `101` is awaited before the stream exists, so a 400/401/503
+  keeps its status and no answer reads as unreachable. Binary frames go into the stream's bounded rings; `write`
+  returns only once OkHttp's send queue is empty, so the stream's flush means "on the socket" (OkHttp's queue would
+  also fail the socket above 16 MiB of a ~40–60 MB MPC upload). EOF is only the notary's close: the phase-two
+  attestation runs on the same socket. `shutdownOutput` sends the close frame and keeps reading; the release
+  cancels the socket.
+- **Target** (`LazyTcpTransport`, MPC only): TCP to `serverName:443` through the client's socket factory,
+  `TCP_NODELAY`, dialled on the first write like the web's `lazyTargetChannel` (MPC setup outlasts Steam's idle
+  timeout). Proxy mode opens the notary socket only; the notary dials Steam.
+
+The mode is `NotaryConfig.mode` (`"mpc"` default, `"proxy"`), as on the web. Prover and notary must be on one pin
+(CLIENT_CONTRACT §0). The proxy route is off in the notary's shipped config (`configs/notary.toml`: `proxy = false`);
+steam-provenance's `deployments/proxy-rollout.md` describes a separate dev-02 proxy candidate pool with a
+placeholder image, and nothing for stage-01. So a phone's first proof runs MPC.
+
+It is wired but off: `AndroidTracker.install(nativeProofs = true)` (`MobileTracker(proofEngine = …)`) makes the
+mobile loop prove through it; `AndroidTracker.prover` exposes it.
+
+Host tests cover the common prover with a fake engine (`NativeNotaryProverTest`), the JSON (`NativeProverJsonTest`)
+and both transports against local servers (`NotaryTransportsTest`). A live proof needs a device and a notary.
+
+### Proofs kept on the device (D2)
+
+After an end-of-deal proof reaches `/notary` (sites `offer_declined`, `offer_cancelled`, `trade_completed`,
+`trade_reversed`), the loop keeps its payload (`ProofArchiveStore`, one key of the account store) with the cycle's
+time as the deal's final-status moment: the proof is the read of that status, so its first send is when the device
+saw it (a retried proof starts later by its retry delay). A later final status of the same deal (a reversal after
+completion) moves the expiry. Kept 30 days from that moment, pruned by expiry before each transition proof pass.
+Logout and a Steam account switch erase the account store; an unlink (`linkedAccount()` answers `null`) erases the
+proofs; `clearStoredProofs()` on `P2pTracker`, `MobileTracker` and `AndroidTracker` erases them on demand. The device
+never hands them out: dispute evidence is the backend's. A presentation is a few KB plus the revealed bytes, so 30
+days of deals stay well inside the prefs file. Web and headless keep nothing.
+
+### Testing on a device
+
+Host tests cannot load an Android `.so`. `prover-android/src/androidTest` runs on an emulator or device:
+
+```bash
+ANDROID_SERIAL=emulator-5554 ./gradlew :prover-android:connectedDebugAndroidTest
+```
+
+It loads both libraries, creates and frees handles, releases an unused stream, holds a proxy issuance on a
+pending read over an in-memory loopback until its deadline (`TIMEOUT`), wakes it with served bytes (it then
+fails on them well before its deadline), cancels one, checks the main-thread refusal, and reads malformed
+material as `CODEC`. It does not present real material: the package has no stored material to restore offline
+(steam-provenance's `release/tests/native-fixture.mjs` writes placeholder bytes for packaging tests, and its
+`client-cffi` tests issue material against a live local notary), so a positive `pc_present` needs a fixture
+saved from such a run.
+
 ## Bumping the prover
 
 1. Pick the release: `npm view @dmarket/steam-provenance dist-tags` to find it, then
@@ -279,6 +426,9 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
    `@dmarket/p2p-tracker-headless` alike.
 4. `./gradlew kotlinUpgradeYarnLock` — refreshes your local `kotlin-js-store/yarn.lock`. It is not tracked,
    but when it exists the Kotlin/JS lockfile check fails the build until it matches the new dependency.
+   If `verifyTlsnProver` then reports two package entries in `build/js/yarn.lock`, some generated
+   `package.json` still names the old version (their tasks can stay up to date across the bump): run
+   `./gradlew jsPackageJson jsTestPackageJson --rerun kotlinUpgradeYarnLock` once.
 5. `./gradlew check :core:jsBrowserProductionLibraryDistribution :headless-js:jsNodeProductionLibraryDistribution`
    — the checks above run here; confirm the logged `GIT_SHA` is the one from step 2.
 6. Re-check the package's `pkg/client_wasm.d.ts` against what `WasmProverModule.kt` sends. The
@@ -289,7 +439,11 @@ it lands, wire it through `revealPolicy()` in `WasmProverModule.kt` and drop the
    table, the `SHA-256 (pkg/client_wasm_bg.wasm)` line and the `npm pack` command under *Statically linked
    dependencies*. Then `git grep -n -e '<old version>' -e '<old GIT_SHA>' -e '<old WASM_SHA256>'` must find
    nothing outside `CHANGELOG.md` history.
-8. Add a `CHANGELOG.md` entry naming the new `GIT_SHA`.
+8. Copy `native/android/THIRD_PARTY_NOTICES.md` and `RUST_STDLIB_LICENSE.html` of the new package over
+   [`../licenses/steam-provenance-android/`](../licenses/steam-provenance-android/) (`verifyProverNativeLibs`
+   fails until they match) and update the `gitHead` in the Android section of `THIRD_PARTY_NOTICES.md`.
+   `./gradlew :prover-android:assembleRelease` must pass, and the device test (below) should.
+9. Add a `CHANGELOG.md` entry naming the new `GIT_SHA`.
 
 ## License
 
