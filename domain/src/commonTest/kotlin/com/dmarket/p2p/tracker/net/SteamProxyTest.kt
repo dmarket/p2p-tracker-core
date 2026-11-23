@@ -82,4 +82,13 @@ class SteamProxyTest {
         assertFalse("s3cret" in redacted || "trader" in redacted || "user@" in redacted, redacted)
         assertTrue("http://<redacted>@203.0.113.7:3128" in redacted && "a@b.c" in redacted, redacted)
     }
+
+    @Test
+    fun a_raw_at_sign_in_the_password_is_redacted_with_the_rest_of_the_user_info() {
+        val body = "proxy http://trader:p@ss@203.0.113.7:3128 then https://example.net/a@b?c=d@e"
+        val redacted = NetworkRedaction.redactBody(body).orEmpty()
+        assertFalse("trader" in redacted || "ss@" in redacted, redacted)
+        assertTrue("http://<redacted>@203.0.113.7:3128" in redacted, redacted)
+        assertTrue("https://example.net/a@b?c=d@e" in redacted, "an `@` in a path or query is not user info: $redacted")
+    }
 }

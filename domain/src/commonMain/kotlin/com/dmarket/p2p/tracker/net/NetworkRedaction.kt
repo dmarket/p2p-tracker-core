@@ -145,8 +145,11 @@ object NetworkRedaction {
         )
     }
 
-    /** The user info of a URL, up to its `@`: `scheme://` is kept, everything to the `@` goes. */
-    private val URL_USER_INFO: Regex = Regex("([A-Za-z][A-Za-z0-9+.-]*://)[^\\s/@]+@")
+    /**
+     * The user info of a URL, up to its last `@` before the path: `scheme://` is kept, everything to that `@` goes.
+     * Greedy on purpose, as `SteamProxy.parse` splits on the last `@` and so accepts a raw `@` in the password.
+     */
+    private val URL_USER_INFO: Regex = Regex("([A-Za-z][A-Za-z0-9+.-]*://)[^\\s/?#]+@")
 
     /** Steam Community HTML token attribute (constant — compiled once, not per body). */
     private val LOYALTY_TOKEN_ATTR: Regex = Regex("(data-loyalty_webapi_token=)(\\S+)", IGNORE_CASE)
