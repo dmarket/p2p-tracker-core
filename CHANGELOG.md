@@ -16,6 +16,7 @@ GitHub Release.
 
 ### Added
 
+- Android: `NativeProverBridge` exposes the native TLSN prover (issuance, progress, cancellation, the proven response, saved material and presentation), and `NativeProverStream` runs a prover stream over a host `NativeProverTransport`. Call issuance off the main thread; failures throw `NativeProverException` with a `NativeProverStatus` (DMA-540).
 - The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `platformEd25519Signer` throws `UnsupportedOperationException` for now (DMA-661).
 - Android: the tracker runs. Call `AndroidTracker.install(...)` in `Application.onCreate`, then `startTracker()`; `AndroidTracker.tracker` is a `P2pTracker` with `state`, `setForeground`, `onPush` and `deviceId`. Enqueue each wake push with `P2pTrackerWorker.enqueue(context, payload)`: the core acknowledges it and syncs, and polls only while the app is in the foreground (DMA-661).
 - `PushEnvelopeDto` reads `proveAfter` and `issuedAt`, and `toWakeOrNull()` returns them with the wake. The wake envelope and its ack are provisional until the backend contract defines them (DMA-661).

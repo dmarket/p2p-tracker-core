@@ -90,7 +90,8 @@ The Maven artifact `com.dmarket.p2p:trade-tracker-prover-android` (an AAR, pulle
 npm release: `jni/<abi>/libprovenance_client_cffi.so` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, byte for
 byte as the package ships them under `native/android/`. The build checks each against the SHA-256 the
 package's `native/android/BUILD.json` lists and against the source commit (`gitHead`
-`21864905497b64532eb2b40efa99a56695a9a895`).
+`21864905497b64532eb2b40efa99a56695a9a895`). The AAR's other native library, `libprovenance_jni.so`, is
+built from this repository.
 
 **License.** The same `Apache-2.0 OR MIT` terms as the WASM prover above. The shared libraries statically
 link Rust crates and the Rust standard library; the package's notices for them are reproduced unchanged:

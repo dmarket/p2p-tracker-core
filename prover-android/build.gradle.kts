@@ -7,15 +7,6 @@ plugins {
     id("dmarket.android.library")
 }
 
-android {
-    namespace = "com.dmarket.p2p.tracker.prover"
-    defaultConfig { consumerProguardFiles("consumer-rules.pro") }
-    packaging {
-        // The package's .so ships exactly as BUILD.json hashes it: never stripped on the way into the AAR.
-        jniLibs.keepDebugSymbols += "**/libprovenance_client_cffi.so"
-    }
-}
-
 // The ABIs the package ships and this AAR carries.
 val proverAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
@@ -33,8 +24,50 @@ val verifyProverNativeLibs = tasks.register<VerifyProverNativeLibs>("verifyProve
     includeDir.set(layout.buildDirectory.dir("generated/prover-native/include"))
 }
 
+// The NDK and CMake the JNI layer builds with; the package's .so are built with the same NDK (its toolchain.txt).
+val proverNdk = "30.0.16248370"
+val proverCmake = "4.1.2"
+
+android {
+    namespace = "com.dmarket.p2p.tracker.prover"
+    ndkVersion = proverNdk
+    defaultConfig {
+        consumerProguardFiles("consumer-rules.pro")
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += proverAbis }
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DPROVENANCE_JNILIBS=${verifyProverNativeLibs.get().jniLibsDir.get().asFile}",
+                    "-DPROVENANCE_INCLUDE=${verifyProverNativeLibs.get().includeDir.get().asFile}",
+                )
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = proverCmake
+        }
+    }
+    packaging {
+        // The package's .so ships exactly as BUILD.json hashes it: never stripped on the way into the AAR.
+        jniLibs.keepDebugSymbols += "**/libprovenance_client_cffi.so"
+    }
+}
+
+// The CMake build reads the staged header and libraries.
+tasks.named("preBuild") { dependsOn(verifyProverNativeLibs) }
+
 androidComponents {
     onVariants { variant ->
         variant.sources.jniLibs?.addGeneratedSourceDirectory(verifyProverNativeLibs, VerifyProverNativeLibs::jniLibsDir)
     }
+}
+
+dependencies {
+    // Device tests only (connectedAndroidTest): the bridge needs a device to load its .so.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }

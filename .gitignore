@@ -2,6 +2,8 @@
 .gradle/
 build/
 **/build/
+# CMake/ninja working tree of :prover-android's JNI build
+.cxx/
 !gradle/wrapper/gradle-wrapper.jar
 
 # Kotlin
