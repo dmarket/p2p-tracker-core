@@ -3835,6 +3835,8 @@ class TradeTrackerLoop(
 
     /** Whether resent bytes that came back `verified: false` had landed the first time ([ResentProof]). */
     private suspend fun resentProofLanded(dealId: DealId, reason: String?): Boolean {
+        // p2p's own word about these bytes needs no deal read.
+        if (ResentProof.landed(needsStatusUpdate = null, reason)) return true
         val deal = try {
             marketplace.getDeal(dealId)
         } catch (e: CancellationException) {

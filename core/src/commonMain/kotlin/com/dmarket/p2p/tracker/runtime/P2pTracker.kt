@@ -803,6 +803,9 @@ class P2pTracker(
     ): StatusUpdate {
         val deal = state.value.deals[dealId] ?: DealTrackingState()
         val permit = activePermit(dealId, clock.now())
+        val left = permit?.let { (retries + 1 - it.sessions.coerceAtLeast(1)).coerceAtLeast(0) } ?: retries
+        // Bytes made and not delivered go again with no session, so the app's Retry stays open for them.
+        val resend = session?.loop?.hasUndeliveredProof(dealId) == true
         return StatusUpdate(
             deal.checkedAt,
             observed ?: deal.lastCode,
@@ -810,7 +813,7 @@ class P2pTracker(
             retryAfter,
             failure,
             nextAllowedAt = permit?.until,
-            retryLeft = permit?.let { (retries + 1 - it.sessions.coerceAtLeast(1)).coerceAtLeast(0) } ?: retries,
+            retryLeft = if (resend) left.coerceAtLeast(1) else left,
         )
     }
 

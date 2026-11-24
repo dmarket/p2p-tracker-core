@@ -8,15 +8,16 @@ class ResentProofTest {
     private val wrongPhase = "a deal in AWAITING_TERMINAL is not waiting on a provable transition"
 
     @Test
-    fun the_deal_decides_and_the_reason_only_when_the_deal_says_nothing() {
+    fun the_text_decides_first_then_the_deal_and_anything_else_is_a_refusal() {
         val cases = listOf(
-            Triple(false, wrongPhase, true), // the deal moved on: the first send landed, whatever the text
-            Triple(false, null, true),
-            Triple(true, replayed, false), // the deal still waits on this proof: a real refusal, whatever the text
-            Triple(true, null, false),
-            Triple(null, replayed, true), // no deal read: the text is the fallback
+            Triple(true, replayed, true), // p2p's word about these bytes outranks the deal's one flag
+            Triple(null, replayed, true),
             Triple(null, "THIS PRESENTATION WAS ALREADY ACCEPTED", true),
-            Triple(null, wrongPhase, false),
+            Triple(false, wrongPhase, true), // the deal no longer waits on this side
+            Triple(false, null, true),
+            Triple(true, wrongPhase, false), // the deal still waits: a refusal (wrong_phase stays one until p2p says more)
+            Triple(true, null, false),
+            Triple(null, wrongPhase, false), // no deal read and no word from p2p: a refusal
             Triple(null, null, false),
         )
         for ((needsStatusUpdate, reason, landed) in cases) {

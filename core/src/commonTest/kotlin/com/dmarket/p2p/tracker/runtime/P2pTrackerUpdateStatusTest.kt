@@ -788,8 +788,15 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
-    fun a_resend_dmarket_had_accepted_succeeds_and_one_the_deal_still_waits_on_is_refused() = runTest {
-        for ((needsStatusUpdate, failure) in listOf(false to null, true to UpdateFailure.PROOF_REFUSED)) {
+    fun a_resend_reads_the_text_first_then_the_deal() = runTest {
+        val replayed = "this presentation was already accepted for this deal"
+        val wrongPhase = "a deal in AWAITING_TERMINAL is not waiting on a provable transition"
+        val cases = listOf(
+            Triple(true, replayed, null), // p2p's word about these bytes outranks the deal's one flag
+            Triple(false, wrongPhase, null),
+            Triple(true, wrongPhase, UpdateFailure.PROOF_REFUSED),
+        )
+        for ((needsStatusUpdate, reason, failure) in cases) {
             val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
                 submitProofThrowable = MarketplaceServerErrorException(503)
                 dealForGet = fakeDeal("d1").copy(needsStatusUpdate = needsStatusUpdate)
@@ -798,9 +805,34 @@ class P2pTrackerUpdateStatusTest {
             tracker.updateStatus(deal)
             mp.submitProofThrowable = null
             mp.proofVerified = false
-            mp.proofReason = "this presentation was already accepted for this deal"
+            mp.proofReason = reason
 
-            assertEquals(failure, tracker.updateStatus(deal).failure, "needsStatusUpdate=$needsStatusUpdate")
+            assertEquals(failure, tracker.updateStatus(deal).failure, "needsStatusUpdate=$needsStatusUpdate, reason=$reason")
+        }
+    }
+
+    @Test
+    fun undelivered_bytes_keep_a_retry_open_whatever_the_permit_has_left() = runTest {
+        for (retries in 0..1) {
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+            val notary = FakeNotaryProver().apply { if (retries > 0) proveThrows = IllegalStateException("notary connection dropped") }
+            val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
+                submitProofThrowable =
+                    MarketplaceServerErrorException(503)
+            }
+            val tracker = tracker(Setup(mp, notary = notary, refresh = refresh))
+            repeat(retries) { tracker.updateStatus(deal, retries = retries) } // the first session fails at the notary
+            notary.proveThrows = null
+
+            val undelivered = tracker.updateStatus(deal, retries = retries) // the last session's proof is not delivered
+            mp.submitProofThrowable = null
+            val resent = tracker.updateStatus(deal, retries = retries)
+
+            assertEquals(UpdateFailure.DMARKET, undelivered.failure, "retries=$retries")
+            assertEquals(1, undelivered.retryLeft, "retries=$retries: the permit's sessions are spent, the bytes still go")
+            assertNull(resent.failure, "retries=$retries")
+            assertEquals(0, resent.retryLeft, "retries=$retries: delivered, the permit is spent")
+            assertEquals(retries + 1, notary.proven.size, "retries=$retries: the resend ran no session")
         }
     }
 

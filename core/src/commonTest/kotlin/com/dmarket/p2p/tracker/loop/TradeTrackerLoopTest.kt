@@ -3028,15 +3028,17 @@ class TradeTrackerLoopTest {
     ).apply { submitProofThrowable = MarketplaceServerErrorException(503) }
 
     @Test
-    fun a_resend_refused_is_read_off_the_deal_and_the_reason_only_without_one() = runTest {
+    fun a_resend_refused_is_read_off_the_reason_first_then_off_the_deal() = runTest {
         val replayed = "this presentation was already accepted for this deal"
         val wrongPhase = "a deal in AWAITING_TERMINAL is not waiting on a provable transition"
         data class Case(val needsStatusUpdate: Boolean?, val readFails: Boolean, val reason: String, val verified: Boolean)
         val cases = listOf(
-            Case(needsStatusUpdate = false, readFails = false, wrongPhase, verified = true),
-            Case(needsStatusUpdate = true, readFails = false, replayed, verified = false),
-            Case(needsStatusUpdate = null, readFails = false, replayed, verified = true),
+            // p2p's text outranks the deal's one flag, which another proof of the same deal may hold up
+            Case(needsStatusUpdate = true, readFails = false, replayed, verified = true),
             Case(needsStatusUpdate = null, readFails = true, replayed, verified = true),
+            Case(needsStatusUpdate = false, readFails = false, wrongPhase, verified = true),
+            Case(needsStatusUpdate = true, readFails = false, wrongPhase, verified = false),
+            Case(needsStatusUpdate = null, readFails = false, wrongPhase, verified = false),
             Case(needsStatusUpdate = null, readFails = true, "presentation does not match the deal", verified = false),
         )
         for ((needsStatusUpdate, readFails, reason, verified) in cases) {
@@ -3063,7 +3065,7 @@ class TradeTrackerLoopTest {
             assertEquals(verified, submitted.verified, case)
             assertEquals(reason, submitted.reason, "the backend's text stays on the frame: $case")
             assertEquals(if (verified) 1 else 0, outcome.proofsSubmitted, case)
-            assertEquals(1, mp.getDealCalls, case)
+            assertEquals(if (reason == replayed) 0 else 1, mp.getDealCalls, "the text needs no deal read: $case")
             assertEquals(1, notary.proven.size, case)
             l.runOnce()
             assertEquals(1, notary.proven.size, "a verdict either way: no new session for this transition: $case")

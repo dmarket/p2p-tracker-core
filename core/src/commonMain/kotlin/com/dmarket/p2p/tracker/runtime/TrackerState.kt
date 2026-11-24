@@ -103,6 +103,9 @@ enum class ProofState {
  *   `Retry-After`); `null` when no wait is known, and the app may ask again.
  * @property retryLeft how many more notary sessions the deal's permit allows after its first (the Retry on T-16,
  *   DMA-1016); the `retries` asked for while no permit holds. `0` with [nextAllowedAt] set: the next run waits for it.
+ *   At least `1` while a proof made for the deal was not delivered (within its hour), spent permit or not: the next run
+ *   sends those bytes again with no notary session. A 429 on that delivery is [UpdateFailure.RATE_LIMITED] and still
+ *   waits its [retryAfter].
  */
 data class StatusUpdate(
     val checkedAt: Instant? = null,
