@@ -829,7 +829,11 @@ class TradeTrackerLoop(
      * [write] returns its own result plus how the claim ends ([ClaimEnd]): completed with the outcome of a **real
      * Steam write**, released when nothing was written (a rejected create) so a genuine retry is free to proceed, or
      * held in flight for a create Steam did not answer ([reconcileUnansweredCreates] settles it). A throw releases
-     * it too: a leaked in-flight claim would block the deal until the TTL backstop.
+     * it too: a leaked in-flight claim would block the deal until the TTL backstop. A cancellation once
+     * [heldIfCancelled] names an unanswered create (its POST started) holds the claim as that create instead, so a
+     * later cycle, in this process or the next, settles it from the account's sent offers. Both are written under
+     * [NonCancellable]: in a cancelled coroutine the store would skip its lock and write, leaving a bare in-flight
+     * claim on disk that nothing settles.
      *
      * [credential] is passed by the two create sites only. With it, a completed claim is not replayed until
      * its offer has been checked on Steam ([releaseIfOfferDead]): a dead offer releases the claim and the
@@ -841,6 +845,7 @@ class TradeTrackerLoop(
         directiveId: DirectiveId,
         onDuplicate: suspend (ClaimVerdict.Duplicate) -> T,
         credential: SteamCredential? = null,
+        heldIfCancelled: () -> UnansweredCreate? = { null },
         write: suspend () -> Pair<T, ClaimEnd>,
     ): T {
         // A deal-less write cannot be claim-guarded. Only report_inventory is deal-less and it never routes
@@ -872,7 +877,15 @@ class TradeTrackerLoop(
         val (result, end) = try {
             write()
         } catch (t: Throwable) {
-            claims.release(setOf(key))
+            val held = (t as? CancellationException)?.let { heldIfCancelled() }
+            withContext(NonCancellable) {
+                if (held != null) {
+                    emit(LifecycleEvent.CreateUnanswered(dealId.value, directiveId.value, t.redactedSummary()))
+                    claims.replace(pending, pending.copy(unanswered = held))
+                } else {
+                    claims.release(setOf(key))
+                }
+            }
             throw t
         }
         when (end) {
@@ -2954,10 +2967,13 @@ class TradeTrackerLoop(
         // Deal-keyed duplicate guard: directive-id single-flight cannot see a *fresh* directive_id leased
         // for a deal whose offer this device already created (a lost /trade-actions report, or a backend
         // retry), and Steam would happily create a second live offer for it.
+        // Set once the POST starts: from then on a cancelled cycle cannot tell whether Steam made the offer.
+        var posted: UnansweredCreate? = null
         return withDealClaim(
             dealId = directive.dealId,
             action = DirectiveAction.CREATE_OFFER,
             directiveId = directive.directiveId,
+            heldIfCancelled = { posted },
             onDuplicate = { verdict ->
                 // A suppressed duplicate wrote nothing and says nothing about Steam's appetite — carry on. Its
                 // replay reports itself (it restates an *earlier* write's outcome, not this cycle's), so it is
@@ -3007,6 +3023,10 @@ class TradeTrackerLoop(
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
             // instead left the lease held with no /trade-actions answer and no lifecycle event, so the
             // backend re-leased the directive forever and the deal stalled invisibly.
+            // Only with a grace to settle it: without one nothing reads a held claim before its TTL.
+            if (bound == null && config.unansweredCreateGrace != null) {
+                posted = UnansweredCreate(partner, directive.assetIds.toSet(), directive.deadline)
+            }
             // A cancellation is let through: the cycle was stopped, which says nothing about Steam or the seller.
             val result = bound ?: runCatchingUnlessCancelled {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))

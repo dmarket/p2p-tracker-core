@@ -52,6 +52,7 @@ import io.ktor.client.request.HttpResponseData
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -93,6 +94,11 @@ class P2pTrackerColdWakeTest {
 
     /** Offers this account has sent and Steam lists as active: what a bind read finds. */
     private val sentOffers = mutableListOf<String>()
+
+    /** Where a create POST stops answering: before Steam makes the offer, after it, or not at all. */
+    private enum class Hang { NONE, BEFORE_THE_OFFER, AFTER_THE_OFFER }
+
+    private var createHang = Hang.NONE
 
     /** DMarket: the fake, plus the wake acks the core sends through it. */
     private class Backend(val fake: FakeMarketplaceClient) :
@@ -181,7 +187,9 @@ class P2pTrackerColdWakeTest {
                 respond("""{"response":{"trades":[${row.orEmpty()}]}}""")
             }
             community && path == "/tradeoffer/new/send" -> {
+                if (createHang == Hang.BEFORE_THE_OFFER) awaitCancellation()
                 sentOffers += "8001"
+                if (createHang == Hang.AFTER_THE_OFFER) awaitCancellation()
                 respond("""{"tradeofferid":"8001","needs_mobile_confirmation":true}""")
             }
             community && path.endsWith("/cancel") -> respond("""{"success":1}""")
@@ -192,13 +200,14 @@ class P2pTrackerColdWakeTest {
     /** One process: a cold [MobileTracker] over the device's storage, its tracker started by the first call. */
     private class Process(val mobile: MobileTracker, val tracker: P2pTracker)
 
-    private fun TestScope.process(): Process {
+    private fun TestScope.process(reportUnsentCreates: Boolean = true): Process {
         val mobile = MobileTracker(
             Platform(StandardTestDispatcher(testScheduler)),
             linkedAccount = { alice },
             cellularProofs = { false },
             hostMarketplaceClient = MarketplaceClientFactory { _, _, _, _ -> backend },
             steamWrites = true,
+            reportUnsentCreates = reportUnsentCreates,
         )
         return Process(mobile, mobile.tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, events))
     }
@@ -409,5 +418,53 @@ class P2pTrackerColdWakeTest {
     @Test
     fun a_cold_wake_leasing_a_create_before_the_delivery_posts_one_offer() = runTest {
         deliveryRacingAWake(wakeFirst = true)
+    }
+
+    // ---- a create the wake cut short is not the seller's fault -------------------------------------------------------
+
+    /** A wake whose create Steam does not answer before the wake's budget runs out. */
+    private suspend fun TestScope.createCutShort(hang: Hang) {
+        signedInEarlier()
+        lease(create("dir-1"))
+        createHang = hang
+
+        val outcome = process(reportUnsentCreates = false).tracker.onPush(wake("directive"), deadline = 20.seconds)
+
+        assertEquals(WakeOutcome.failed(WakeCause.BUDGET), outcome)
+        assertEquals(1, createPosts, "the create reached Steam")
+        assertTrue(marketplace.directiveOutcomes.isEmpty(), "nothing is known, so nothing is reported: ${marketplace.directiveOutcomes}")
+        createHang = Hang.NONE
+    }
+
+    @Test
+    fun a_create_cut_short_after_steam_made_the_offer_is_reported_with_it_by_the_next_cold_wake() = runTest {
+        createCutShort(Hang.AFTER_THE_OFFER)
+
+        // Steam's list does not show the offer yet: only the claim kept on disk holds the deal.
+        sentOffers.clear()
+        process(reportUnsentCreates = false).tracker.onPush(wake("directive", id = "w-2"))
+        assertEquals(1, createPosts, "held within the grace: no second offer")
+        assertTrue(marketplace.directiveOutcomes.isEmpty())
+
+        sentOffers += "8001"
+        clock.advance(1.minutes)
+        process(reportUnsentCreates = false).tracker.onPush(wake("directive", id = "w-3"))
+
+        assertEquals(1, createPosts)
+        val reported = marketplace.directiveOutcomes.single { it.directiveId.value == "dir-1" }
+        assertEquals(OfferId("8001"), reported.steamOfferId)
+        assertEquals(DirectiveStatus.NEEDS_CONFIRMATION, reported.status)
+    }
+
+    @Test
+    fun a_create_cut_short_before_steam_made_the_offer_is_made_again_after_the_grace_and_never_reported_failed() = runTest {
+        createCutShort(Hang.BEFORE_THE_OFFER)
+
+        clock.advance(3.minutes) // past the 2 min grace, inside the claim's 15 min
+        process(reportUnsentCreates = false).tracker.onPush(wake("directive", id = "w-2"))
+
+        assertEquals(2, createPosts, "no offer on Steam: the re-served create runs again")
+        assertTrue(marketplace.directiveOutcomes.none { it.status == DirectiveStatus.FAILED }, "${marketplace.directiveOutcomes}")
+        assertEquals(OfferId("8001"), marketplace.directiveOutcomes.single { it.directiveId.value == "dir-1" }.steamOfferId)
     }
 }
