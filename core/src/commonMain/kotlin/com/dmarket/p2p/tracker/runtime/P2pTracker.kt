@@ -437,6 +437,8 @@ class P2pTracker(
         when {
             permit == null -> takePermit(dealId, now, allowed)?.let { return it }
             // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
+            // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
+            // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
             permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
                 return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
         }
