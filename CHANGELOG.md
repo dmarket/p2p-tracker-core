@@ -61,6 +61,7 @@ GitHub Release.
 ### Fixed
 
 - Mobile: a `prove_offer` or `prove_release` wake whose deal still waits on its proof, an offer awaiting Steam Guard included, now ends with the final ack `deferred` (`cellular_not_allowed`) or `failed` (`notary`, `os_killed`, `other`) instead of `done`. The first ack stays `done` (DMA-1066).
+- Android: a wake whose `P2pTrackerWorker` starts before the app has built the tracker waits up to 2 minutes for it and then runs, instead of ending at once with no sync and no ack. With no tracker by then the work ends with `outcome` `failed` and `cause` `other` and no ack is sent (DMA-540).
 
 ## [1.3.0-beta] - 2026-11-10
 
