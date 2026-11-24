@@ -2482,7 +2482,16 @@ class TradeTrackerLoop(
             // The answer the create never got, as Steam's offer list gives it.
             val result = when (val verdict = UnansweredCreateCheck.evaluate(claim, unanswered, sent, now, grace)) {
                 UnansweredCreateVerdict.NotYet -> continue
-                UnansweredCreateVerdict.Absent -> CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
+                UnansweredCreateVerdict.Absent -> {
+                    // On mobile (a lease clock) with unsent creates unreported, no answer and no offer is no proof the
+                    // seller failed: the claim goes, nothing is reported, and the lease lapses to the next serve.
+                    if (!config.reportUnsentCreates && leaseClock != null) {
+                        val directive = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId)
+                        if (claims.replace(claim, null)) emitDropped(directive, UNANSWERED_CREATE_ABSENT)
+                        continue
+                    }
+                    CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
+                }
                 is UnansweredCreateVerdict.Found -> verdict.offer.createResult()
             }
             val outcome = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId).createOutcome(result)

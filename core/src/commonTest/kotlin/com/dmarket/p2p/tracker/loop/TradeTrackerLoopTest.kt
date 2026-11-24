@@ -54,6 +54,7 @@ import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
@@ -201,6 +202,7 @@ class TradeTrackerLoopTest {
         // null keeps LoopConfig's own default (2 s, 4 s, 8 s).
         createDirectiveRetryDelays: List<Duration>? = null,
         proofArchive: ProofArchiveStore = NoProofArchive,
+        leaseClock: ElapsedClock? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -247,6 +249,7 @@ class TradeTrackerLoopTest {
             scanReceivedOffers = scanReceivedOffers,
             offerVerifier = offerVerifier,
             proofArchive = proofArchive,
+            leaseClock = leaseClock,
         )
     }
 
@@ -6640,6 +6643,46 @@ class TradeTrackerLoopTest {
         assertEquals(DirectiveStatus.FAILED, failed.status)
         assertEquals(DirectiveId("dir-1"), failed.directiveId)
         assertEquals(2, creator.created.size, "the claim went with the FAILED, so the re-leased create runs again")
+    }
+
+    @Test
+    fun on_mobile_an_unanswered_create_steam_never_made_is_dropped_unreported_unless_unsent_creates_are_reported() = runTest {
+        val elapsed = object : ElapsedClock {
+            override fun elapsed(): Duration = 10.hours
+        }
+        for (reportUnsent in listOf(false, true)) {
+            val clock = FakeClock()
+            val observer = RecordingEventObserver()
+            val mp = createLease(createDirective())
+            val creator = FakeSteamOfferCreator(result = unanswered)
+            val l = loop(
+                marketplace = mp,
+                creator = creator,
+                reader = FakeSteamReadClient(),
+                claims = PersistedDealWriteClaimStore(),
+                clock = clock,
+                directivesEnabled = true,
+                eventObserver = observer,
+                unansweredCreateGrace = 2.minutes,
+                reportUnsentCreates = reportUnsent,
+                leaseClock = elapsed,
+            )
+            l.runOnce()
+            clock.advance(121.seconds)
+            l.forceHeartbeatNow()
+            l.runOnce()
+
+            val failed = mp.directiveOutcomes.filter { it.status == DirectiveStatus.FAILED }
+            val dropped = observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().filter { it.directiveId == "dir-1" }
+            if (reportUnsent) {
+                assertEquals(listOf(DirectiveId("dir-1")), failed.map { it.directiveId }, "reported as before")
+                assertTrue(dropped.isEmpty())
+            } else {
+                assertTrue(failed.isEmpty(), "a failed report would fault the seller: $failed")
+                assertEquals(1, dropped.size, "said out loud instead")
+            }
+            assertEquals(2, creator.created.size, "the claim is gone either way: the re-leased create runs again")
+        }
     }
 
     @Test

@@ -40,8 +40,10 @@ import kotlin.time.Duration.Companion.seconds
  * @param reportUnsentCreates When `false`, a `create_offer` that never reached Steam is not reported `FAILED`: one
  *   refused by the account or the buyer-role guard, or deferred (the token, a cooldown, a stopped chain — even with
  *   `SteamWriteConfig.reportThrottledWrites` on). The backend reads `FAILED` as the seller failing to deliver, and
- *   nothing was tried; unanswered, the lease lapses to a device that can. `true` (the default) keeps the browser's
- *   reporting.
+ *   nothing was tried; unanswered, the lease lapses to a device that can. On a loop with a lease clock (mobile) it
+ *   also covers a create Steam did not answer and whose offer the [unansweredCreateGrace] read does not find: the
+ *   claim is released and the create dropped unreported instead of reported `FAILED`. `true` (the default) keeps
+ *   the browser's reporting.
  * @param unansweredCreateGrace When set, a `create_offer` that got no answer from Steam (a timeout, a refused
  *   connection — `SteamCreateFailureCause.TRANSPORT`) is not reported `FAILED`: whether Steam made the offer is unknown,
  *   and `FAILED` would leave an offer it did make with nobody to cancel it. The deal's claim is held instead, so no
