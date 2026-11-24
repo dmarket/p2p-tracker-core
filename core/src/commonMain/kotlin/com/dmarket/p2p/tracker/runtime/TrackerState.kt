@@ -63,7 +63,7 @@ internal fun TrackerState.withSteamSessionFromBlock(): TrackerState = if (!runni
  * @property cooldownUntil until when a manual "Update status" is not available: set by [P2pTracker.updateStatus] after a
  *   429, to the longer of its `Retry-After` and a backoff that doubles with each 429 in a row ([RateLimitBackoff]). Once
  *   the surface answers again, the backoff's part ends and only the `Retry-After` still holds. The server's own permit
- *   (DMA-660) is the app's.
+ *   (`…/refresh`) is kept apart and shows in [StatusUpdate.nextAllowedAt].
  */
 data class DealTrackingState(
     val checkedAt: Instant? = null,
@@ -115,8 +115,9 @@ data class StatusUpdate(
 )
 
 /**
- * Why an update fell short. Kept apart because the app treats them apart (T-12, D5): a failure on our side (DMarket,
- * the notary, a timeout) does not spend the user's manual-update permit.
+ * Why an update fell short. Kept apart because the app treats them apart (T-12, T-16). A notary session spends one of
+ * the permit's sessions whatever its end ([StatusUpdate.retryLeft], DMA-1016); a failure before any session (DMarket,
+ * a timeout, Steam) spends none.
  */
 enum class UpdateFailure {
     /**
