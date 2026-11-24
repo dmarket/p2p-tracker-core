@@ -14,11 +14,20 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
+import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
+import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
+import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.ProofFailure
+import com.dmarket.p2p.tracker.notary.ProvenReadBinding
+import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
+import com.dmarket.p2p.tracker.port.marketplace.DealRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
+import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -36,12 +45,14 @@ import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
@@ -71,7 +82,19 @@ class P2pTrackerUpdateStatusTest {
         var metered: Boolean = false,
         var cellularOptIn: Boolean = false,
         val heldMarketplace: MarketplaceClient = marketplace,
+        val refresh: DealRefreshClient? = null,
+        val prover: NotaryProver = notary,
     )
+
+    /** The refresh route: [answer] per call, every call counted. */
+    private class FakeRefresh(var answer: suspend (DealId) -> DealRefresh = { DealRefresh(tracked = true) }) : DealRefreshClient {
+        val calls = mutableListOf<DealId>()
+
+        override suspend fun refreshDeal(id: DealId): DealRefresh {
+            calls += id
+            return answer(id)
+        }
+    }
 
     /** Every draw is 0: no jitter. */
     private object Lowest : Random() {
@@ -102,7 +125,7 @@ class P2pTrackerUpdateStatusTest {
                 scheduler = FakeScheduler(),
                 clock = clock,
                 deviceId = FakeDeviceIdStore(),
-                notary = setup.notary,
+                notary = setup.prover,
                 eventObserver = observer,
             )
         },
@@ -110,6 +133,7 @@ class P2pTrackerUpdateStatusTest {
         cellularProofs = { setup.cellularOptIn },
         eventObserver = events,
         random = random,
+        dealRefresh = setup.refresh,
     )
 
     // ---- updateStatus --------------------------------------------------------------------------
@@ -123,7 +147,7 @@ class P2pTrackerUpdateStatusTest {
 
         assertEquals(1, setup.marketplace.heartbeatsSent.size, "the update syncs first")
         assertEquals(listOf(3), setup.marketplace.tradeStatusReports.map { it.steamStatusCode })
-        assertEquals(StatusUpdate(checkedAt = clock.now(), code = 3, proofState = ProofState.NONE), update)
+        assertEquals(StatusUpdate(checkedAt = clock.now(), code = 3, proofState = ProofState.NONE, retryLeft = 1), update)
     }
 
     @Test
@@ -490,6 +514,234 @@ class P2pTrackerUpdateStatusTest {
         val update = tracker.updateStatus(deal)
 
         assertProvedAndReported(setup, update)
+    }
+
+    // ---- the refresh permit (DMA-963, DMA-1016) -------------------------------------------------
+
+    private fun window() = clock.now() + 10.minutes
+
+    @Test
+    fun a_permit_with_the_watch_entry_runs_the_cycle_and_gives_its_window() = runTest {
+        val until = window()
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = until) }
+        val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
+
+        val update = tracker(setup).updateStatus(deal)
+
+        assertEquals(listOf(deal), refresh.calls)
+        assertEquals(1, setup.marketplace.heartbeatsSent.size, "the cycle ran")
+        assertNull(update.failure)
+        assertEquals(until, update.nextAllowedAt)
+        assertEquals(1, update.retryLeft)
+    }
+
+    @Test
+    fun a_permit_without_a_window_is_not_kept_and_the_next_run_asks_again() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true) }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh))
+
+        val first = tracker.updateStatus(deal, retries = 2)
+        tracker.updateStatus(deal, retries = 2)
+
+        assertEquals(2, refresh.calls.size)
+        assertNull(first.nextAllowedAt)
+        assertEquals(2, first.retryLeft, "no permit holds: the retries asked for")
+    }
+
+    @Test
+    fun nothing_to_refresh_still_runs_the_cycle_uncounted() = runTest {
+        for (answer in listOf<suspend (DealId) -> DealRefresh>(
+            { DealRefresh(tracked = false) },
+            { throw MarketplaceServerErrorException(404, "P2P_DEAL_NOT_FOUND") },
+        )) {
+            val refresh = FakeRefresh(answer)
+            val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
+            val tracker = tracker(setup)
+
+            val update = tracker.updateStatus(deal)
+            tracker.updateStatus(deal)
+
+            assertNull(update.failure, "not an error")
+            assertNull(update.nextAllowedAt)
+            assertEquals(2, setup.marketplace.heartbeatsSent.size, "both runs synced")
+            assertEquals(2, refresh.calls.size, "nothing was kept to run under")
+        }
+    }
+
+    @Test
+    fun a_503_charges_nothing_runs_nothing_and_may_be_asked_again_at_once() = runTest {
+        val refresh = FakeRefresh { throw MarketplaceServerErrorException(503, "P2P_UNAVAILABLE") }
+        val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
+        val tracker = tracker(setup)
+
+        val update = tracker.updateStatus(deal)
+
+        assertEquals(UpdateFailure.DMARKET, update.failure)
+        assertEquals(1, update.retryLeft)
+        assertNull(update.retryAfter)
+        assertTrue(setup.marketplace.heartbeatsSent.isEmpty(), "no cycle without the permit")
+
+        refresh.answer = { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        assertNull(tracker.updateStatus(deal).failure, "asked again at once")
+        assertEquals(2, refresh.calls.size)
+    }
+
+    @Test
+    fun the_refresh_429_waits_exactly_its_retry_after_for_that_deal_only() = runTest {
+        val refresh = FakeRefresh { id ->
+            if (id == deal) throw RateLimitedException(412, "P2P_REFRESH_RATE_LIMITED") else DealRefresh(tracked = true)
+        }
+        val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
+        val tracker = tracker(setup, random = Highest)
+
+        val update = tracker.updateStatus(deal)
+
+        assertEquals(UpdateFailure.RATE_LIMITED, update.failure)
+        assertEquals(412.seconds, update.retryAfter, "no backoff, no jitter")
+        assertEquals(clock.now() + 412.seconds, update.nextAllowedAt)
+        assertEquals(0, update.retryLeft)
+        assertTrue(setup.marketplace.heartbeatsSent.isEmpty())
+
+        clock.advance(12.seconds)
+        val again = tracker.updateStatus(deal)
+        assertEquals(400.seconds, again.retryAfter, "the rest of the wait, asked of no one")
+        assertEquals(1, refresh.calls.size)
+
+        val other = tracker.updateStatus(DealId("d2"))
+        assertNull(other.failure, "another deal is not held")
+        assertEquals(1, setup.marketplace.heartbeatsSent.size)
+    }
+
+    @Test
+    fun kongs_429_takes_the_dmarket_backoff_for_every_deal() = runTest {
+        val refresh = FakeRefresh { throw RateLimitedException(5) }
+        val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
+        val tracker = tracker(setup)
+
+        val update = tracker.updateStatus(deal)
+        val other = tracker.updateStatus(DealId("d2"))
+
+        assertEquals(UpdateFailure.RATE_LIMITED, update.failure)
+        assertEquals(30.seconds, update.retryAfter, "the backoff's first step")
+        assertNull(update.nextAllowedAt)
+        assertEquals(UpdateFailure.RATE_LIMITED, other.failure, "the DMarket cooldown holds every deal")
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
+    fun a_permit_allows_one_session_plus_its_retries_then_waits_for_its_window() = runTest {
+        for (retries in 0..2) {
+            val until = window()
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = until) }
+            val notary = FakeNotaryProver().apply { proveThrows = IllegalStateException("notary connection dropped") }
+            val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
+
+            for (session in 1..retries + 1) {
+                val update = tracker.updateStatus(deal, retries = retries)
+                assertEquals(UpdateFailure.NOTARY, update.failure, "retries=$retries, session $session")
+                assertEquals(retries + 1 - session, update.retryLeft, "retries=$retries, session $session")
+                assertEquals(until, update.nextAllowedAt)
+            }
+            val spent = tracker.updateStatus(deal, retries = retries)
+
+            assertEquals(UpdateFailure.RATE_LIMITED, spent.failure, "retries=$retries")
+            assertEquals(until - clock.now(), spent.retryAfter)
+            assertEquals(0, spent.retryLeft)
+            assertEquals(1, refresh.calls.size, "retries=$retries: the Retries go without a refresh")
+            assertEquals(retries + 1, notary.proven.size, "retries=$retries")
+        }
+    }
+
+    @Test
+    fun negative_retries_are_none() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val notary = FakeNotaryProver().apply { proveThrows = IllegalStateException("dropped") }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
+
+        assertEquals(0, tracker.updateStatus(deal, retries = -3).retryLeft)
+        assertEquals(UpdateFailure.RATE_LIMITED, tracker.updateStatus(deal, retries = -3).failure)
+    }
+
+    @Test
+    fun a_run_without_a_notary_session_leaves_the_permit_whole() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh))
+
+        tracker.updateStatus(deal, retries = 0)
+        val second = tracker.updateStatus(deal, retries = 0)
+
+        assertNull(second.failure, "the first session is still unused")
+        assertEquals(1, refresh.calls.size, "and no second refresh, which would answer 429")
+    }
+
+    @Test
+    fun a_cancelled_session_counts() = runTest {
+        var proving = false
+        val hanging = object : NotaryProver by FakeNotaryProver() {
+            override suspend fun proveTransition(
+                binding: ProvenReadBinding,
+                source: TradeStatusSource,
+                credential: SteamCredential,
+            ): ProofSubmission {
+                proving = true
+                awaitCancellation()
+            }
+        }
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = hanging, refresh = refresh))
+        val run = launch { tracker.updateStatus(deal, retries = 0) }
+        runCurrent()
+        assertTrue(proving, "the session started")
+
+        run.cancel() // Cancel on T-14
+        runCurrent()
+        val next = tracker.updateStatus(deal, retries = 0)
+
+        assertEquals(UpdateFailure.RATE_LIMITED, next.failure, "the cancelled session spent the permit")
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
+    fun a_session_that_never_started_does_not_count() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val notary = FakeNotaryProver().apply { proveThrows = HostedProofException(ProofFailure.NotStarted("no DMarket session")) }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
+
+        tracker.updateStatus(deal, retries = 0)
+        val second = tracker.updateStatus(deal, retries = 0)
+
+        assertFalse(second.failure == UpdateFailure.RATE_LIMITED, "the permit is whole: ${second.failure}")
+        assertEquals(2, notary.proven.size)
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
+    fun a_delivered_refusal_is_its_own_failure_also_when_the_same_bytes_meet_the_latch() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
+            proofVerified = false
+            proofReason = "presentation does not match the deal"
+        }
+        val tracker = tracker(Setup(mp))
+
+        val update = tracker.updateStatus(deal)
+        val again = tracker.updateStatus(deal)
+
+        assertEquals(UpdateFailure.PROOF_REFUSED, update.failure, "a refusal is no success")
+        assertEquals(UpdateFailure.PROOF_REFUSED, again.failure, "nor is the latch that keeps it")
+        assertEquals(1, mp.proofsSubmitted.size)
+    }
+
+    @Test
+    fun a_429_on_the_proofs_delivery_is_a_rate_limit_not_the_notary() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply { submitProofThrowable = RateLimitedException(60) }
+        val tracker = tracker(Setup(mp))
+
+        val update = tracker.updateStatus(deal)
+
+        assertEquals(UpdateFailure.RATE_LIMITED, update.failure)
+        assertEquals(60.seconds, update.retryAfter)
+        assertTrue(events.events.contains(LifecycleEvent.RateLimited("marketplace", 60)))
+        assertTrue(events.events.none { it is LifecycleEvent.ProofFailed }, "no dropped connection to tell")
     }
 
     private fun assertProvedAndReported(setup: Setup, update: StatusUpdate) {

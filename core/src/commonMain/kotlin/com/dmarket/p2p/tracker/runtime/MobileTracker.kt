@@ -29,6 +29,7 @@ import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
 import com.dmarket.p2p.tracker.port.host.Scheduler
+import com.dmarket.p2p.tracker.port.marketplace.DealRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
@@ -250,11 +251,12 @@ class MobileTracker(
             clearAccountState = platform::clearAccountState,
             eraseProofs = platform::clearStoredProofs,
             importSteamCookies = platform::importSteamSession,
-            // The core's DMarket client acks and registers; a host client without those routes gets neither.
+            // The core's DMarket client acks, registers and takes the update permit; a host client without those routes gets none.
             acknowledger = marketplace as? WakeAcknowledger ?: NoOpWakeAcknowledger,
             deviceRegistry = (marketplace as? DeviceRegistryClient)?.let {
                 DeviceRegistry(it, platform.surface.platformWireName, clientVersion, steamWrites)
             },
+            dealRefresh = marketplace as? DealRefreshClient,
         ).also { built = it }
     }
 

@@ -22,6 +22,8 @@ import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.policy.ExponentialBackoff
+import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
+import com.dmarket.p2p.tracker.port.marketplace.DealRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferAnswer
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
@@ -32,6 +34,7 @@ import com.dmarket.p2p.tracker.port.marketplace.TradeStatusBatchInterruptedExcep
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.wire.DealActionResponseDto
 import com.dmarket.p2p.tracker.wire.DealDto
+import com.dmarket.p2p.tracker.wire.DealRefreshResponseDto
 import com.dmarket.p2p.tracker.wire.HeartbeatResponseDto
 import com.dmarket.p2p.tracker.wire.ReportDirectivesResponseDto
 import com.dmarket.p2p.tracker.wire.ReportInventoryResponseDto
@@ -77,13 +80,17 @@ import kotlin.time.Instant
  */
 internal val IS_TRADE_OUR_TIMEOUT = 5.seconds
 
-/** Thrown on HTTP 429; [retryAfterSeconds] carries the `Retry-After` header when present. */
-class RateLimitedException(val retryAfterSeconds: Long?) : RuntimeException("Rate limited (Retry-After=$retryAfterSeconds)")
+/**
+ * Thrown on HTTP 429; [retryAfterSeconds] carries the `Retry-After` header when present, [errorCode] the gateway's
+ * machine code on a call that reads the refusal's body (`P2P_REFRESH_RATE_LIMITED` from the refresh; `null` from Kong).
+ */
+class RateLimitedException(val retryAfterSeconds: Long?, val errorCode: String? = null) :
+    RuntimeException("Rate limited (Retry-After=$retryAfterSeconds)")
 
 /**
  * Ktor-backed [MarketplaceClient] for the golden **C1 trade-tracker** endpoints under
  * `/exchange/v1/p2p/ext/`, reached via the exchange-gateway. The deal calls (`accept`/`create-trade`/`getDeal`)
- * are the C2 paths under `/exchange/v1/p2p/`.
+ * and the manual-update permit (`refresh`) are the C2 paths under `/exchange/v1/p2p/`.
  *
  * Uses manual JSON encoding via [TrackerJson] (no Ktor `ContentNegotiation` plugin) so the exact wire
  * shape is visible at each call site. Auth is delegated to [authenticator]: the DMarket JWT is fetched
@@ -122,7 +129,8 @@ class KtorMarketplaceClient(
 ) : MarketplaceClient,
     DmarketOfferVerifier,
     WakeAcknowledger,
-    DeviceRegistryClient {
+    DeviceRegistryClient,
+    DealRefreshClient {
 
     /** C2 deal calls (`accept`/`create-trade`/`getDeal`). */
     private val p2pPath = "/exchange/v1/p2p"
@@ -215,6 +223,11 @@ class KtorMarketplaceClient(
     override suspend fun startDelivery(id: DealId): DealActionResult {
         val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/create-trade", "{}", readErrorCode = true)
         return TrackerJson.decodeFromString<DealActionResponseDto>(text).toDomain(id)
+    }
+
+    override suspend fun refreshDeal(id: DealId): DealRefresh {
+        val text = postJson("$baseUrl$p2pPath/deals/${id.value.encodeURLPath()}/refresh", "{}", readErrorCode = true)
+        return TrackerJson.decodeFromString<DealRefreshResponseDto>(text).toDomain()
     }
 
     override suspend fun getDeal(id: DealId): Deal {
@@ -339,7 +352,7 @@ class KtorMarketplaceClient(
         heardDate(e.serverDate)
         return when (e.statusCode) {
             HttpStatusCode.Unauthorized.value -> onUnauthorized()
-            HttpStatusCode.TooManyRequests.value -> throw RateLimitedException(e.retryAfterSeconds)
+            HttpStatusCode.TooManyRequests.value -> throw RateLimitedException(e.retryAfterSeconds, e.errorBody?.let(::gatewayErrorCode))
             in 400..599 -> throw MarketplaceServerErrorException(e.statusCode, e.errorBody?.let(::gatewayErrorCode))
             else -> throw e
         }

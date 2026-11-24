@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.wire
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * JSON wire DTOs for the golden **C1 trade-tracker** REST contract under `/exchange/v1/p2p/ext/`
@@ -379,6 +380,13 @@ data class DealActionResponseDto(
     @SerialName("reasonCode") val reasonCode: String? = null,
     /** `POST /create-trade` only: the deal's `create_offer` directive, when the call recorded the delivery. */
     @SerialName("createOffer") val createOffer: CreateOfferDto? = null,
+)
+
+/** `POST /p2p/deals/{id}/refresh` answer (DMA-963); only whether `trackedDeal` came is read, never its fields. */
+@Serializable
+data class DealRefreshResponseDto(
+    @SerialName("nextAllowedAt") val nextAllowedAt: String? = null,
+    @SerialName("trackedDeal") val trackedDeal: JsonObject? = null,
 )
 
 /** `PUT /p2p/ext/devices/{deviceId}` body (contract d455888 §3.2); `apns*` only for an APNs device. */

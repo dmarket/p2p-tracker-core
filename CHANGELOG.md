@@ -41,6 +41,8 @@ GitHub Release.
 - New lifecycle event `WakeFinished`; `WakeReceived` gains `wakeId`, `transactionId`, `reason` and `expired` (DMA-540).
 - Android: `AndroidTracker.install(nativeProofs = true)` proves decisive transitions with the native TLSN prover over the host's `OkHttpClient`, in `NotaryConfig.mode` `mpc` or `proxy`; off by default. `AndroidTracker.prover` (`NativeNotaryProver`) gives `progress` and `traffic` per proof and `cancel(dealId)`, which ends the proof with `PROOF_CANCELLED_REASON` (DMA-540).
 - Mobile: the tracker keeps each end-of-deal proof it sent for 30 days from the deal's final status, in the account's storage; logout, a Steam account switch and an unlink erase it. `AndroidTracker.clearStoredProofs()` (`MobileTracker.clearStoredProofs()`, `P2pTracker.clearStoredProofs()`) erases it on demand (DMA-540).
+- Mobile: `P2pTracker.updateStatus(dealId, allowCellularProof, retries)` takes the deal's permit on `POST /exchange/v1/p2p/deals/{id}/refresh` before it runs and allows `1 + retries` notary sessions under it (a cancelled one counts; `retries` defaults to 1). `StatusUpdate` gains `nextAllowedAt` and `retryLeft`, and a refresh 429 sets `retryAfter` to its exact `Retry-After` for that deal only (DMA-963, DMA-1016).
+- Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update, which used to count as a success (DMA-1016).
 
 ### Changed
 
@@ -51,6 +53,7 @@ GitHub Release.
 - `WakeAcknowledger.acknowledge` takes the wake id and its `WakeOutcome` (DMA-540).
 - Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
+- A 429 on `POST /exchange/v1/p2p/ext/notary` emits `RateLimited` instead of `ProofFailed`, and a manual status update reports it as `UpdateFailure.RATE_LIMITED`, not `NOTARY` (DMA-1016).
 
 ## [1.3.0-beta] - 2026-11-10
 

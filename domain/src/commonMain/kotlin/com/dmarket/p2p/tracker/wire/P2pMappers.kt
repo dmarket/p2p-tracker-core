@@ -33,6 +33,7 @@ import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
+import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
@@ -285,6 +286,12 @@ fun DealActionResponseDto.toDomain(dealId: DealId): DealActionResult = DealActio
     applied = applied,
     reasonCode = reasonCode,
     createOffer = createOffer?.toDirective(dealId),
+)
+
+/** An unreadable `nextAllowedAt` reads as no known wait, as an absent one does: the app may ask again. */
+fun DealRefreshResponseDto.toDomain(): DealRefresh = DealRefresh(
+    tracked = trackedDeal != null,
+    nextAllowedAt = nextAllowedAt?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it) }.getOrNull() },
 )
 
 /** The JSON form of `google.protobuf.Duration` (`"120s"`, `"-1.5s"`, up to 9 fraction digits); `null` when malformed. */
