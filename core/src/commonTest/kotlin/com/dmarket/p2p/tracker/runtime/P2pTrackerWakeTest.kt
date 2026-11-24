@@ -15,6 +15,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.WakeCause
 import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.WakeOutcomeKind
@@ -85,6 +86,7 @@ class P2pTrackerWakeTest {
         lastOfferCode: Int? = null,
         transactionId: String? = null,
         proveAfter: Instant? = null,
+        steamTradeId: TradeId? = null,
     ) = TrackedDeal(
         dealId = dealId,
         steamOfferId = OfferId(offer),
@@ -93,6 +95,7 @@ class P2pTrackerWakeTest {
         lastOfferCode = lastOfferCode,
         transactionId = transactionId,
         proveAfter = proveAfter,
+        steamTradeId = steamTradeId,
     )
 
     private fun heartbeat(proofRequired: Boolean = false, vararg deals: TrackedDeal = arrayOf(tracked(proofRequired = proofRequired))) =
@@ -556,6 +559,27 @@ class P2pTrackerWakeTest {
 
         val released = Setup(FakeMarketplaceClient(heartbeat(true, tracked(lastOfferCode = 3))))
         assertEquals(WakeOutcome.DONE, tracker(released).onPush(wake("prove_release")))
+    }
+
+    @Test
+    fun a_release_proof_due_defers_on_mobile_data_and_ends_done_once_accepted() = runTest {
+        fun due(metered: Boolean) = Setup(
+            FakeMarketplaceClient(
+                heartbeat(
+                    true,
+                    tracked(lastOfferCode = 3, proveAfter = clock.now() + 1.hours, steamTradeId = TradeId("744935517744884653")),
+                ),
+            ),
+            metered = metered,
+        )
+
+        val held = due(metered = true)
+        assertEquals(deferredOnCellular, splitTracker(held).onPush(wake("prove_release")))
+        assertTrue(held.notary.proven.isEmpty())
+
+        val proven = due(metered = false)
+        assertEquals(WakeOutcome.DONE, splitTracker(proven).onPush(wake("prove_release")))
+        assertEquals(1, proven.notary.proven.size)
     }
 
     @Test
