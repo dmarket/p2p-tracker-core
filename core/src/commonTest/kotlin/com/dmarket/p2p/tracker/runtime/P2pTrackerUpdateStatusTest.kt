@@ -633,7 +633,10 @@ class P2pTrackerUpdateStatusTest {
         for (retries in 0..2) {
             val until = window()
             val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = until) }
-            val notary = FakeNotaryProver().apply { proveThrows = IllegalStateException("notary connection dropped") }
+            val notary = FakeNotaryProver().apply {
+                proveThrows = IllegalStateException("notary connection dropped")
+                onProve = { clock.advance(20.seconds) } // long enough to count for the prover's breaker
+            }
             val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
 
             for (session in 1..retries + 1) {
@@ -672,6 +675,23 @@ class P2pTrackerUpdateStatusTest {
 
         assertNull(second.failure, "the first session is still unused")
         assertEquals(1, refresh.calls.size, "and no second refresh, which would answer 429")
+    }
+
+    @Test
+    fun only_an_updates_sessions_count_against_the_permit() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val notary = FakeNotaryProver().apply { proveThrows = IllegalStateException("dropped") }
+        val setup = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh, metered = true)
+        val tracker = tracker(setup)
+        tracker.updateStatus(deal, retries = 0) // the permit, its session unused: the proof waits for Wi-Fi
+
+        setup.metered = false
+        tracker.acceptDeal(deal) // its sync proves, outside any update
+        val update = tracker.updateStatus(deal, retries = 0)
+
+        assertEquals(2, notary.proven.size, "the accept's sync and the update each ran one")
+        assertEquals(UpdateFailure.NOTARY, update.failure, "the update still had its session")
+        assertEquals(1, refresh.calls.size)
     }
 
     @Test

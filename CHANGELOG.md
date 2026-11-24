@@ -42,7 +42,7 @@ GitHub Release.
 - Android: `AndroidTracker.install(nativeProofs = true)` proves decisive transitions with the native TLSN prover over the host's `OkHttpClient`, in `NotaryConfig.mode` `mpc` or `proxy`; off by default. `AndroidTracker.prover` (`NativeNotaryProver`) gives `progress` and `traffic` per proof and `cancel(dealId)`, which ends the proof with `PROOF_CANCELLED_REASON` (DMA-540).
 - Mobile: the tracker keeps each end-of-deal proof it sent for 30 days from the deal's final status, in the account's storage; logout, a Steam account switch and an unlink erase it. `AndroidTracker.clearStoredProofs()` (`MobileTracker.clearStoredProofs()`, `P2pTracker.clearStoredProofs()`) erases it on demand (DMA-540).
 - Mobile: `P2pTracker.updateStatus(dealId, allowCellularProof, retries)` takes the deal's permit on `POST /exchange/v1/p2p/deals/{id}/refresh` before it runs and allows `1 + retries` notary sessions under it (a cancelled one counts; `retries` defaults to 1). `StatusUpdate` gains `nextAllowedAt` and `retryLeft`, and a refresh 429 sets `retryAfter` to its exact `Retry-After` for that deal only (DMA-963, DMA-1016).
-- Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update, which used to count as a success (DMA-1016).
+- Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update (DMA-1016).
 
 ### Changed
 

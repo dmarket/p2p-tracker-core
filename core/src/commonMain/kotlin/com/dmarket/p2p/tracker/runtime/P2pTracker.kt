@@ -148,7 +148,7 @@ class P2pTracker(
     private var probe = CycleProbe()
 
     private class CycleProbe {
-        var manual = false
+        var countsSessions = false
         var heartbeat = false
         var retryAfter: Duration? = null
         var steamRateLimited = false
@@ -435,7 +435,7 @@ class P2pTracker(
             permit == null -> takePermit(dealId, now, allowed)?.let { return it }
             permit.sessions > allowed -> return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
         }
-        val run = cycle(s, wake = null, manual = true, allowCellularProof)
+        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
             ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
@@ -474,9 +474,13 @@ class P2pTracker(
         return null
     }
 
-    /** One notary session ran for [dealId]: a manual cycle's counts against its permit. */
+    /**
+     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit.
+     * shortcut: counted when the attempt ends, so a re-tap that lands between Cancel and the old cycle's end still sees
+     * the session unspent; count at the prove's start if that window ever matters.
+     */
     private fun countNotarySession(dealId: DealId) {
-        if (!probe.manual) return
+        if (!probe.countsSessions) return
         permits.update { all ->
             val permit = all[dealId] ?: return@update all
             if (permit.sessions == EXHAUSTED) all else all + (dealId to permit.copy(sessions = permit.sessions + 1))
@@ -625,6 +629,7 @@ class P2pTracker(
      * `null` when the session stopped under it. A [wake] or a [manual] update forces the heartbeat first: both always
      * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
+     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only).
      */
     private suspend fun cycle(
         s: Session,
@@ -634,9 +639,10 @@ class P2pTracker(
         onScreen: Boolean = false,
         allowProof: Boolean = true,
         ends: TimeMark? = null,
+        countsSessions: Boolean = false,
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, manual) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
@@ -671,11 +677,11 @@ class P2pTracker(
         wake: Wake? = null,
         allowProof: Boolean = true,
         ends: TimeMark? = null,
-        manual: Boolean = false,
+        countsSessions: Boolean = false,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
-        val cycleProbe = CycleProbe().also { it.manual = manual }
+        val cycleProbe = CycleProbe().also { it.countsSessions = countsSessions }
         probe = cycleProbe
         val metered = runCatching { network.metered() }.getOrNull()
         val background = runCatching { backgroundProofs() }.getOrNull()
