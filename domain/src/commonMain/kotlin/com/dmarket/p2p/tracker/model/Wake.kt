@@ -24,9 +24,18 @@ data class Wake(
     /** A `create_offer` wake (§2.4 `directive`): never acked `deferred` (§4.3). */
     val isDirective: Boolean get() = reason == DIRECTIVE_REASON
 
+    /** A wake whose work is a proof (§2.4 W2 `prove_offer`, W4 `prove_release`): `done` only once it is in (§6.4). */
+    val isProof: Boolean get() = reason == PROVE_OFFER_REASON || reason == PROVE_RELEASE_REASON
+
     /** The deal a `wake_deal` names; `null` for any other wake. */
     val dealId: DealId? get() = (signal as? PushSignal.WakeForDeal)?.dealId
 }
 
 /** The `reason` of a wake for a leased `create_offer` (§2.4, W1/W8). */
 const val DIRECTIVE_REASON = "directive"
+
+/** The `reason` of a wake for an unproven Steam offer (§2.4, W2). */
+const val PROVE_OFFER_REASON = "prove_offer"
+
+/** The `reason` of a wake for a release proof once the hold ended (§2.4, W4). */
+const val PROVE_RELEASE_REASON = "prove_release"

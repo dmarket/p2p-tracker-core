@@ -3,8 +3,10 @@ package com.dmarket.p2p.tracker.runtime
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
+import com.dmarket.p2p.tracker.engine.ProofFreshness
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.TrackerBlock
+import com.dmarket.p2p.tracker.engine.dealsAwaitingProof
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
@@ -158,6 +160,15 @@ class P2pTracker(
         var directiveDropped = false
         var proofDeferred = false
         var proofOutOfBudget = false
+
+        /** A proof the cycle could not run for want of a prover: none, parked, or a demand it cannot bind or retry yet. */
+        var proofBlocked = false
+
+        /** A second proof the cycle had no time left for ([ProofSkipReason.BUDGET_SPENT]). */
+        var proofBudgetSpent = false
+
+        /** Deals whose proof DMarket holds after this cycle: accepted now, or already within its window. */
+        val proofLanded = mutableSetOf<String>()
         val proofFailed = mutableSetOf<String>()
         val proofUndelivered = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
@@ -770,11 +781,17 @@ class P2pTracker(
      * The final outcome of [wake]'s cycle (contract d455888 §6.4, §4.3), by the first reason it fell short. A proof
      * held or failed matters only on a wake that is not for a `create_offer`: a `directive` wake is never `deferred`,
      * and its proof is not its work.
+     *
+     * A proof wake (`prove_offer`, `prove_release`) is `done` only when no deal it names still waits on its proof
+     * ([dealsAwaitingProof]) or DMarket holds that proof after the cycle. A proof it could not run is `notary` (no
+     * prover, a parked one, a refusal); one still owed with nothing run for it, an offer still awaiting Steam Guard
+     * included, is `cellular_not_allowed` behind a closed network gate and `other` otherwise (DMA-1066).
      */
     private fun wakeOutcomeOf(wake: Wake, loop: TradeTrackerLoop, run: CycleRun): WakeOutcome {
         val probe = run.probe
         val block = loop.blockingState
         val proofs = !wake.isDirective
+        val proofWake = wake.isProof
         return when {
             !run.completed -> WakeOutcome.failed(WakeCause.BUDGET)
             block == TrackerBlock.STEAM_SESSION_MISSING || block == TrackerBlock.STEAM_ACCOUNT_MISMATCH ->
@@ -787,9 +804,18 @@ class P2pTracker(
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
             proofs && probe.proofUndelivered.isNotEmpty() -> WakeOutcome.failed(WakeCause.NETWORK)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
+            // Ahead of the network gate, as in the mint policy: a host that cannot prove does not on Wi-Fi either.
+            proofWake && (probe.proofBlocked || probe.proofRefused.isNotEmpty()) -> WakeOutcome.failed(WakeCause.NOTARY)
+            proofWake && probe.proofBudgetSpent -> WakeOutcome.failed(WakeCause.BUDGET)
             proofs && probe.proofDeferred -> WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
             probe.failed || probe.steamReadFailed || probe.steamRateLimited || probe.reportFailed.isNotEmpty() ->
                 WakeOutcome.failed(WakeCause.OTHER)
+            proofWake && wake.dealsAwaitingProof(loop.trackedDeals).any { it.value !in probe.proofLanded } ->
+                if (loop.proofsDeferred) {
+                    WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
+                } else {
+                    WakeOutcome.failed(WakeCause.OTHER)
+                }
             else -> WakeOutcome.DONE
         }
     }
@@ -847,7 +873,12 @@ class P2pTracker(
                 deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
             }
             is LifecycleEvent.ProofSuppressed -> {
-                if (event.reason == ProofSkipReason.WAKE_BUDGET.message) probe.proofOutOfBudget = true
+                when (event.reason) {
+                    ProofSkipReason.WAKE_BUDGET.message -> probe.proofOutOfBudget = true
+                    ProofSkipReason.BUDGET_SPENT.message -> probe.proofBudgetSpent = true
+                    ProofSkipReason.ALREADY_ACCEPTED.message -> probe.proofLanded += event.dealId
+                    in BLOCKED_PROOF_REASONS -> probe.proofBlocked = true
+                }
                 // The same bytes' refusal stands: a manual run that meets the latch says so, not success.
                 if (event.reason == ProofSkipReason.ALREADY_REFUSED.message) probe.proofRefused += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
@@ -857,7 +888,7 @@ class P2pTracker(
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofSubmitted -> {
-                if (!event.verified) probe.proofRefused += event.dealId
+                if (event.verified) probe.proofLanded += event.dealId else probe.proofRefused += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.NONE) }
             }
             else -> Unit
@@ -904,6 +935,14 @@ class P2pTracker(
         private const val EXHAUSTED = Int.MAX_VALUE
 
         private const val NOT_FOUND = 404
+
+        /** A proof wake's proof that could not run here, whatever the network (DMA-1066). */
+        private val BLOCKED_PROOF_REASONS = setOf(
+            ProofSkipReason.NO_PROVER.message,
+            ProofSkipReason.PROVER_PARKED.message,
+            ProofSkipReason.FRESHNESS_RETRY_PENDING.message,
+            ProofFreshness.UNBINDABLE,
+        )
 
         private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
         private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account, or its loop did not start"

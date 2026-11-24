@@ -113,6 +113,8 @@ data class TrackedDealDto(
      * [com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.assetId].
      */
     @SerialName("assetId") val assetId: String? = null,
+    /** The deal record's id (proto `TrackedDeal.transaction_id`); an unset proto3 string renders as `""`. */
+    @SerialName("transactionId") val transactionId: String? = null,
 )
 
 @Serializable

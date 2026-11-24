@@ -90,6 +90,7 @@ fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     // Fail-open like a freshness mark: a malformed or zero deadline is no deadline, never a failed heartbeat.
     deadline = deadlineTime.toFreshnessMark(),
     assetId = assetId?.takeIf { it.isNotBlank() }?.let(::AssetId),
+    transactionId = transactionId?.takeIf { it.isNotBlank() },
 )
 
 /**

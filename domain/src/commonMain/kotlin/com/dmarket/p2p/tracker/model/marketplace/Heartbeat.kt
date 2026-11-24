@@ -163,6 +163,11 @@ data class TrackedDeal(
      * deal read (see `TradeTrackerLoop.correlateTransfer`).
      */
     val assetId: AssetId? = null,
+    /**
+     * The deal record's id (`transaction_id`), the handle a mobile wake names its deal by, or `null` from a backend
+     * that does not send it. `P2pTracker` matches a proof wake to its deal by it.
+     */
+    val transactionId: String? = null,
 )
 
 /**

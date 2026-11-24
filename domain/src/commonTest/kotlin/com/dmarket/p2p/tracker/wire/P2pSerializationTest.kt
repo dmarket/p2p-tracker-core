@@ -379,6 +379,18 @@ class P2pSerializationTest {
     }
 
     @Test
+    fun heartbeat_response_carries_the_deals_transaction_id() {
+        val json = """
+            {"activeTracking": [{"dealId":"d1","transactionId":"tx-1"}, {"dealId":"d2"}, {"dealId":"d3","transactionId":""}]}
+        """.trimIndent()
+        val domain = TrackerJson.decodeFromString<HeartbeatResponseDto>(json).toDomain()
+
+        assertEquals("tx-1", domain.activeTracking[0].transactionId)
+        assertNull(domain.activeTracking[1].transactionId, "absent from a backend that does not send it")
+        assertNull(domain.activeTracking[2].transactionId, "an unset proto3 string names no record")
+    }
+
+    @Test
     fun tracked_deal_round_trips_with_its_asset_id() {
         val dto = TrackedDealDto(dealId = "d1", assetId = "302028390:1989275999:44977997680:730")
         assertEquals(dto, roundTrip(dto))

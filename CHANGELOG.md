@@ -44,6 +44,7 @@ GitHub Release.
 - Mobile: `P2pTracker.updateStatus(dealId, allowCellularProof, retries)` takes the deal's permit on `POST /exchange/v1/p2p/deals/{id}/refresh` before it runs and allows `1 + retries` notary sessions under it (a cancelled one counts; `retries` defaults to 1). `StatusUpdate` gains `nextAllowedAt` and `retryLeft`, and a refresh 429 sets `retryAfter` to its exact `Retry-After` for that deal only (DMA-963, DMA-1016).
 - Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update (DMA-1016).
 - A proof whose delivery to DMarket got no verdict (a 5xx, a timeout, a 429) is sent again with the same bytes within the hour instead of a new notary session, and a resend DMarket answers "already accepted", or one on a deal that no longer needs a status update, counts as verified. `LifecycleEvent.ProofFailed` gains `undelivered`, and `Deal` gains `needsStatusUpdate` (DMA-1016).
+- `TrackedDeal.transactionId` carries the deal record's id from the heartbeat, the id a mobile wake names its deal by (DMA-1066).
 
 ### Changed
 
@@ -56,6 +57,10 @@ GitHub Release.
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 - A 429 on `POST /exchange/v1/p2p/ext/notary` emits `RateLimited` instead of `ProofFailed`, and a manual status update reports it as `UpdateFailure.RATE_LIMITED`, not `NOTARY` (DMA-1016).
 - Mobile: a proof that was made but not delivered is `UpdateFailure.DMARKET` on a manual status update and `failed/other` on a wake, not `notary`, and a manual update sends it again even when the deal's permit is spent. `StatusUpdate.retryLeft` is at least 1 while such a proof waits; a 429 on its delivery still answers `RATE_LIMITED` with its `retryAfter` (DMA-1016).
+
+### Fixed
+
+- Mobile: a `prove_offer` or `prove_release` wake whose deal still waits on its proof, an offer awaiting Steam Guard included, now ends with the final ack `deferred` (`cellular_not_allowed`) or `failed` (`notary`, `os_killed`, `other`) instead of `done`. The first ack stays `done` (DMA-1066).
 
 ## [1.3.0-beta] - 2026-11-10
 

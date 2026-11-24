@@ -1546,6 +1546,9 @@ class TradeTrackerLoop(
     /** The deals the last successful heartbeat asked this device to track; empty before one. */
     val trackedDealIds: List<DealId> get() = lastActiveTracking.orEmpty().map { it.dealId }
 
+    /** The deals the last successful heartbeat asked this device to track, as it served them; empty before one. */
+    val trackedDeals: List<TrackedDeal> get() = lastActiveTracking.orEmpty()
+
     /**
      * `true` while the Steam id the backend linked to this DMarket account disagrees with the Steam id of
      * the token the client holds — a wrong-account session. The host shows a "log into the correct Steam
