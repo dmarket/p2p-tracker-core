@@ -22,6 +22,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.parameters
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * How a header-carrying write carries the Steam session: the `steamLoginSecure` and `sessionid` cookies, and the
@@ -113,7 +114,7 @@ class HeaderSessionSteamOfferCreator internal constructor(
         adapter: GameAdapter = Cs2GameAdapter(),
     ) : this(httpClient, SteamWriteSession.Vault(cookies, communityBaseUrl), communityBaseUrl, adapter)
 
-    override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = runCatching {
+    override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = try {
         val sessionId = session.sessionId()
         val response = httpClient.submitForm(
             url = "$communityBaseUrl/tradeoffer/new/send",
@@ -125,12 +126,13 @@ class HeaderSessionSteamOfferCreator internal constructor(
             captureErrorBody(STEAM_CREATE_ERROR_BODY_MAX)
         }
         SteamOfferWire.parseCreate(response.bodyAsText())
-    }.getOrElse { e ->
-        if (e is HttpStatusException) {
-            SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
-        } else {
-            CreateOfferResult.Failed(e.redactedSummary())
-        }
+    } catch (e: CancellationException) {
+        // The caller stopped the work: no answer to report, whatever Steam did with the POST.
+        throw e
+    } catch (e: HttpStatusException) {
+        SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
+    } catch (e: Throwable) {
+        CreateOfferResult.Failed(e.redactedSummary())
     }
 
     private companion object {

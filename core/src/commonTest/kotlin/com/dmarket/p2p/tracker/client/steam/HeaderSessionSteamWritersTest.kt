@@ -29,8 +29,10 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Instant
@@ -91,6 +93,16 @@ class HeaderSessionSteamWritersTest {
         assertEquals(730, give.getValue("appid").jsonPrimitive.int)
         assertTrue(offer.getValue("them").jsonObject.getValue("assets").jsonArray.isEmpty(), "nothing is asked for")
         assertEquals("""{"trade_offer_access_token":"tok-9"}""", form["trade_offer_create_params"])
+    }
+
+    @Test
+    fun a_create_stopped_by_its_caller_throws_the_cancellation_instead_of_a_failure() = runTest {
+        val creator = HeaderSessionSteamOfferCreator(
+            createHttpClient(engine(mutableListOf()) { throw CancellationException("wake budget spent") }),
+            sessionId = "0123456789abcdef01234567",
+        )
+
+        assertFailsWith<CancellationException> { creator.createOffer(credential, draft) }
     }
 
     @Test

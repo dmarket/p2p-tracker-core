@@ -767,7 +767,7 @@ class TradeTrackerLoop(
      */
     private suspend fun reportOutcomeAcks(outcomes: List<DirectiveOutcome>): List<DirectiveOutcomeAck> {
         if (outcomes.isEmpty()) return emptyList()
-        val result = runCatching { marketplace.reportDirectives(outcomes) }
+        val result = runCatchingUnlessCancelled { marketplace.reportDirectives(outcomes) }
         // Non-null only when the call itself failed, in which case it is the reason for every action in the
         // batch — more informative than the matcher's "no result", which is about a response that did arrive.
         val transportFailure = result.exceptionOrNull()?.redactedSummary()
@@ -2998,7 +2998,8 @@ class TradeTrackerLoop(
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
             // instead left the lease held with no /trade-actions answer and no lifecycle event, so the
             // backend re-leased the directive forever and the deal stalled invisibly.
-            val result = bound ?: runCatching {
+            // A cancellation is let through: the cycle was stopped, which says nothing about Steam or the seller.
+            val result = bound ?: runCatchingUnlessCancelled {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
@@ -3098,7 +3099,7 @@ class TradeTrackerLoop(
             // dangling — versus a transport blip or a 5xx, where the next re-lease very likely works. Without
             // it every failure looks identical, so the retries run out their fixed budget and the give-up
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
-            val result = runCatching { offerCanceller.cancelOffer(credential, offerId) }
+            val result = runCatchingUnlessCancelled { offerCanceller.cancelOffer(credential, offerId) }
                 .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
             val write = result.write()
             // One read of the offer for any cancel that did not plainly land ([LoopConfig.checkFailedCancels]): its
@@ -4417,4 +4418,13 @@ class TradeTrackerLoop(
             steamOfferId = steamOfferId?.let { com.dmarket.p2p.tracker.model.OfferId(it) },
             error = error,
         )
+}
+
+/** [runCatching] that lets a cancellation through: a stopped cycle is no failure to report or to throttle on. */
+private inline fun <T> runCatchingUnlessCancelled(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
 }
