@@ -310,6 +310,7 @@ class P2pTrackerColdWakeTest {
         clock.advance(59.minutes)
         process().tracker.onPush(wake("watch", id = "w-2"))
         assertEquals(1, historyReads, "the revert watch is hourly")
+        assertEquals(listOf(3), marketplace.tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode })
 
         clock.advance(2.minutes)
         assertEquals(WakeOutcome.DONE, process().tracker.onPush(wake("watch", id = "w-3")))
