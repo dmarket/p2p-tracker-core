@@ -17,6 +17,9 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import okhttp3.OkHttpClient
 
 /**
@@ -31,9 +34,13 @@ import okhttp3.OkHttpClient
 object AndroidTracker {
     @Volatile private var installation: MobileTracker? = null
 
+    private val built = MutableStateFlow<P2pTracker?>(null)
+
     /** The process's tracker, once [startTracker] built it; `null` before. */
-    @Volatile var tracker: P2pTracker? = null
-        private set
+    val tracker: P2pTracker? get() = built.value
+
+    /** [tracker] as the host builds it: what [P2pTrackerWorker] waits on in a process WorkManager started. */
+    internal val trackers: StateFlow<P2pTracker?> = built.asStateFlow()
 
     /**
      * Where [startTracker] runs the tracker's start and stop. A failure there must not crash the app's process: the
@@ -154,10 +161,10 @@ object AndroidTracker {
         config: TrackerConfig,
         networkObserver: NetworkObserver,
         eventObserver: EventObserver,
-    ): P2pTracker = tracker ?: synchronized(this) {
-        tracker
+    ): P2pTracker = built.value ?: synchronized(this) {
+        built.value
             ?: checkNotNull(installation) { "call AndroidTracker.install(...) first" }
                 .tracker(scope, baseUrl, config, networkObserver, eventObserver)
-                .also { tracker = it }
+                .also { built.value = it }
     }
 }

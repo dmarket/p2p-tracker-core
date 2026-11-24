@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.runtime
 
+import com.dmarket.p2p.tracker.adapter.notary.NoOpNotaryProver
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
@@ -14,6 +15,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.TradeId
 import com.dmarket.p2p.tracker.model.WakeCause
 import com.dmarket.p2p.tracker.model.WakeOutcome
 import com.dmarket.p2p.tracker.model.WakeOutcomeKind
@@ -34,6 +36,7 @@ import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceUnauthorizedException
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
+import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.FakeClock
@@ -59,8 +62,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 class P2pTrackerWakeTest {
     private val account = SteamId("76561198000000001")
@@ -74,21 +79,33 @@ class P2pTrackerWakeTest {
         """{"v":"1","type":"wake_deal","wakeId":"w-1","transactionId":"tx-1","reason":"$reason"""" +
             (deadline?.let { ""","deadline":"$it"""" } ?: "") + "}"
 
-    private fun heartbeat(proofRequired: Boolean = false) = HeartbeatResponse(
-        activeTracking = listOf(
-            TrackedDeal(
-                dealId = deal,
-                steamOfferId = OfferId("offer-1"),
-                watch = setOf(WatchTarget.GET_TRADE_OFFER),
-                proofRequired = proofRequired,
-            ),
-        ),
-        ttlSeconds = 86_400,
+    private fun tracked(
+        dealId: DealId = deal,
+        offer: String = "offer-1",
+        proofRequired: Boolean = false,
+        lastOfferCode: Int? = null,
+        transactionId: String? = null,
+        proveAfter: Instant? = null,
+        steamTradeId: TradeId? = null,
+    ) = TrackedDeal(
+        dealId = dealId,
+        steamOfferId = OfferId(offer),
+        watch = setOf(WatchTarget.GET_TRADE_OFFER),
+        proofRequired = proofRequired,
+        lastOfferCode = lastOfferCode,
+        transactionId = transactionId,
+        proveAfter = proveAfter,
+        steamTradeId = steamTradeId,
     )
+
+    private fun heartbeat(proofRequired: Boolean = false, vararg deals: TrackedDeal = arrayOf(tracked(proofRequired = proofRequired))) =
+        HeartbeatResponse(activeTracking = deals.toList(), ttlSeconds = 86_400)
 
     private class Setup(
         val marketplace: FakeMarketplaceClient,
         val notary: FakeNotaryProver = FakeNotaryProver(),
+        val prover: NotaryProver = notary,
+        val offers: Map<OfferId, Int> = mapOf(OfferId("offer-1") to 3),
         val vault: SteamCredential? = fakeSteamCredential(),
         val refresher: SteamSessionRefresher = NoOpSteamSessionRefresher,
         val metered: Boolean = false,
@@ -102,7 +119,7 @@ class P2pTrackerWakeTest {
         TradeTrackerLoop(
             config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background),
             marketplace = setup.heldMarketplace,
-            steamReader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            steamReader = FakeSteamReadClient(initialOffers = setup.offers),
             credentials = SteamCredentialProvider(
                 vault = FakeCredentialVault(setup.vault),
                 scraper = FakeSteamSessionScraper(result = setup.vault),
@@ -112,7 +129,7 @@ class P2pTrackerWakeTest {
             scheduler = FakeScheduler(),
             clock = clock,
             deviceId = FakeDeviceIdStore(),
-            notary = setup.notary,
+            notary = setup.prover,
             eventObserver = observer,
         )
     }
@@ -238,6 +255,16 @@ class P2pTrackerWakeTest {
 
         assertEquals(WakeOutcome.failed(WakeCause.NOTARY), tracker.onPush(wake()))
         assertEquals(receiptThen(WakeOutcome.failed(WakeCause.NOTARY)), acks)
+    }
+
+    @Test
+    fun an_undelivered_proof_is_dmarket_not_answering_not_the_notary() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
+            submitProofThrowable = MarketplaceServerErrorException(503)
+        }
+        val tracker = tracker(Setup(mp))
+
+        assertEquals(WakeOutcome.failed(WakeCause.NETWORK), tracker.onPush(wake()))
     }
 
     @Test
@@ -405,5 +432,160 @@ class P2pTrackerWakeTest {
             tracker(off).onPush(wake()),
         )
         assertEquals(false, off.marketplace.heartbeatsSent.single().backgroundProveAllowed)
+    }
+
+    // ---- a proof wake ends done only once its proof is in (DMA-1066) ------------------------------
+
+    private val deferredOnCellular = WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
+
+    /** The ticket's deal: proof-enforced, its offer created and waiting for Steam Guard (9). */
+    private fun unconfirmed(metered: Boolean, prover: NotaryProver? = null) = FakeNotaryProver().let { notary ->
+        Setup(
+            FakeMarketplaceClient(heartbeat(true, tracked(proofRequired = true, lastOfferCode = 9))),
+            notary = notary,
+            prover = prover ?: notary,
+            offers = mapOf(OfferId("offer-1") to 9),
+            metered = metered,
+        )
+    }
+
+    @Test
+    fun an_offer_awaiting_steam_guard_defers_a_prove_offer_wake_on_mobile_data_without_the_background_option() = runTest {
+        val setup = unconfirmed(metered = true)
+
+        assertEquals(deferredOnCellular, splitTracker(setup).onPush(wake("prove_offer")))
+
+        assertEquals(receiptThen(deferredOnCellular), acks, "the first ack stays done, the final one says why")
+        assertTrue(setup.notary.proven.isEmpty(), "nothing decisive to prove")
+    }
+
+    @Test
+    fun an_offer_awaiting_steam_guard_fails_a_prove_offer_wake_on_wi_fi() = runTest {
+        assertEquals(WakeOutcome.failed(WakeCause.OTHER), splitTracker(unconfirmed(metered = false)).onPush(wake("prove_offer")))
+    }
+
+    @Test
+    fun an_offer_awaiting_steam_guard_leaves_every_other_wake_done() = runTest {
+        for (reason in listOf("directive", "cancel_ask", "watch", "frozen")) {
+            assertEquals(WakeOutcome.DONE, splitTracker(unconfirmed(metered = true)).onPush(wake(reason)), reason)
+        }
+    }
+
+    @Test
+    fun no_prover_fails_a_proof_wake_on_notary_ahead_of_the_network_gate() = runTest {
+        val setup = Setup(
+            FakeMarketplaceClient(heartbeat(proofRequired = true)),
+            prover = NoOpNotaryProver,
+            metered = true,
+        )
+
+        assertEquals(WakeOutcome.failed(WakeCause.NOTARY), splitTracker(setup).onPush(wake("prove_offer")))
+        assertEquals(WakeOutcome.DONE, splitTracker(setup).onPush(wake("watch")), "only a proof wake asks for the proof")
+    }
+
+    @Test
+    fun a_parked_prover_fails_a_proof_wake_on_notary() = runTest {
+        val notary = FakeNotaryProver().apply {
+            proveThrows = IllegalStateException("notary connection dropped")
+            onProve = { clock.advance(2.seconds) } // long enough to count towards the breaker
+        }
+        val setup = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary)
+        val tracker = tracker(setup)
+        repeat(3) { assertEquals(WakeOutcome.failed(WakeCause.NOTARY), tracker.onPush(wake("prove_offer"))) }
+
+        notary.proveThrows = null
+        assertEquals(WakeOutcome.failed(WakeCause.NOTARY), tracker.onPush(wake("prove_offer")))
+
+        assertEquals(3, notary.proven.size, "the parked prover is not called")
+        assertTrue(events.events.any { it is LifecycleEvent.ProofSuppressed && it.reason == ProofSkipReason.PROVER_PARKED.message })
+    }
+
+    @Test
+    fun a_refused_proof_fails_a_proof_wake_on_notary() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply { proofVerified = false }
+
+        assertEquals(WakeOutcome.failed(WakeCause.NOTARY), tracker(Setup(mp)).onPush(wake("prove_offer")))
+    }
+
+    @Test
+    fun a_second_proof_past_the_cycle_budget_fails_a_proof_wake_on_budget() = runTest {
+        val notary = FakeNotaryProver().apply { onProve = { clock.advance(25.hours) } } // past the next heartbeat
+        val setup = Setup(
+            FakeMarketplaceClient(
+                heartbeat(true, tracked(proofRequired = true), tracked(DealId("d2"), offer = "offer-2", proofRequired = true)),
+            ),
+            notary = notary,
+            offers = mapOf(OfferId("offer-1") to 3, OfferId("offer-2") to 3),
+        )
+
+        assertEquals(WakeOutcome.failed(WakeCause.BUDGET), tracker(setup).onPush(wake("prove_offer")))
+        assertEquals(1, notary.proven.size)
+    }
+
+    @Test
+    fun a_proof_accepted_in_the_wake_or_settled_before_it_ends_the_proof_wake_done() = runTest {
+        // Steam shows the offer accepted (3), the backend still has 9: the wake proves it and DMarket accepts.
+        val proven = Setup(FakeMarketplaceClient(heartbeat(true, tracked(proofRequired = true, lastOfferCode = 9))))
+        assertEquals(WakeOutcome.DONE, tracker(proven).onPush(wake("prove_offer")))
+        assertEquals(1, proven.notary.proven.size)
+
+        // The backend settled the offer on 2 (proven before this wake): nothing is owed.
+        val settled = Setup(
+            FakeMarketplaceClient(heartbeat(true, tracked(proofRequired = true, lastOfferCode = 2))),
+            offers = mapOf(OfferId("offer-1") to 2),
+            metered = true,
+        )
+        assertEquals(WakeOutcome.DONE, tracker(settled).onPush(wake("prove_offer")))
+        assertTrue(settled.notary.proven.isEmpty())
+    }
+
+    @Test
+    fun a_prove_offer_wake_for_a_deal_no_longer_tracked_is_done() = runTest {
+        val setup = Setup(
+            FakeMarketplaceClient(heartbeat(true, tracked(proofRequired = true, lastOfferCode = 9, transactionId = "tx-other"))),
+            offers = mapOf(OfferId("offer-1") to 9),
+            metered = true,
+        )
+
+        assertEquals(WakeOutcome.DONE, tracker(setup).onPush(wake("prove_offer")), "the wake names tx-1, the list has only tx-other")
+    }
+
+    @Test
+    fun a_prove_release_wake_without_a_trade_to_prove_fails_on_notary_and_one_without_a_mark_is_done() = runTest {
+        val marked = Setup(
+            FakeMarketplaceClient(heartbeat(true, tracked(lastOfferCode = 3, proveAfter = Instant.fromEpochSeconds(1_700_000_000)))),
+        )
+        assertEquals(WakeOutcome.failed(WakeCause.NOTARY), tracker(marked).onPush(wake("prove_release")))
+
+        val released = Setup(FakeMarketplaceClient(heartbeat(true, tracked(lastOfferCode = 3))))
+        assertEquals(WakeOutcome.DONE, tracker(released).onPush(wake("prove_release")))
+    }
+
+    @Test
+    fun a_release_proof_due_defers_on_mobile_data_and_ends_done_once_accepted() = runTest {
+        fun due(metered: Boolean) = Setup(
+            FakeMarketplaceClient(
+                heartbeat(
+                    true,
+                    tracked(lastOfferCode = 3, proveAfter = clock.now() + 1.hours, steamTradeId = TradeId("744935517744884653")),
+                ),
+            ),
+            metered = metered,
+        )
+
+        val held = due(metered = true)
+        assertEquals(deferredOnCellular, splitTracker(held).onPush(wake("prove_release")))
+        assertTrue(held.notary.proven.isEmpty())
+
+        val proven = due(metered = false)
+        assertEquals(WakeOutcome.DONE, splitTracker(proven).onPush(wake("prove_release")))
+        assertEquals(1, proven.notary.proven.size)
+    }
+
+    @Test
+    fun a_directive_wake_stays_done_whatever_the_proof() = runTest {
+        assertEquals(WakeOutcome.DONE, tracker(unconfirmed(metered = true)).onPush(wake("directive")))
+        val noProver = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = NoOpNotaryProver, metered = true)
+        assertEquals(WakeOutcome.DONE, tracker(noProver).onPush(wake("directive")))
     }
 }

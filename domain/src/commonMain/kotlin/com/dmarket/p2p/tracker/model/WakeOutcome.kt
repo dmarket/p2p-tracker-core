@@ -44,7 +44,7 @@ enum class WakeCause(val wireName: String) {
     /** The host's time for the wake ran out, or the cycle hit its own deadline: the OS stops the work next. */
     BUDGET("os_killed"),
 
-    /** DMarket did not answer: the network, a 5xx, a 429. */
+    /** DMarket did not answer: the network, a 5xx, a 429, the proof's delivery included. */
     NETWORK("other"),
 
     /** The DMarket session is gone. */

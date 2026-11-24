@@ -90,6 +90,7 @@ fun TrackedDealDto.toDomain(): TrackedDeal = TrackedDeal(
     // Fail-open like a freshness mark: a malformed or zero deadline is no deadline, never a failed heartbeat.
     deadline = deadlineTime.toFreshnessMark(),
     assetId = assetId?.takeIf { it.isNotBlank() }?.let(::AssetId),
+    transactionId = transactionId?.takeIf { it.isNotBlank() },
 )
 
 /**
@@ -265,6 +266,7 @@ fun DealDto.toDomain(): Deal = Deal(
             badges = c.badges?.let { CounterpartyBadges(it.steamLevel, it.tradingStatus, it.profilePrivate, it.validTradeUrl) },
         )
     },
+    needsStatusUpdate = needsStatusUpdate,
 )
 
 /** [DealActionResponseDto.createOffer] as the `create_offer` [Directive] for [dealId]; `null` for a blank directive id. */

@@ -3,8 +3,10 @@ package com.dmarket.p2p.tracker.runtime
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
+import com.dmarket.p2p.tracker.engine.ProofFreshness
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.TrackerBlock
+import com.dmarket.p2p.tracker.engine.dealsAwaitingProof
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DeviceId
@@ -158,7 +160,17 @@ class P2pTracker(
         var directiveDropped = false
         var proofDeferred = false
         var proofOutOfBudget = false
+
+        /** A proof the cycle could not run for want of a prover: none, parked, or a demand it cannot bind or retry yet. */
+        var proofBlocked = false
+
+        /** A second proof the cycle had no time left for ([ProofSkipReason.BUDGET_SPENT]). */
+        var proofBudgetSpent = false
+
+        /** Deals whose proof DMarket holds after this cycle: accepted now, or already within its window. */
+        val proofLanded = mutableSetOf<String>()
         val proofFailed = mutableSetOf<String>()
+        val proofUndelivered = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
         val proofRefused = mutableSetOf<String>()
     }
@@ -413,7 +425,9 @@ class P2pTracker(
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
      * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
      * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
-     * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing.
+     * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
+     * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
+     * Retry spent, and a resend DMarket had already accepted reads as success.
      * The refresh's own 429 waits exactly its `Retry-After`, for this deal only; Kong's 429 takes the DMarket backoff
      * like any other. A 503 (or any other failure of the call) is [UpdateFailure.DMARKET] and charged nothing; a deal
      * with nothing to refresh (no watch entry, or a 404) still runs its cycle, uncounted.
@@ -433,7 +447,11 @@ class P2pTracker(
         val permit = activePermit(dealId, now)
         when {
             permit == null -> takePermit(dealId, now, allowed)?.let { return it }
-            permit.sessions > allowed -> return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+            // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
+            // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
+            // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
+            permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
+                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
         }
         val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
             ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
@@ -750,6 +768,7 @@ class P2pTracker(
             loop.steamCredentialUnavailable -> if (loop.needsReLogin) UpdateFailure.STEAM_SESSION else UpdateFailure.STEAM
             block != TrackerBlock.NONE || !probe.heartbeat -> UpdateFailure.DMARKET
             dealId.value in probe.proofFailed -> UpdateFailure.NOTARY
+            dealId.value in probe.proofUndelivered -> UpdateFailure.DMARKET
             dealId.value in probe.proofRefused -> UpdateFailure.PROOF_REFUSED
             probe.steamReadFailed -> UpdateFailure.STEAM
             dealId.value in probe.reportFailed -> UpdateFailure.DMARKET
@@ -762,11 +781,17 @@ class P2pTracker(
      * The final outcome of [wake]'s cycle (contract d455888 §6.4, §4.3), by the first reason it fell short. A proof
      * held or failed matters only on a wake that is not for a `create_offer`: a `directive` wake is never `deferred`,
      * and its proof is not its work.
+     *
+     * A proof wake (`prove_offer`, `prove_release`) is `done` only when no deal it names still waits on its proof
+     * ([dealsAwaitingProof]) or DMarket holds that proof after the cycle. A proof it could not run is `notary` (no
+     * prover, a parked one, a refusal); one still owed with nothing run for it, an offer still awaiting Steam Guard
+     * included, is `cellular_not_allowed` behind a closed network gate and `other` otherwise (DMA-1066).
      */
     private fun wakeOutcomeOf(wake: Wake, loop: TradeTrackerLoop, run: CycleRun): WakeOutcome {
         val probe = run.probe
         val block = loop.blockingState
         val proofs = !wake.isDirective
+        val proofWake = wake.isProof
         return when {
             !run.completed -> WakeOutcome.failed(WakeCause.BUDGET)
             block == TrackerBlock.STEAM_SESSION_MISSING || block == TrackerBlock.STEAM_ACCOUNT_MISMATCH ->
@@ -777,10 +802,20 @@ class P2pTracker(
             // No Steam credential this time (a refresh that failed on the network), or a leased write left undone.
             loop.steamCredentialUnavailable || probe.directiveDropped -> WakeOutcome.failed(WakeCause.OTHER)
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
+            proofs && probe.proofUndelivered.isNotEmpty() -> WakeOutcome.failed(WakeCause.NETWORK)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
+            // Ahead of the network gate, as in the mint policy: a host that cannot prove does not on Wi-Fi either.
+            proofWake && (probe.proofBlocked || probe.proofRefused.isNotEmpty()) -> WakeOutcome.failed(WakeCause.NOTARY)
+            proofWake && probe.proofBudgetSpent -> WakeOutcome.failed(WakeCause.BUDGET)
             proofs && probe.proofDeferred -> WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
             probe.failed || probe.steamReadFailed || probe.steamRateLimited || probe.reportFailed.isNotEmpty() ->
                 WakeOutcome.failed(WakeCause.OTHER)
+            proofWake && wake.dealsAwaitingProof(loop.trackedDeals).any { it.value !in probe.proofLanded } ->
+                if (loop.proofsDeferred) {
+                    WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
+                } else {
+                    WakeOutcome.failed(WakeCause.OTHER)
+                }
             else -> WakeOutcome.DONE
         }
     }
@@ -794,6 +829,9 @@ class P2pTracker(
     ): StatusUpdate {
         val deal = state.value.deals[dealId] ?: DealTrackingState()
         val permit = activePermit(dealId, clock.now())
+        val left = permit?.let { (retries + 1 - it.sessions.coerceAtLeast(1)).coerceAtLeast(0) } ?: retries
+        // Bytes made and not delivered go again with no session, so the app's Retry stays open for them.
+        val resend = session?.loop?.hasUndeliveredProof(dealId) == true
         return StatusUpdate(
             deal.checkedAt,
             observed ?: deal.lastCode,
@@ -801,7 +839,7 @@ class P2pTracker(
             retryAfter,
             failure,
             nextAllowedAt = permit?.until,
-            retryLeft = permit?.let { (retries + 1 - it.sessions.coerceAtLeast(1)).coerceAtLeast(0) } ?: retries,
+            retryLeft = if (resend) left.coerceAtLeast(1) else left,
         )
     }
 
@@ -835,17 +873,22 @@ class P2pTracker(
                 deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
             }
             is LifecycleEvent.ProofSuppressed -> {
-                if (event.reason == ProofSkipReason.WAKE_BUDGET.message) probe.proofOutOfBudget = true
+                when (event.reason) {
+                    ProofSkipReason.WAKE_BUDGET.message -> probe.proofOutOfBudget = true
+                    ProofSkipReason.BUDGET_SPENT.message -> probe.proofBudgetSpent = true
+                    ProofSkipReason.ALREADY_ACCEPTED.message -> probe.proofLanded += event.dealId
+                    in BLOCKED_PROOF_REASONS -> probe.proofBlocked = true
+                }
                 // The same bytes' refusal stands: a manual run that meets the latch says so, not success.
                 if (event.reason == ProofSkipReason.ALREADY_REFUSED.message) probe.proofRefused += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofFailed -> {
-                probe.proofFailed += event.dealId
+                if (event.undelivered) probe.proofUndelivered += event.dealId else probe.proofFailed += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofSubmitted -> {
-                if (!event.verified) probe.proofRefused += event.dealId
+                if (event.verified) probe.proofLanded += event.dealId else probe.proofRefused += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.NONE) }
             }
             else -> Unit
@@ -892,6 +935,14 @@ class P2pTracker(
         private const val EXHAUSTED = Int.MAX_VALUE
 
         private const val NOT_FOUND = 404
+
+        /** A proof wake's proof that could not run here, whatever the network (DMA-1066). */
+        private val BLOCKED_PROOF_REASONS = setOf(
+            ProofSkipReason.NO_PROVER.message,
+            ProofSkipReason.PROVER_PARKED.message,
+            ProofSkipReason.FRESHNESS_RETRY_PENDING.message,
+            ProofFreshness.UNBINDABLE,
+        )
 
         private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
         private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account, or its loop did not start"

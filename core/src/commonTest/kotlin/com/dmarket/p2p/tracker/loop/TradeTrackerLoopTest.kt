@@ -3018,10 +3018,140 @@ class TradeTrackerLoopTest {
             l.runOnce()
             l.runOnce()
             assertEquals(2, mp.proofsSubmitted.size, "an undelivered decisive proof must be retried, not deduped away: $failure")
+            assertEquals(1, notary.proven.size, "the same bytes go again, no second notary session: $failure")
         }
     }
 
     private fun simulatedNotaryFailure() = IllegalStateException("simulated /notary failure")
+
+    /** A proof-required deal at offer 3 whose first proof is made and answered 503. */
+    private fun undeliveredOnce() = FakeMarketplaceClient(
+        heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked("d1", "offer-1", proofRequired = true)), ttlSeconds = 60),
+    ).apply { submitProofThrowable = MarketplaceServerErrorException(503) }
+
+    @Test
+    fun a_resend_refused_is_read_off_the_reason_first_then_off_the_deal() = runTest {
+        val replayed = "this presentation was already accepted for this deal"
+        val wrongPhase = "a deal in AWAITING_TERMINAL is not waiting on a provable transition"
+        data class Case(val needsStatusUpdate: Boolean?, val readFails: Boolean, val reason: String, val verified: Boolean)
+        val cases = listOf(
+            // p2p's text outranks the deal's one flag, which another proof of the same deal may hold up
+            Case(needsStatusUpdate = true, readFails = false, replayed, verified = true),
+            Case(needsStatusUpdate = null, readFails = true, replayed, verified = true),
+            Case(needsStatusUpdate = false, readFails = false, wrongPhase, verified = true),
+            Case(needsStatusUpdate = true, readFails = false, wrongPhase, verified = false),
+            Case(needsStatusUpdate = null, readFails = false, wrongPhase, verified = false),
+            Case(needsStatusUpdate = null, readFails = true, "presentation does not match the deal", verified = false),
+        )
+        for ((needsStatusUpdate, readFails, reason, verified) in cases) {
+            val case = "needsStatusUpdate=$needsStatusUpdate, read fails=$readFails, reason=$reason"
+            val events = RecordingEventObserver()
+            val notary = FakeNotaryProver()
+            val mp = undeliveredOnce().apply {
+                dealForGet = fakeDeal("d1").copy(needsStatusUpdate = needsStatusUpdate)
+                getDealThrows = readFails
+            }
+            val l = loop(
+                marketplace = mp,
+                reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+                notary = notary,
+                eventObserver = events,
+            )
+            l.runOnce()
+            mp.submitProofThrowable = null
+            mp.proofVerified = false
+            mp.proofReason = reason
+            val outcome = l.runOnce()
+
+            val submitted = events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>().single()
+            assertEquals(verified, submitted.verified, case)
+            assertEquals(reason, submitted.reason, "the backend's text stays on the frame: $case")
+            assertEquals(if (verified) 1 else 0, outcome.proofsSubmitted, case)
+            assertEquals(if (reason == replayed) 0 else 1, mp.getDealCalls, "the text needs no deal read: $case")
+            assertEquals(1, notary.proven.size, case)
+            l.runOnce()
+            assertEquals(1, notary.proven.size, "a verdict either way: no new session for this transition: $case")
+        }
+    }
+
+    @Test
+    fun a_first_send_refused_stays_a_refusal_and_reads_no_deal() = runTest {
+        val events = RecordingEventObserver()
+        val mp = FakeMarketplaceClient(
+            heartbeatResponse = HeartbeatResponse(activeTracking = listOf(tracked("d1", "offer-1", proofRequired = true)), ttlSeconds = 60),
+            dealForGet = fakeDeal("d1").copy(needsStatusUpdate = false),
+        ).apply {
+            proofVerified = false
+            proofReason = "this presentation was already accepted for this deal"
+        }
+        loop(
+            marketplace = mp,
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            eventObserver = events,
+        ).runOnce()
+
+        assertFalse(events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>().single().verified)
+        assertEquals(0, mp.getDealCalls)
+    }
+
+    @Test
+    fun undelivered_bytes_go_past_the_gates_that_ration_a_session_and_after_their_hour_a_new_one_runs() = runTest {
+        for (age in listOf(59.minutes, 1.hours)) {
+            val clock = FakeClock()
+            val notary = FakeNotaryProver()
+            val mp = undeliveredOnce()
+            val l =
+                loop(
+                    marketplace = mp,
+                    reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+                    notary = notary,
+                    clock = clock,
+                )
+            l.runOnce()
+            mp.submitProofThrowable = null
+            clock.advance(age)
+            l.proofsDeferred = true // a metered network without the user's option
+            l.runOnce()
+            l.proofsDeferred = false
+            l.runOnce()
+
+            // Within the hour the gate held nothing; past it the bytes are gone, the gate holds the new session, then it runs.
+            assertEquals(if (age < 1.hours) 1 else 2, notary.proven.size, "after $age")
+            assertEquals(2, mp.proofsSubmitted.size, "after $age")
+        }
+    }
+
+    @Test
+    fun undelivered_bytes_for_a_mark_go_again_and_a_landed_resend_satisfies_it() = runTest {
+        val clock = FakeClock()
+        val progress = InMemoryTrackerProgressStore()
+        progress.recordReported(mapOf(DealId("deal-1") to ReportedStatus(lastOfferCode = 3, lastHistoryCode = 3)))
+        val notary = FakeNotaryProver()
+        val events = RecordingEventObserver()
+        val mp = markedHeartbeat(marked(proveAfter = clock.mark())).apply {
+            submitProofThrowable = MarketplaceServerErrorException(503)
+            dealForGet = fakeDeal("deal-1").copy(needsStatusUpdate = false)
+        }
+        val l = loop(
+            marketplace = mp,
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            notary = notary,
+            progress = progress,
+            eventObserver = events,
+            clock = clock,
+        )
+        l.runOnce()
+        mp.submitProofThrowable = null
+        mp.proofVerified = false
+        mp.proofReason = "this presentation was already accepted for this deal"
+        l.runOnce()
+        l.runOnce()
+
+        assertTrue(events.events.filterIsInstance<LifecycleEvent.ProofFailed>().single().undelivered)
+        assertTrue(events.events.filterIsInstance<LifecycleEvent.ProofSubmitted>().single().verified)
+        assertEquals(1, notary.proven.size, "the resend satisfied the mark: no session after it")
+        assertEquals(2, mp.proofsSubmitted.size)
+    }
 
     @Test
     fun a_sent_end_of_deal_proof_is_kept_on_the_device_and_a_mid_deal_one_is_not() = runTest {
@@ -4522,7 +4652,7 @@ class TradeTrackerLoopTest {
         ).apply { submitProofThrowable = simulatedNotaryFailure() }
         loop(marketplace = mp, reader = reader, eventObserver = events).runOnce()
 
-        assertEquals(1, events.events.filterIsInstance<LifecycleEvent.ProofFailed>().size)
+        assertTrue(events.events.filterIsInstance<LifecycleEvent.ProofFailed>().single().undelivered, "made, not delivered")
         assertTrue(
             events.events.none { it is LifecycleEvent.ProofSubmitted },
             "a proof the backend never acknowledged must not be reported as submitted",

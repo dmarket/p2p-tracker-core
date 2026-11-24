@@ -103,6 +103,9 @@ enum class ProofState {
  *   `Retry-After`); `null` when no wait is known, and the app may ask again.
  * @property retryLeft how many more notary sessions the deal's permit allows after its first (the Retry on T-16,
  *   DMA-1016); the `retries` asked for while no permit holds. `0` with [nextAllowedAt] set: the next run waits for it.
+ *   At least `1` while a proof made for the deal was not delivered (within its hour), spent permit or not: the next run
+ *   sends those bytes again with no notary session. A 429 on that delivery is [UpdateFailure.RATE_LIMITED] and still
+ *   waits its [retryAfter].
  */
 data class StatusUpdate(
     val checkedAt: Instant? = null,
@@ -135,7 +138,10 @@ enum class UpdateFailure {
     /** The proof was not made: the prover or the notary connection failed. */
     NOTARY,
 
-    /** DMarket did not answer the sync or refused the report. */
+    /**
+     * DMarket did not answer the sync, refused the report, or did not answer the proof's delivery (a 5xx, a timeout):
+     * that proof's bytes go again on the next run, with no notary session.
+     */
     DMARKET,
 
     /** The run outlived the cycle deadline and was cancelled. */
@@ -149,8 +155,9 @@ enum class UpdateFailure {
 
     /**
      * The proof reached DMarket and was refused (`verified: false`, or a 4xx verdict such as a deal that moved on), in
-     * this run or, for the same bytes, earlier. A Retry would meet the same refusal. A resent proof DMarket had already
-     * accepted is refused too, for now (no code tells it apart yet).
+     * this run or, for the same bytes, earlier. A Retry would meet the same refusal. Bytes sent again after an answer
+     * that was no verdict are a success when DMarket says it already accepted them or the deal no longer needs a status
+     * update, and refused otherwise (`ResentProof`).
      */
     PROOF_REFUSED,
 }

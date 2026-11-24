@@ -41,6 +41,7 @@ import com.dmarket.p2p.tracker.engine.ReportAck
 import com.dmarket.p2p.tracker.engine.ReportAcknowledgement
 import com.dmarket.p2p.tracker.engine.ReportPlan
 import com.dmarket.p2p.tracker.engine.ReportedStatus
+import com.dmarket.p2p.tracker.engine.ResentProof
 import com.dmarket.p2p.tracker.engine.SuspiciousOfferCheck
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.engine.TrackerTick
@@ -135,9 +136,11 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
@@ -376,6 +379,16 @@ private data class WriteAttempt(
  * in a loop cannot turn into a stream of Steam reads. Measured against the same persisted stamp as the interval.
  */
 internal val HOST_REQUESTED_SENT_OFFERS_FLOOR = 30.seconds
+
+/**
+ * How long bytes made but not delivered are sent again rather than proved anew: p2p refuses a proof attested more than
+ * an hour before it verifies it (`provenance.max_attestation_age`, §6.2). Counted from before the prove started, so
+ * it never outlasts the attestation.
+ */
+internal val PROOF_RESEND_WINDOW = 1.hours
+
+/** A proof that did not reach DMarket: its bytes, and when the prove that made them started. */
+private class UndeliveredProof(val proof: ProofSubmission, val provedFrom: Instant)
 
 /**
  * How many received offers one guard scan asks DMarket about ([DmarketOfferVerifier]); the rest wait for the next
@@ -1533,6 +1546,9 @@ class TradeTrackerLoop(
 
     /** The deals the last successful heartbeat asked this device to track; empty before one. */
     val trackedDealIds: List<DealId> get() = lastActiveTracking.orEmpty().map { it.dealId }
+
+    /** The deals the last successful heartbeat asked this device to track, as it served them; empty before one. */
+    val trackedDeals: List<TrackedDeal> get() = lastActiveTracking.orEmpty()
 
     /**
      * `true` while the Steam id the backend linked to this DMarket account disagrees with the Steam id of
@@ -3280,22 +3296,26 @@ class TradeTrackerLoop(
             emit(LifecycleEvent.FreshProofDemanded(demand.dealId.value, demand.tradeId.value, demand.proveAfter.toString()))
             val now = clock.now()
             val standing = freshProgress[demand.dealId]
-            val verdict =
-                ProofMintPolicy.decideFreshness(
-                    standing,
-                    now,
-                    proverAvailable,
-                    notaryThrottle.parkedUntil(now),
-                    mintedThisCycle,
-                    proofDeadline,
-                    proofsDeferred,
-                    proofsOutOfBudget,
-                )
-            if (verdict is ProofMintVerdict.Skip) {
-                emitProofSkip(demand.dealId, FreshProofDemand.AXIS.wireName, verdict)
-                continue
+            // Bytes made for this mark and not delivered go again before any gate: no notary session, nothing to spend.
+            val resend = undeliveredProof(demand, now)
+            if (resend == null) {
+                val verdict =
+                    ProofMintPolicy.decideFreshness(
+                        standing,
+                        now,
+                        proverAvailable,
+                        notaryThrottle.parkedUntil(now),
+                        mintedThisCycle,
+                        proofDeadline,
+                        proofsDeferred,
+                        proofsOutOfBudget,
+                    )
+                if (verdict is ProofMintVerdict.Skip) {
+                    emitProofSkip(demand.dealId, FreshProofDemand.AXIS.wireName, verdict)
+                    continue
+                }
+                mintedThisCycle = true
             }
-            mintedThisCycle = true
             // The wire's trade id and nothing else: no `steamOfferId` (the history read's template fills only
             // `{tradeId}` and the token) and no fallback to a local correlation, which can match a *different*
             // trade of the same asset after a rollback — the scenario the mark exists for.
@@ -3305,7 +3325,7 @@ class TradeTrackerLoop(
                 minOnlineBudget = onlineBudgets[demand.dealId],
             )
             val result =
-                mintAndSubmit(binding, FreshProofDemand.AXIS, credential, now, onlineBudgets, demanded = true) ?: continue
+                mintAndSubmit(binding, FreshProofDemand.AXIS, credential, now, onlineBudgets, demand, resend, demanded = true) ?: continue
             if (result.verified) {
                 proofsSubmitted++
                 recordFreshProofProgress(demand.dealId, ProofFreshness.satisfied(standing, demand))
@@ -3429,19 +3449,27 @@ class TradeTrackerLoop(
             // their own ~30 MB to prove the same prover is still broken. That is the shape of the dev incident
             // — six tracked deals, every attempt wedged.
             val now = clock.now()
-            val verdict = ProofMintPolicy.decide(
-                intent = intent,
-                now = now,
-                refused = proofRejected,
-                accepted = acceptedProofs,
-                acceptedTtlMs = config.tunables.notary.acceptedProofTtlMs,
-                proverAvailable = proverAvailable,
-                proverParkedUntil = notaryThrottle.parkedUntil(now),
-                mintedThisCycle = mintedThisCycle,
-                cycleDeadline = proofDeadline,
-                networkDeferred = proofsDeferred,
-                wakeBudget = proofsOutOfBudget,
-            )
+            // Bytes made for this transition and not delivered go again before any gate (DMA-1016): sending them is no
+            // notary session, so none of the gates that ration one applies. They exist only while no verdict came, so
+            // neither the refusal latch nor an acceptance can stand against them.
+            val resend = undeliveredProof(intent, now)
+            val verdict = if (resend != null) {
+                null
+            } else {
+                ProofMintPolicy.decide(
+                    intent = intent,
+                    now = now,
+                    refused = proofRejected,
+                    accepted = acceptedProofs,
+                    acceptedTtlMs = config.tunables.notary.acceptedProofTtlMs,
+                    proverAvailable = proverAvailable,
+                    proverParkedUntil = notaryThrottle.parkedUntil(now),
+                    mintedThisCycle = mintedThisCycle,
+                    cycleDeadline = proofDeadline,
+                    networkDeferred = proofsDeferred,
+                    wakeBudget = proofsOutOfBudget,
+                )
+            }
             if (verdict is ProofMintVerdict.Skip) {
                 // An ALREADY_ACCEPTED skip still counts as verified, so the report it corroborates goes out.
                 // Read off the reason rather than re-derived here, so the two cannot disagree.
@@ -3466,10 +3494,11 @@ class TradeTrackerLoop(
             )
             // Marked before the outcome is known: a FAILED attempt spends the same wall clock and the same MPC
             // session as a successful one, and the budget is about what the cycle can still afford.
-            mintedThisCycle = true
+            if (resend == null) mintedThisCycle = true
             // Null means the backend never saw the proof — generation or delivery failed, and the attempt has
-            // already had its say (ProofFailed, the breaker fold, any budget lesson). Retry next tick.
-            val result = mintAndSubmit(binding, intent.source, credential, now, onlineBudgets, archive = intent) ?: run {
+            // already had its say (ProofFailed, the breaker fold, any budget lesson). Retry next tick: undelivered
+            // bytes are sent again, a failed prove runs again.
+            val result = mintAndSubmit(binding, intent.source, credential, now, onlineBudgets, intent, resend, archive = intent) ?: run {
                 proofFailed += intent.dealId to intent.source
                 // The backend never saw it, so it will never rule on it — same standing as a skip that
                 // submitted nothing. Report the transition unproven and keep retrying the proof.
@@ -3477,7 +3506,8 @@ class TradeTrackerLoop(
                 continue
             }
             // Delivered but verified=false is terminal — the backend has ruled on these bytes; resubmitting
-            // the identical proof can't change the verdict, so latch it off. Either way it is emitted, because
+            // the identical proof can't change the verdict, so latch it off. (Resent bytes that had landed the first
+            // time come back verified from [mintAndSubmit], so only a resend the deal still waits on is refused here.) Either way it is emitted, because
             // "rejected once, forever" is the outcome least visible from the counters: it moves neither
             // proofsSubmitted nor the retry path.
             if (result.verified) {
@@ -3711,6 +3741,11 @@ class TradeTrackerLoop(
      * fold re-reads the clock on purpose: it has to *measure* the attempt, and [now] predates it.
      *
      * A 4xx refusal of the submission is the backend's verdict, not a delivery failure: see [submitForVerdict].
+     *
+     * **A proof made but not delivered** (DMA-1016, §6.3) is kept under [slot], what it attests, for the hour p2p
+     * still takes it; the caller passes it back as [resend] and it goes again, the same bytes, with no notary session.
+     * A resend answered `verified: false` is read off its text, then the deal ([ResentProof]): bytes that had landed come
+     * back verified.
      */
     private suspend fun mintAndSubmit(
         binding: ProvenReadBinding,
@@ -3718,29 +3753,73 @@ class TradeTrackerLoop(
         credential: SteamCredential,
         now: Instant,
         onlineBudgets: MutableMap<DealId, Int>,
+        slot: Any,
+        resend: UndeliveredProof? = null,
         demanded: Boolean = false,
         archive: ProofIntent? = null,
     ): ProofResult? {
         val attemptStartedAt = clock.now()
+        val proof = resend?.proof ?: prove(binding, source, credential, now, onlineBudgets, demanded, attemptStartedAt) ?: return null
         // The whole ProofResult, not just its Boolean: the backend's `reason` is the only text that says WHY a
         // proof was refused, and projecting it away here is what made `"empty proof_payload"` — the backend
         // naming the exact defect — invisible to every consumer of the event stream.
-        val outcome = runCatching {
-            val proof = notary.proveTransition(binding, source, credential)
-            submitForVerdict(proof).also {
-                // Sent, whatever the verdict: the device keeps its copy of an end-of-deal proof (D2). [now] is the
-                // cycle that read the final status and proved it, which is when the retention starts.
-                if (archive != null && ProofArchiveStore.endsDeal(archive.source, archive.steamStatusCode)) {
-                    runCatching { proofArchive.keep(archive.dealId, archive.source, archive.steamStatusCode, proof.proofPayload, now) }
-                }
+        val outcome = runCatching { submitForVerdict(proof) }
+        val result = outcome.getOrElse { failure ->
+            // No verdict (a 5xx, a 408, the network, a 429, a cancelled cycle): p2p takes the same bytes again within the
+            // attestation's hour (§6.3), so they are kept, from before the first prove started, and not proved again.
+            // Stored before anything suspends: a cancelled cycle throws at its next suspension.
+            undeliveredProofs = undeliveredProofs + (slot to UndeliveredProof(proof, resend?.provedFrom ?: attemptStartedAt))
+            // The prover did its part: a delivery failure must not park it, nor stand in for a notary failure.
+            if (resend == null && failure !is CancellationException) notaryThrottle.onResult(generated = true, now = now)
+            // DMarket's 429 on `/notary` is said as the rate limit it is, so a manual update shows the wait.
+            if (failure is RateLimitedException) {
+                emitIfRateLimited(failure)
+            } else if (failure !is CancellationException) {
+                emit(
+                    LifecycleEvent.ProofFailed(
+                        binding.dealId.value,
+                        source.wireName,
+                        failure.redactedSummary(),
+                        demanded,
+                        undelivered = true,
+                    ),
+                )
             }
+            return null
         }
+        undeliveredProofs = undeliveredProofs - slot
+        // Sent, whatever the verdict: the device keeps its copy of an end-of-deal proof (D2). [now] is the cycle that
+        // read the final status and proved it, which is when the retention starts.
+        if (archive != null && ProofArchiveStore.endsDeal(archive.source, archive.steamStatusCode)) {
+            runCatching { proofArchive.keep(archive.dealId, archive.source, archive.steamStatusCode, proof.proofPayload, now) }
+        }
+        // The prover produced a proof and it reached the backend — whatever the verdict, this prover works, so
+        // the failure ladder clears. Deliberately not keyed on `verified`: a backend that starts refusing
+        // proofs must not park the client's ability to make them. A resend ran no prover and says nothing of it.
+        if (resend == null) notaryThrottle.onResult(generated = true, now = now)
+        // Bytes p2p already accepted are refused when they come again, with no code: the deal says which it was.
+        if (resend != null && !result.verified && resentProofLanded(binding.dealId, result.reason)) return result.copy(verified = true)
+        return result
+    }
+
+    /**
+     * One notary session for [binding]: the proof, or `null` when it failed, in which case the attempt has already had its
+     * say. See [mintAndSubmit] for why the failure handling lives here and nowhere else.
+     */
+    private suspend fun prove(
+        binding: ProvenReadBinding,
+        source: TradeStatusSource,
+        credential: SteamCredential,
+        now: Instant,
+        onlineBudgets: MutableMap<DealId, Int>,
+        demanded: Boolean,
+        attemptStartedAt: Instant,
+    ): ProofSubmission? {
+        val outcome = runCatching { notary.proveTransition(binding, source, credential) }
         val notStarted = (outcome.exceptionOrNull() as? HostedProofException)?.failure is ProofFailure.NotStarted
         if (!notStarted) onNotarySession?.invoke(binding.dealId)
-        // Generation or delivery failed — the backend never saw the proof: retry next tick.
-        val result = outcome.getOrElse { failure ->
-            // DMarket's 429 on `/notary`: the prover did its part and the notary is not at fault. Said as the
-            // rate limit it is, so a manual update shows the wait rather than a dropped connection.
+        return outcome.getOrElse { failure ->
+            // DMarket's 429 (the notary token's own call): the prover did its part and the notary is not at fault.
             if (failure is RateLimitedException) {
                 notaryThrottle.onResult(generated = true, now = now)
                 emitIfRateLimited(failure)
@@ -3775,13 +3854,38 @@ class TradeTrackerLoop(
             if (failure !is CancellationException) {
                 emit(LifecycleEvent.ProofFailed(binding.dealId.value, source.wireName, failure.redactedSummary(), demanded))
             }
-            return null
+            null
         }
-        // The prover produced a proof and it reached the backend — whatever the verdict, this prover works, so
-        // the failure ladder clears. Deliberately not keyed on `verified`: a backend that starts refusing
-        // proofs must not park the client's ability to make them.
-        notaryThrottle.onResult(generated = true, now = now)
-        return result
+    }
+
+    /** Whether resent bytes that came back `verified: false` had landed the first time ([ResentProof]). */
+    private suspend fun resentProofLanded(dealId: DealId, reason: String?): Boolean {
+        // p2p's own word about these bytes needs no deal read.
+        if (ResentProof.landed(needsStatusUpdate = null, reason)) return true
+        val deal = try {
+            marketplace.getDeal(dealId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            null
+        }
+        return ResentProof.landed(deal?.needsStatusUpdate, reason)
+    }
+
+    /** [slot]'s kept bytes while their hour runs, dropping every kept proof whose hour is over. */
+    private fun undeliveredProof(slot: Any, now: Instant): UndeliveredProof? {
+        val live = undeliveredProofs.filterValues { now - it.provedFrom < PROOF_RESEND_WINDOW }
+        if (live.size != undeliveredProofs.size) undeliveredProofs = live
+        return live[slot]
+    }
+
+    /**
+     * Whether a proof for [dealId] was made and not yet delivered, within its hour: sending it again is no notary
+     * session, so a manual update whose permit is spent still runs to send it. Read off the cycle lock.
+     */
+    fun hasUndeliveredProof(dealId: DealId): Boolean {
+        val now = clock.now()
+        return undeliveredProofs.values.any { it.proof.dealId == dealId && now - it.provedFrom < PROOF_RESEND_WINDOW }
     }
 
     /**
@@ -3991,6 +4095,15 @@ class TradeTrackerLoop(
      * submission this latch exists to stop.
      */
     private val proofRejected = mutableSetOf<ProofIntent>()
+
+    /**
+     * Proofs made but not delivered, by what they attest (a [ProofIntent], or a [FreshProofDemand]), kept for
+     * [PROOF_RESEND_WINDOW] to be sent again (DMA-1016). In memory only: a proof is kept on the device no longer than
+     * its hour, and a new process proves afresh. Written by the cycle and read by [hasUndeliveredProof] off its lock, so
+     * replaced whole rather than changed in place.
+     */
+    @Volatile
+    private var undeliveredProofs: Map<Any, UndeliveredProof> = emptyMap()
 
     /**
      * Whether to spend a `GetTradeHistory` read this cycle.

@@ -167,6 +167,7 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("source", event.source)
             put("reason", event.reason)
             put("demanded", event.demanded)
+            put("undelivered", event.undelivered)
         }
         is LifecycleEvent.FreshProofDemanded -> {
             put("event", "FreshProofDemanded")
