@@ -296,6 +296,11 @@ sealed interface LifecycleEvent {
         val reason: String? = null,
         /** Whether the attempt answered a freshness mark — see [ProofSubmitted.demanded]. */
         val demanded: Boolean = false,
+        /**
+         * The proof was made and only its delivery failed (a 5xx, a timeout, the network): the notary is not at
+         * fault, and the same bytes are sent again within the hour instead of a new notary session.
+         */
+        val undelivered: Boolean = false,
     ) : LifecycleEvent
 
     /**

@@ -311,6 +311,10 @@ class LifecycleEventJsonTest {
             parse(LifecycleEvent.ProofFailed("deal1", "history", "notary unreachable", demanded = true))["demanded"]
                 ?.jsonPrimitive?.content,
         )
+        assertEquals(
+            "true",
+            parse(LifecycleEvent.ProofFailed("deal1", "offer", "HTTP 503", undelivered = true))["undelivered"]?.jsonPrimitive?.content,
+        )
     }
 
     @Test

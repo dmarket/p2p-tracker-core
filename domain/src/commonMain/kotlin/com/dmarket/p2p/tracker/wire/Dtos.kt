@@ -324,6 +324,7 @@ data class DealDto(
     @SerialName("cancelFee") val cancelFee: MoneyDto? = null,
     @SerialName("cancelFeeEndTime") val cancelFeeEndTime: String? = null, // RFC3339
     @SerialName("counterparty") val counterparty: CounterpartyDto? = null,
+    @SerialName("needsStatusUpdate") val needsStatusUpdate: Boolean? = null,
 ) {
     /** Redacted: the accept link embeds a bearer `token=` — see [com.dmarket.p2p.tracker.model.marketplace.Deal]. */
     override fun toString(): String = "DealDto(dealId=$dealId, state=$state, buyerAccountId=$buyerAccountId, " +
@@ -331,7 +332,8 @@ data class DealDto(
         "steamOfferId=$steamOfferId, reasonCode=$reasonCode, " +
         "trustedAcceptUri=${(trustedAcceptUri ?: trustedAcceptUrlLegacy)?.let { NetworkRedaction.redactUrl(it) }}, " +
         "createTime=$createTime, updateTime=$updateTime, cancellable=$cancellable, nextAction=$nextAction, " +
-        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty)"
+        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty, " +
+        "needsStatusUpdate=$needsStatusUpdate)"
 }
 
 /** [DealDto.counterparty]: the other party of the deal, relative to the caller. */

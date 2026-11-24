@@ -135,7 +135,10 @@ enum class UpdateFailure {
     /** The proof was not made: the prover or the notary connection failed. */
     NOTARY,
 
-    /** DMarket did not answer the sync or refused the report. */
+    /**
+     * DMarket did not answer the sync, refused the report, or did not answer the proof's delivery (a 5xx, a timeout):
+     * that proof's bytes go again on the next run, with no notary session.
+     */
     DMARKET,
 
     /** The run outlived the cycle deadline and was cancelled. */
@@ -149,8 +152,9 @@ enum class UpdateFailure {
 
     /**
      * The proof reached DMarket and was refused (`verified: false`, or a 4xx verdict such as a deal that moved on), in
-     * this run or, for the same bytes, earlier. A Retry would meet the same refusal. A resent proof DMarket had already
-     * accepted is refused too, for now (no code tells it apart yet).
+     * this run or, for the same bytes, earlier. A Retry would meet the same refusal. Bytes sent again after an answer
+     * that was no verdict are refused only while the deal still waits on the proof (`needsStatusUpdate`); a resend
+     * DMarket had already accepted is a success.
      */
     PROOF_REFUSED,
 }

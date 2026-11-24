@@ -582,7 +582,7 @@ class P2pSerializationTest {
     fun the_deal_detail_reads_the_gateway_shape_with_its_own_fields() {
         // §A5's example: the prefix-stripped state, plus the detail-only fields; cancelFee/cancelFeeEndTime as web reads them.
         val json = """
-            {"dealId":"d1","state":"COMMITTED","cancellable":false,"nextAction":"seller_create_trade",
+            {"dealId":"d1","state":"COMMITTED","cancellable":false,"nextAction":"seller_create_trade","needsStatusUpdate":true,
              "buyerAccountId":"b1","sellerAccountId":"s1","offerId":"of1","assetId":"a1",
              "price":{"currency":"USD","amount":"607"},
              "createTime":"2026-06-16T12:00:00Z","updateTime":"2026-06-16T13:00:00Z",
@@ -597,6 +597,7 @@ class P2pSerializationTest {
         assertEquals(P2PDealState.COMMITTED, deal.state)
         assertEquals(false, deal.cancellable)
         assertEquals("seller_create_trade", deal.nextAction)
+        assertEquals(true, deal.needsStatusUpdate)
         assertEquals(Money("USD", 30), deal.cancelFee)
         assertEquals(Instant.parse("2026-06-16T12:00:00Z"), deal.cancelFeeEndTime)
         val counterparty = assertNotNull(deal.counterparty)
@@ -624,6 +625,7 @@ class P2pSerializationTest {
         assertNull(deal.cancelFee)
         assertNull(deal.cancelFeeEndTime)
         assertNull(deal.counterparty)
+        assertNull(deal.needsStatusUpdate, "absent is unknown, not false")
     }
 
     @Test

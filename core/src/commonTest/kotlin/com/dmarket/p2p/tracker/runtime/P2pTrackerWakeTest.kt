@@ -241,6 +241,16 @@ class P2pTrackerWakeTest {
     }
 
     @Test
+    fun an_undelivered_proof_is_dmarket_not_answering_not_the_notary() = runTest {
+        val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
+            submitProofThrowable = MarketplaceServerErrorException(503)
+        }
+        val tracker = tracker(Setup(mp))
+
+        assertEquals(WakeOutcome.failed(WakeCause.NETWORK), tracker.onPush(wake()))
+    }
+
+    @Test
     fun a_wake_without_time_for_a_proof_does_not_call_the_prover() = runTest {
         val setup = Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)))
         val tracker = tracker(setup)

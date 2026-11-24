@@ -265,6 +265,7 @@ fun DealDto.toDomain(): Deal = Deal(
             badges = c.badges?.let { CounterpartyBadges(it.steamLevel, it.tradingStatus, it.profilePrivate, it.validTradeUrl) },
         )
     },
+    needsStatusUpdate = needsStatusUpdate,
 )
 
 /** [DealActionResponseDto.createOffer] as the `create_offer` [Directive] for [dealId]; `null` for a blank directive id. */

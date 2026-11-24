@@ -43,6 +43,7 @@ GitHub Release.
 - Mobile: the tracker keeps each end-of-deal proof it sent for 30 days from the deal's final status, in the account's storage; logout, a Steam account switch and an unlink erase it. `AndroidTracker.clearStoredProofs()` (`MobileTracker.clearStoredProofs()`, `P2pTracker.clearStoredProofs()`) erases it on demand (DMA-540).
 - Mobile: `P2pTracker.updateStatus(dealId, allowCellularProof, retries)` takes the deal's permit on `POST /exchange/v1/p2p/deals/{id}/refresh` before it runs and allows `1 + retries` notary sessions under it (a cancelled one counts; `retries` defaults to 1). `StatusUpdate` gains `nextAllowedAt` and `retryLeft`, and a refresh 429 sets `retryAfter` to its exact `Retry-After` for that deal only (DMA-963, DMA-1016).
 - Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update (DMA-1016).
+- A proof whose delivery to DMarket got no verdict (a 5xx, a timeout, a 429) is sent again with the same bytes within the hour instead of a new notary session, and a resend DMarket had already accepted counts as verified. `LifecycleEvent.ProofFailed` gains `undelivered`, and `Deal` gains `needsStatusUpdate` (DMA-1016).
 
 ### Changed
 
@@ -54,6 +55,7 @@ GitHub Release.
 - Android: a throw from `MarketplaceTokenSupplier.supply` is a temporary DMarket connection failure with no sign-in prompt (`DM_CONNECTION_ERROR` after two in a row), no longer a logout. Return `null` when there is no DMarket session (DMA-663).
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 - A 429 on `POST /exchange/v1/p2p/ext/notary` emits `RateLimited` instead of `ProofFailed`, and a manual status update reports it as `UpdateFailure.RATE_LIMITED`, not `NOTARY` (DMA-1016).
+- Mobile: a proof that was made but not delivered is `UpdateFailure.DMARKET` on a manual status update and `failed/other` on a wake, not `notary`, and a manual update sends it again even when the deal's permit is spent (DMA-1016).
 
 ## [1.3.0-beta] - 2026-11-10
 

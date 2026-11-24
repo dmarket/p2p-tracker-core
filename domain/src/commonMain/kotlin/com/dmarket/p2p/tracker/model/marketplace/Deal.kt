@@ -86,6 +86,8 @@ data class Money(val currencyCode: String, val amountCents: Long)
  * - [cancelFee]: what a buyer's cancellation costs until [cancelFeeEndTime], as the service quotes it; absent is
  *   not zero.
  * - [counterparty]: the other party, relative to the caller.
+ * - [needsStatusUpdate]: the deal waits on something the caller's side can make (a due proof, or the last wake ack
+ *   was `deferred`/`failed`); never `true` on a deal that has ended.
  */
 data class Deal(
     val dealId: DealId,
@@ -106,6 +108,7 @@ data class Deal(
     val cancelFee: Money? = null,
     val cancelFeeEndTime: Instant? = null,
     val counterparty: DealCounterparty? = null,
+    val needsStatusUpdate: Boolean? = null,
 ) {
     /**
      * Redacted: [trustedAcceptUri] embeds `?partner=…&token=…`, and that `token` is a bearer capability.
@@ -117,7 +120,8 @@ data class Deal(
         "steamOfferId=$steamOfferId, reasonCode=$reasonCode, " +
         "trustedAcceptUri=${trustedAcceptUri?.let { NetworkRedaction.redactUrl(it) }}, " +
         "createdAt=$createdAt, updatedAt=$updatedAt, cancellable=$cancellable, nextAction=$nextAction, " +
-        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty)"
+        "createOffer=$createOffer, cancelFee=$cancelFee, cancelFeeEndTime=$cancelFeeEndTime, counterparty=$counterparty, " +
+        "needsStatusUpdate=$needsStatusUpdate)"
 }
 
 /**

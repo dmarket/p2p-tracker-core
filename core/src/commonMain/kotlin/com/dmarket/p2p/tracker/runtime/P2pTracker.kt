@@ -159,6 +159,7 @@ class P2pTracker(
         var proofDeferred = false
         var proofOutOfBudget = false
         val proofFailed = mutableSetOf<String>()
+        val proofUndelivered = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
         val proofRefused = mutableSetOf<String>()
     }
@@ -413,7 +414,9 @@ class P2pTracker(
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
      * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
      * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
-     * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing.
+     * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
+     * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
+     * Retry spent, and a resend DMarket had already accepted reads as success.
      * The refresh's own 429 waits exactly its `Retry-After`, for this deal only; Kong's 429 takes the DMarket backoff
      * like any other. A 503 (or any other failure of the call) is [UpdateFailure.DMARKET] and charged nothing; a deal
      * with nothing to refresh (no watch entry, or a 404) still runs its cycle, uncounted.
@@ -433,7 +436,9 @@ class P2pTracker(
         val permit = activePermit(dealId, now)
         when {
             permit == null -> takePermit(dealId, now, allowed)?.let { return it }
-            permit.sessions > allowed -> return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+            // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
+            permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
+                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
         }
         val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
             ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
@@ -750,6 +755,7 @@ class P2pTracker(
             loop.steamCredentialUnavailable -> if (loop.needsReLogin) UpdateFailure.STEAM_SESSION else UpdateFailure.STEAM
             block != TrackerBlock.NONE || !probe.heartbeat -> UpdateFailure.DMARKET
             dealId.value in probe.proofFailed -> UpdateFailure.NOTARY
+            dealId.value in probe.proofUndelivered -> UpdateFailure.DMARKET
             dealId.value in probe.proofRefused -> UpdateFailure.PROOF_REFUSED
             probe.steamReadFailed -> UpdateFailure.STEAM
             dealId.value in probe.reportFailed -> UpdateFailure.DMARKET
@@ -777,6 +783,7 @@ class P2pTracker(
             // No Steam credential this time (a refresh that failed on the network), or a leased write left undone.
             loop.steamCredentialUnavailable || probe.directiveDropped -> WakeOutcome.failed(WakeCause.OTHER)
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
+            proofs && probe.proofUndelivered.isNotEmpty() -> WakeOutcome.failed(WakeCause.NETWORK)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
             proofs && probe.proofDeferred -> WakeOutcome(WakeOutcomeKind.DEFERRED, WakeCause.CELLULAR_NOT_ALLOWED)
             probe.failed || probe.steamReadFailed || probe.steamRateLimited || probe.reportFailed.isNotEmpty() ->
@@ -841,7 +848,7 @@ class P2pTracker(
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofFailed -> {
-                probe.proofFailed += event.dealId
+                if (event.undelivered) probe.proofUndelivered += event.dealId else probe.proofFailed += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofSubmitted -> {
