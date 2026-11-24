@@ -3724,7 +3724,8 @@ class TradeTrackerLoop(
      *
      * **A proof made but not delivered** (DMA-1016, §6.3) is kept under [slot], what it attests, for the hour p2p
      * still takes it; the caller passes it back as [resend] and it goes again, the same bytes, with no notary session.
-     * A resend answered `verified: false` is read off the deal ([ResentProof]): bytes that had landed come back verified.
+     * A resend answered `verified: false` is read off its text, then the deal ([ResentProof]): bytes that had landed come
+     * back verified.
      */
     private suspend fun mintAndSubmit(
         binding: ProvenReadBinding,

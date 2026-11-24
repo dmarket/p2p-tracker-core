@@ -156,8 +156,8 @@ enum class UpdateFailure {
     /**
      * The proof reached DMarket and was refused (`verified: false`, or a 4xx verdict such as a deal that moved on), in
      * this run or, for the same bytes, earlier. A Retry would meet the same refusal. Bytes sent again after an answer
-     * that was no verdict are refused only while the deal still waits on the proof (`needsStatusUpdate`); a resend
-     * DMarket had already accepted is a success.
+     * that was no verdict are a success when DMarket says it already accepted them or the deal no longer needs a status
+     * update, and refused otherwise (`ResentProof`).
      */
     PROOF_REFUSED,
 }
