@@ -317,6 +317,58 @@ class KtorMarketplaceClientTest {
         assertEquals(P2PDealState.AWAITING_TRADE, deal.state)
     }
 
+    // ---- refresh (manual-update permit) ----------------------------------------------------------
+
+    @Test
+    fun refresh_posts_to_the_deal_path_and_reads_the_permit() = runTest {
+        val engine = MockEngine { request ->
+            assertEquals("$p2pBase/deals/d-1/refresh", request.url.toString())
+            assertEquals(HttpMethod.Post, request.method)
+            assertEquals("test-bearer-token", request.headers["Authorization"])
+            respond("""{"nextAllowedAt":"2026-11-24T10:10:00Z","trackedDeal":{"dealId":"d-1"}}""", headers = jsonHeaders())
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+
+        val refresh = client.refreshDeal(DealId("d-1"))
+
+        assertTrue(refresh.tracked)
+        assertEquals(Instant.parse("2026-11-24T10:10:00Z"), refresh.nextAllowedAt)
+    }
+
+    @Test
+    fun a_refresh_429_carries_its_code_and_retry_after_and_kongs_has_no_p2p_code() = runTest {
+        var kong = false
+        val engine = MockEngine {
+            val body = if (kong) "Too Many Requests" else """{"code":"P2P_REFRESH_RATE_LIMITED","message":"too many refreshes"}"""
+            respondError(HttpStatusCode.TooManyRequests, body, headersOf(HttpHeaders.RetryAfter, "412"))
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+
+        val limited = assertFailsWith<RateLimitedException> { client.refreshDeal(DealId("d-1")) }
+        assertEquals(412L, limited.retryAfterSeconds)
+        assertEquals("P2P_REFRESH_RATE_LIMITED", limited.errorCode)
+
+        kong = true
+        val edge = assertFailsWith<RateLimitedException> { client.refreshDeal(DealId("d-1")) }
+        assertTrue(edge.errorCode != "P2P_REFRESH_RATE_LIMITED", "Kong's body names no refresh limit: ${edge.errorCode}")
+    }
+
+    @Test
+    fun a_refresh_503_and_404_carry_their_status_and_code() = runTest {
+        var status = HttpStatusCode.ServiceUnavailable
+        val engine = MockEngine {
+            val code = if (status == HttpStatusCode.NotFound) "P2P_DEAL_NOT_FOUND" else "P2P_UNAVAILABLE"
+            respondError(status, """{"code":"$code","message":"m"}""")
+        }
+        val client = KtorMarketplaceClient(createHttpClient(engine), baseUrl, authenticator)
+
+        val unavailable = assertFailsWith<MarketplaceServerErrorException> { client.refreshDeal(DealId("d-1")) }
+        assertEquals(503 to "P2P_UNAVAILABLE", unavailable.statusCode to unavailable.errorCode)
+        status = HttpStatusCode.NotFound
+        val gone = assertFailsWith<MarketplaceServerErrorException> { client.refreshDeal(DealId("d-1")) }
+        assertEquals(404 to "P2P_DEAL_NOT_FOUND", gone.statusCode to gone.errorCode)
+    }
+
     // ---- auth strategy --------------------------------------------------------------------------
 
     @Test

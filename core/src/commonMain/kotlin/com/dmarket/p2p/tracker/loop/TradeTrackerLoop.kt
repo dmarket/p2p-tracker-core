@@ -1297,6 +1297,13 @@ class TradeTrackerLoop(
     var proofsOutOfBudget: Boolean = false
 
     /**
+     * Hears each notary session a proof attempt ran for a deal, once it ends: a delivered proof, a failed one, a
+     * cancelled one (Cancel on T-14). Not an attempt that never opened one ([ProofFailure.NotStarted]). Set by
+     * `P2pTracker`, which counts them against the manual update's permit (DMA-1016).
+     */
+    var onNotarySession: ((DealId) -> Unit)? = null
+
+    /**
      * What the mobile heartbeat says beside the Steam session (contract d455888 §5.1): the wake it answers, the
      * network and the user's cellular option. Set by `P2pTracker` before each cycle; the network and the option go only
      * inside `trackerState`, which rides with the Steam session ([LoopConfig.steamSessionInVault]).
@@ -3728,8 +3735,17 @@ class TradeTrackerLoop(
                 }
             }
         }
+        val notStarted = (outcome.exceptionOrNull() as? HostedProofException)?.failure is ProofFailure.NotStarted
+        if (!notStarted) onNotarySession?.invoke(binding.dealId)
         // Generation or delivery failed — the backend never saw the proof: retry next tick.
         val result = outcome.getOrElse { failure ->
+            // DMarket's 429 on `/notary`: the prover did its part and the notary is not at fault. Said as the
+            // rate limit it is, so a manual update shows the wait rather than a dropped connection.
+            if (failure is RateLimitedException) {
+                notaryThrottle.onResult(generated = true, now = now)
+                emitIfRateLimited(failure)
+                return null
+            }
             // Fold it into the parked-prover ladder BEFORE returning, so a second failure in this same pass
             // parks the surface and the deals behind it are skipped rather than each spending an MPC session.
             // Cancellation is teardown, not a prover failure — same carve-out as the event below.

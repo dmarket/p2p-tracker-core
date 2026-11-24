@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.NoOpWakeAcknowledger
+import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
@@ -23,6 +24,9 @@ import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceIdStore
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
+import com.dmarket.p2p.tracker.port.marketplace.DealRefreshClient
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -99,6 +103,8 @@ import kotlin.time.TimeSource
  * @param backgroundProofs the user's "background checks on mobile data" option, read on each cycle: the opt-in for a
  *   wake or a background cycle, and what every heartbeat reports as `backgroundProveAllowed`. Defaults to
  *   [cellularProofs], so one option governs both, as before.
+ * @param dealRefresh the server permit a manual [updateStatus] takes first (`POST …/deals/{id}/refresh`, DMA-963);
+ *   `null` takes none.
  */
 class P2pTracker(
     private val scope: CoroutineScope,
@@ -118,6 +124,7 @@ class P2pTracker(
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
     private val deviceRegistry: DeviceRegistry? = null,
     private val backgroundProofs: () -> Boolean = cellularProofs,
+    private val dealRefresh: DealRefreshClient? = null,
 ) {
     private val mutableState = MutableStateFlow(TrackerState())
 
@@ -141,6 +148,7 @@ class P2pTracker(
     private var probe = CycleProbe()
 
     private class CycleProbe {
+        var countsSessions = false
         var heartbeat = false
         var retryAfter: Duration? = null
         var steamRateLimited = false
@@ -152,7 +160,17 @@ class P2pTracker(
         var proofOutOfBudget = false
         val proofFailed = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
+        val proofRefused = mutableSetOf<String>()
     }
+
+    /**
+     * A manual update's server permit for one deal (DMA-963, DMA-1016): it holds [until] the server's `nextAllowedAt`
+     * (or a refresh 429's `Retry-After`, then [EXHAUSTED]) and counts the notary sessions run under it. In memory only:
+     * after the process dies the next refresh answers 429 and the wait shows.
+     */
+    private data class Permit(val until: Instant, val sessions: Int)
+
+    private val permits = MutableStateFlow<Map<DealId, Permit>>(emptyMap())
 
     /**
      * One surface's 429s, whichever cycle or deal ran into them: until when the server's own `Retry-After` asks to wait,
@@ -392,20 +410,81 @@ class P2pTracker(
      * one included. Within the cooldown a 429 left ([DealTrackingState.cooldownUntil], or any cycle's 429 on DMarket or
      * Steam, for every deal) it sends nothing and answers [UpdateFailure.RATE_LIMITED] at once.
      *
+     * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
+     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
+     * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
+     * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing.
+     * The refresh's own 429 waits exactly its `Retry-After`, for this deal only; Kong's 429 takes the DMarket backoff
+     * like any other. A 503 (or any other failure of the call) is [UpdateFailure.DMARKET] and charged nothing; a deal
+     * with nothing to refresh (no watch entry, or a 404) still runs its cycle, uncounted.
+     *
      * @param allowCellularProof the user allowed a proof on mobile data for this update (T-13); the gate stays as it is
      *   for every other cycle.
+     * @param retries how many Retries a permit allows after its first session (the app's remote config); below 0 is 0.
      */
-    suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false): StatusUpdate {
+    suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false, retries: Int = DEFAULT_RETRIES): StatusUpdate {
+        val allowed = retries.coerceAtLeast(0)
         val now = clock.now()
         listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldown.until, steamCooldown.until)
             .maxOrNull()
             ?.takeIf { it > now }
-            ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, retryAfter = it - now) }
+            ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
-        val run = cycle(s, wake = null, manual = true, allowCellularProof) ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING)
+        val permit = activePermit(dealId, now)
+        when {
+            permit == null -> takePermit(dealId, now, allowed)?.let { return it }
+            permit.sessions > allowed -> return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+        }
+        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
+            ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
-        return statusOf(dealId, failureOf(dealId, s.loop, run), retryAfter, s.loop.observedCode(dealId))
+        return statusOf(dealId, failureOf(dealId, s.loop, run), allowed, retryAfter, s.loop.observedCode(dealId))
+    }
+
+    /** [dealId]'s permit while it holds. */
+    private fun activePermit(dealId: DealId, now: Instant): Permit? = permits.value[dealId]?.takeIf { it.until > now }
+
+    /** Takes [dealId]'s server permit; `null` lets the run go on, else the answer that ends it. */
+    private suspend fun takePermit(dealId: DealId, now: Instant, retries: Int): StatusUpdate? {
+        val client = dealRefresh ?: return null
+        val refresh = try {
+            client.refreshDeal(dealId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: RateLimitedException) {
+            val retryAfter = e.retryAfterSeconds
+            val wait = if (e.errorCode == REFRESH_RATE_LIMITED && retryAfter != null) {
+                val until = now + retryAfter.coerceAtLeast(0).seconds
+                permits.update { it + (dealId to Permit(until, EXHAUSTED)) }
+                until - now
+            } else {
+                dmarketCooldown.refused(now, retryAfter).also { wait -> deal(dealId.value) { it.copy(cooldownUntil = now + wait) } }
+            }
+            return statusOf(dealId, UpdateFailure.RATE_LIMITED, retries, retryAfter = wait)
+        } catch (e: MarketplaceServerErrorException) {
+            // A 404 is an old closed deal the refresh no longer reads: nothing to refresh, not an error.
+            if (e.statusCode != NOT_FOUND) return statusOf(dealId, UpdateFailure.DMARKET, retries)
+            DealRefresh(tracked = false)
+        } catch (_: Throwable) {
+            return statusOf(dealId, UpdateFailure.DMARKET, retries)
+        }
+        val until = refresh.nextAllowedAt
+        permits.update { if (refresh.tracked && until != null) it + (dealId to Permit(until, 0)) else it - dealId }
+        return null
+    }
+
+    /**
+     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit.
+     * shortcut: counted when the attempt ends, so a re-tap that lands between Cancel and the old cycle's end still sees
+     * the session unspent; count at the prove's start if that window ever matters.
+     */
+    private fun countNotarySession(dealId: DealId) {
+        if (!probe.countsSessions) return
+        permits.update { all ->
+            val permit = all[dealId] ?: return@update all
+            if (permit.sessions == EXHAUSTED) all else all + (dealId to permit.copy(sessions = permit.sessions + 1))
+        }
     }
 
     /**
@@ -511,6 +590,7 @@ class P2pTracker(
             return startFault(e)
         }
         loop.mode = modeOf(foreground)
+        loop.onNotarySession = ::countNotarySession
         val s = Session(account, loop)
         session = s
         mutableState.value = TrackerState(running = true, foreground = foreground, account = account).withSteamSessionFromBlock()
@@ -528,6 +608,7 @@ class P2pTracker(
     private fun resetDmarketCooldown(account: SteamId?) {
         dmarketAccount = account
         dmarketCooldown.reset()
+        permits.value = emptyMap()
     }
 
     private suspend fun stopLocked() {
@@ -548,6 +629,7 @@ class P2pTracker(
      * `null` when the session stopped under it. A [wake] or a [manual] update forces the heartbeat first: both always
      * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
+     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only).
      */
     private suspend fun cycle(
         s: Session,
@@ -557,9 +639,10 @@ class P2pTracker(
         onScreen: Boolean = false,
         allowProof: Boolean = true,
         ends: TimeMark? = null,
+        countsSessions: Boolean = false,
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen, wake, allowProof, ends) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
@@ -594,10 +677,11 @@ class P2pTracker(
         wake: Wake? = null,
         allowProof: Boolean = true,
         ends: TimeMark? = null,
+        countsSessions: Boolean = false,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
-        val cycleProbe = CycleProbe()
+        val cycleProbe = CycleProbe().also { it.countsSessions = countsSessions }
         probe = cycleProbe
         val metered = runCatching { network.metered() }.getOrNull()
         val background = runCatching { backgroundProofs() }.getOrNull()
@@ -666,6 +750,7 @@ class P2pTracker(
             loop.steamCredentialUnavailable -> if (loop.needsReLogin) UpdateFailure.STEAM_SESSION else UpdateFailure.STEAM
             block != TrackerBlock.NONE || !probe.heartbeat -> UpdateFailure.DMARKET
             dealId.value in probe.proofFailed -> UpdateFailure.NOTARY
+            dealId.value in probe.proofRefused -> UpdateFailure.PROOF_REFUSED
             probe.steamReadFailed -> UpdateFailure.STEAM
             dealId.value in probe.reportFailed -> UpdateFailure.DMARKET
             probe.failed -> UpdateFailure.OTHER
@@ -700,9 +785,24 @@ class P2pTracker(
         }
     }
 
-    private fun statusOf(dealId: DealId, failure: UpdateFailure?, retryAfter: Duration? = null, observed: Int? = null): StatusUpdate {
+    private fun statusOf(
+        dealId: DealId,
+        failure: UpdateFailure?,
+        retries: Int,
+        retryAfter: Duration? = null,
+        observed: Int? = null,
+    ): StatusUpdate {
         val deal = state.value.deals[dealId] ?: DealTrackingState()
-        return StatusUpdate(deal.checkedAt, observed ?: deal.lastCode, deal.proofState, retryAfter, failure)
+        val permit = activePermit(dealId, clock.now())
+        return StatusUpdate(
+            deal.checkedAt,
+            observed ?: deal.lastCode,
+            deal.proofState,
+            retryAfter,
+            failure,
+            nextAllowedAt = permit?.until,
+            retryLeft = permit?.let { (retries + 1 - it.sessions.coerceAtLeast(1)).coerceAtLeast(0) } ?: retries,
+        )
     }
 
     private fun track(event: LifecycleEvent) {
@@ -736,13 +836,18 @@ class P2pTracker(
             }
             is LifecycleEvent.ProofSuppressed -> {
                 if (event.reason == ProofSkipReason.WAKE_BUDGET.message) probe.proofOutOfBudget = true
+                // The same bytes' refusal stands: a manual run that meets the latch says so, not success.
+                if (event.reason == ProofSkipReason.ALREADY_REFUSED.message) probe.proofRefused += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofFailed -> {
                 probe.proofFailed += event.dealId
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
-            is LifecycleEvent.ProofSubmitted -> deal(event.dealId) { it.copy(proofState = ProofState.NONE) }
+            is LifecycleEvent.ProofSubmitted -> {
+                if (!event.verified) probe.proofRefused += event.dealId
+                deal(event.dealId) { it.copy(proofState = ProofState.NONE) }
+            }
             else -> Unit
         }
     }
@@ -776,6 +881,17 @@ class P2pTracker(
 
         /** How long a stopped wake waits for its `failed` ack before it lets the stop through. */
         private val STOPPED_ACK_TIMEOUT: Duration = 5.seconds
+
+        /** Retries a permit allows after its first notary session when the app does not say (DMA-1016). */
+        const val DEFAULT_RETRIES: Int = 1
+
+        /** The refresh's own 429, as against Kong's, which names no P2P code. */
+        private const val REFRESH_RATE_LIMITED = "P2P_REFRESH_RATE_LIMITED"
+
+        /** A permit the refresh's 429 closed: no session is left under it. */
+        private const val EXHAUSTED = Int.MAX_VALUE
+
+        private const val NOT_FOUND = 404
 
         private val NOT_RUNNING_CALL = DealCallError(DealCallErrorKind.NOT_RUNNING)
         private const val NOT_RUNNING_ERROR = "no tracker runs: the app's user links no Steam account, or its loop did not start"

@@ -63,7 +63,7 @@ internal fun TrackerState.withSteamSessionFromBlock(): TrackerState = if (!runni
  * @property cooldownUntil until when a manual "Update status" is not available: set by [P2pTracker.updateStatus] after a
  *   429, to the longer of its `Retry-After` and a backoff that doubles with each 429 in a row ([RateLimitBackoff]). Once
  *   the surface answers again, the backoff's part ends and only the `Retry-After` still holds. The server's own permit
- *   (DMA-660) is the app's.
+ *   (`…/refresh`) is kept apart and shows in [StatusUpdate.nextAllowedAt].
  */
 data class DealTrackingState(
     val checkedAt: Instant? = null,
@@ -95,9 +95,14 @@ enum class ProofState {
  * @property code the raw Steam status code this run read for it (the history axis before the offer axis), else the last
  *   one reported; `null` when neither exists, e.g. the read failed right after a cold start.
  * @property proofState where its proof stands; [ProofState.DEFERRED] when the gate held it (T-13 asks for permission).
- * @property retryAfter how long until a retry can go out: the 429's wait from [RateLimitBackoff], or what is left of it;
- *   set with [UpdateFailure.RATE_LIMITED] only.
+ * @property retryAfter how long until a retry can go out, set with [UpdateFailure.RATE_LIMITED] only: the refresh 429's
+ *   `Retry-After` exactly, what is left of a spent permit, or a DMarket/Steam 429's wait from [RateLimitBackoff] (or
+ *   what is left of it).
  * @property failure why the update fell short (T-16), or `null` when it ran through.
+ * @property nextAllowedAt when the deal's next refresh is allowed (the server's `nextAllowedAt`, or a refresh 429's
+ *   `Retry-After`); `null` when no wait is known, and the app may ask again.
+ * @property retryLeft how many more notary sessions the deal's permit allows after its first (the Retry on T-16,
+ *   DMA-1016); the `retries` asked for while no permit holds. `0` with [nextAllowedAt] set: the next run waits for it.
  */
 data class StatusUpdate(
     val checkedAt: Instant? = null,
@@ -105,14 +110,20 @@ data class StatusUpdate(
     val proofState: ProofState = ProofState.NONE,
     val retryAfter: Duration? = null,
     val failure: UpdateFailure? = null,
+    val nextAllowedAt: Instant? = null,
+    val retryLeft: Int = 0,
 )
 
 /**
- * Why an update fell short. Kept apart because the app treats them apart (T-12, D5): a failure on our side (DMarket,
- * the notary, a timeout) does not spend the user's manual-update permit.
+ * Why an update fell short. Kept apart because the app treats them apart (T-12, T-16). A notary session spends one of
+ * the permit's sessions whatever its end ([StatusUpdate.retryLeft], DMA-1016); a failure before any session (DMarket,
+ * a timeout, Steam) spends none.
  */
 enum class UpdateFailure {
-    /** DMarket or Steam answered 429; [StatusUpdate.retryAfter] says for how long. */
+    /**
+     * DMarket or Steam answered 429 (the refresh, the sync, the reads or the proof's delivery), or the deal's permit is
+     * spent; [StatusUpdate.retryAfter] says for how long.
+     */
     RATE_LIMITED,
 
     /** The Steam session is gone or belongs to another account (T-20). */
@@ -135,4 +146,11 @@ enum class UpdateFailure {
 
     /** The cycle failed in a way none of the above names. */
     OTHER,
+
+    /**
+     * The proof reached DMarket and was refused (`verified: false`, or a 4xx verdict such as a deal that moved on), in
+     * this run or, for the same bytes, earlier. A Retry would meet the same refusal. A resent proof DMarket had already
+     * accepted is refused too, for now (no code tells it apart yet).
+     */
+    PROOF_REFUSED,
 }

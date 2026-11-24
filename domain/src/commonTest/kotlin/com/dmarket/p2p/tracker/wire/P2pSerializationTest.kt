@@ -21,6 +21,7 @@ import com.dmarket.p2p.tracker.model.marketplace.P2PDealState
 import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusReport
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
+import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.deal
 import kotlinx.serialization.decodeFromString
@@ -336,6 +337,20 @@ class P2pSerializationTest {
         val result = TrackerJson.decodeFromString<DealActionResponseDto>(json).toDomain(DealId("d1"))
 
         assertEquals(120.seconds, result.createOffer?.leaseTtl)
+    }
+
+    @Test
+    fun a_refresh_answer_reads_whether_the_watch_entry_came_and_the_next_allowed_time() {
+        fun read(json: String) = TrackerJson.decodeFromString<DealRefreshResponseDto>(json).toDomain()
+
+        assertEquals(
+            DealRefresh(tracked = true, nextAllowedAt = Instant.parse("2026-11-24T10:10:00Z")),
+            read("""{"nextAllowedAt":"2026-11-24T10:10:00Z","trackedDeal":{"dealId":"d1","proofSites":["release"]}}"""),
+        )
+        assertEquals(DealRefresh(tracked = true), read("""{"trackedDeal":{"dealId":"d1"}}"""), "no wait known")
+        assertEquals(DealRefresh(tracked = false), read("""{"trackedDeal":null}"""), "nothing to prove")
+        assertEquals(DealRefresh(tracked = false), read("{}"), "absent like null")
+        assertEquals(DealRefresh(tracked = true), read("""{"nextAllowedAt":"soon","trackedDeal":{}}"""), "unreadable time")
     }
 
     // ---- asset id -------------------------------------------------------------------------------
