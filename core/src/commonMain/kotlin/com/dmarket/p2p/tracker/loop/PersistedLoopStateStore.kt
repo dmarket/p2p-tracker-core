@@ -24,6 +24,12 @@ class PersistedLoopStateStore(private val storage: DeviceKeyValueStore = InMemor
 
     override suspend fun setRevertWatchAt(at: Instant) = setInstant(DeviceVaultKeys.LOOP_REVERT_WATCH_AT, at)
 
+    override suspend fun lastSentSteamSession(): String? = storage.get(DeviceVaultKeys.LOOP_LAST_SENT_STEAM_SESSION)
+
+    override suspend fun setLastSentSteamSession(state: String) {
+        storage.set(DeviceVaultKeys.LOOP_LAST_SENT_STEAM_SESSION, state)
+    }
+
     override suspend fun serverErrorCount(): Int = storage.get(DeviceVaultKeys.LOOP_SERVER_ERROR_COUNT)
         ?.toIntOrNull()
         ?: 0

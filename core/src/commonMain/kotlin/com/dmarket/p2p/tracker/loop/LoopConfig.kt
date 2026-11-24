@@ -31,8 +31,10 @@ import kotlin.time.Duration.Companion.seconds
  *   the device present only while it can deliver. `null` (the default) reports [mode].
  * @param heartbeatWithoutCredential When `true`, a due heartbeat still goes out while no Steam credential is held —
  *   for the Steam account the last heartbeat named as linked, with `foreground: false` — and the cycle takes no
- *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the
- *   default) keeps the browser behaviour: no Steam session, no heartbeat.
+ *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. With
+ *   [steamSessionInVault] (mobile) it goes only while the session reads other than `ALIVE`, for the linked account or
+ *   else [hostLinkedSteamId], and carries that state. `false` (the default) keeps the browser behaviour: no Steam
+ *   session, no heartbeat.
  * @param steamWrites When `false`, the loop writes no Steam offer, whatever is leased or asked: a `create_offer` or
  *   `cancel_offer` is dropped unreported (its lease lapses to a device that writes), and
  *   [TradeTrackerLoop.awaitDirectiveOutcome] answers with that refusal. For a client whose account only buys. `true`

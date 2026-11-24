@@ -1612,7 +1612,9 @@ class TradeTrackerLoop(
         // DMarket logout is surfaced by the host's cookie watch (a forced heartbeat marks the
         // schedule due) or, at the latest, by the next due heartbeat.
         val cached = lastActiveTracking
-        val heartbeatDue = nextHeartbeatAt?.let { clock.now() >= it } ?: true
+        // A changed Steam session state is news for DMarket, but not while a refused DMarket credential is backed off.
+        val heartbeatDue = (nextHeartbeatAt?.let { clock.now() >= it } ?: true) ||
+            (consecutiveAuthFailures == 0 && steamSessionChangedSinceSent())
         val action = CyclePolicy.decide(heartbeatDue, hasTrackingList = cached != null)
         if (action == CycleAction.IDLE) return@withLock TickOutcome.EMPTY
         // Backing off a refused credential: until the retry is due the cycle does nothing, so the watch pass on a
@@ -1702,7 +1704,7 @@ class TradeTrackerLoop(
             if (credentials.lastRefreshFailedLoggedOut) emit(LifecycleEvent.ReLoginNeeded("steam"))
             // A host that heartbeats without a Steam session does so for the account it is already bound to, and
             // only when one is due: it stays known to DMarket, not present, and touches nothing on Steam.
-            val bound = lastLinkedSteamId?.takeIf { config.heartbeatWithoutCredential && action == CycleAction.HEARTBEAT }
+            val bound = if (action == CycleAction.HEARTBEAT) credentiallessHeartbeatAccount() else null
             return@withLock bound?.let { heartbeatWithoutCredential(it) } ?: TickOutcome.EMPTY
         }
         // A credential in hand proves the Steam session is live — clear the block before anything else can
@@ -1811,6 +1813,31 @@ class TradeTrackerLoop(
         emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
         if (mismatched) linked?.let { emit(LifecycleEvent.LinkedSteamIdMismatch(it.value, session.value)) }
         return TickOutcome(watching = heartbeat.activeTracking.size)
+    }
+
+    /**
+     * The account a heartbeat with no Steam credential goes for ([LoopConfig.heartbeatWithoutCredential]), `null` for
+     * none. Headless: the account the last heartbeat named. Mobile (the session in the vault): only while the session
+     * is not [SteamWebSessionState.ALIVE], for [expectedSteamId], so DMarket learns the device can no longer act and
+     * stops counting it reachable. An `ALIVE` read here is no proof (the refresher reads a failure as alive), and a
+     * heartbeat with it would keep a dead device reachable.
+     */
+    private suspend fun credentiallessHeartbeatAccount(): SteamId? = when {
+        !config.heartbeatWithoutCredential -> null
+        !config.steamSessionInVault -> lastLinkedSteamId
+        steamSessionState() == SteamWebSessionState.ALIVE -> null
+        else -> expectedSteamId
+    }
+
+    /**
+     * Mobile: whether the session's state differs from the one the last heartbeat sent. DMarket judges the device on
+     * that value (reachable needs `ALIVE`) until the next heartbeat, which the 24 h `ttl_seconds` would otherwise put
+     * off; so a change makes the heartbeat due, once. No network.
+     */
+    private suspend fun steamSessionChangedSinceSent(): Boolean {
+        if (!config.steamSessionInVault) return false
+        val sent = runCatching { loopState.lastSentSteamSession() }.getOrNull()
+        return steamSessionState().name != sent
     }
 
     /**
@@ -2179,6 +2206,7 @@ class TradeTrackerLoop(
         val sentAt = leaseClock?.elapsed()
         val response = marketplace.heartbeat(request)
         if (sentAt != null) recordLeases(response.directives, sentAt)
+        request.steamSession?.let { sent -> runCatching { loopState.setLastSentSteamSession(sent.name) } }
         return response
     }
 

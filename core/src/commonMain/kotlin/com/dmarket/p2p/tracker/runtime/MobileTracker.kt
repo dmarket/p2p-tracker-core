@@ -210,6 +210,8 @@ class MobileTracker(
                     steamWrites = steamWrites,
                     reportUnsentCreates = reportUnsentCreates,
                     unansweredCreateGrace = UNANSWERED_CREATE_GRACE,
+                    // A session gone or not renewed is sent to DMarket, which then stops counting this device reachable.
+                    heartbeatWithoutCredential = true,
                     steamSessionInVault = true,
                     hostLinkedSteamId = account,
                     reportEachWrite = true,

@@ -36,6 +36,7 @@ import com.dmarket.p2p.tracker.port.host.NetworkConditions
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.WakeAcknowledger
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
+import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.RecordingEventObserver
@@ -92,6 +93,9 @@ class P2pTrackerColdWakeTest {
     /** The `status` GetTradeHistory/GetTradeStatus answer for [trade]; `null` lists no row. */
     private var historyStatus: Int? = null
     private val trade = TradeId("744935517744884653")
+
+    /** Steam's community page errors: the session cookie is live, the token cannot be read. */
+    private var scrapeFails = false
 
     /** Offers this account has sent and Steam lists as active: what a bind read finds. */
     private val sentOffers = mutableListOf<String>()
@@ -168,6 +172,7 @@ class P2pTrackerColdWakeTest {
         val path = request.url.encodedPath
         val endpoints = SteamEndpointsConfig()
         return when {
+            community && path.trimEnd('/').isEmpty() && scrapeFails -> respond("", HttpStatusCode.InternalServerError)
             community && path.trimEnd('/').isEmpty() -> {
                 val token = steamAccessToken(owner, clock.now() + 20.hours)
                 respond("""<div data-loyalty_webapi_token="&quot;$token&quot;"></div><script>var g_steamID = "$owner";</script>""")
@@ -291,10 +296,11 @@ class P2pTrackerColdWakeTest {
 
         assertEquals(WakeOutcome.failed(WakeCause.STEAM_SESSION), process.tracker.onPush(wake("cancel_ask")))
 
-        assertTrue(marketplace.heartbeatsSent.isEmpty(), "mobile sends no heartbeat without a Steam session")
+        val beat = marketplace.heartbeatsSent.single()
+        assertEquals(SteamWebSessionState.GONE, beat.steamSession, "DMarket learns the device cannot act")
         assertTrue(steamWrites.isEmpty())
         assertTrue(marketplace.directiveOutcomes.isEmpty(), "the directive is left unanswered, never failed")
-        assertTrue(events.events.none { it is LifecycleEvent.DirectiveDropped }, "the cancel was never served to drop")
+        assertTrue(events.events.any { it is LifecycleEvent.DirectiveDropped }, "said out loud, its lease lapses")
         assertEquals(WakeOutcome.failed(WakeCause.STEAM_SESSION), backend.acks.last().second)
 
         process.mobile.importSteamSession(session())
@@ -482,5 +488,61 @@ class P2pTrackerColdWakeTest {
         assertEquals(1, createPosts)
         assertTrue(marketplace.directiveOutcomes.isEmpty(), "held for the grace, not reported: ${marketplace.directiveOutcomes}")
         assertTrue(events.events.any { it is LifecycleEvent.CreateUnanswered })
+    }
+
+    // ---- a dead Steam session reaches DMarket --------------------------------------------------------------------
+
+    private val sessionsSent get() = marketplace.heartbeatsSent.map { it.steamSession }
+
+    @Test
+    fun a_gone_session_is_heartbeated_once_for_the_hosts_account_after_a_cold_start_and_not_again_until_it_changes() = runTest {
+        val process = process()
+        process.tracker.start()
+        process.tracker.setForeground(true)
+        advanceTimeBy(5.minutes)
+
+        val beat = marketplace.heartbeatsSent.single()
+        assertEquals(SteamWebSessionState.GONE, beat.steamSession)
+        assertEquals(alice, beat.steamId, "no heartbeat named the account yet: the host's linked one")
+        assertTrue(steamWrites.isEmpty(), "nothing written to Steam")
+
+        // The app back on screen with the session still gone: nothing new to tell DMarket.
+        process.tracker.setForeground(false)
+        process.tracker.setForeground(true)
+        advanceTimeBy(1.minutes)
+        assertEquals(1, marketplace.heartbeatsSent.size)
+        process.tracker.setForeground(false)
+    }
+
+    @Test
+    fun the_last_session_state_sent_survives_the_process_and_a_change_makes_the_heartbeat_due() = runTest {
+        process().tracker.onPush(wake("watch"))
+        assertEquals(listOf(SteamWebSessionState.GONE), sessionsSent)
+
+        // A new process with the same GONE: nothing new to say.
+        val next = process()
+        next.tracker.start()
+        next.tracker.setForeground(true)
+        advanceTimeBy(5.minutes)
+        assertEquals(listOf(SteamWebSessionState.GONE), sessionsSent, "the state on disk is the one sent")
+
+        // The session comes back without the import's own heartbeat; the app comes back on screen, and the change
+        // alone makes that cycle's heartbeat due (the next one by the schedule is 24 h away).
+        next.mobile.platform.steamCookies.writeSteamCookies(session())
+        next.tracker.setForeground(false)
+        next.tracker.setForeground(true)
+        advanceTimeBy(1.minutes)
+        assertEquals(listOf(SteamWebSessionState.GONE, SteamWebSessionState.ALIVE), sessionsSent)
+        next.tracker.setForeground(false)
+    }
+
+    @Test
+    fun a_live_session_whose_token_cannot_be_read_sends_no_heartbeat_without_it() = runTest {
+        signedInEarlier()
+        scrapeFails = true
+
+        process().tracker.onPush(wake("watch"))
+
+        assertTrue(marketplace.heartbeatsSent.isEmpty(), "ALIVE without a credential would keep the device reachable")
     }
 }

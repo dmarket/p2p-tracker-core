@@ -194,6 +194,9 @@ object DeviceVaultKeys {
     /** When the sparse revert watch (`GetTradeHistory`) last ran; gates it across service-worker respawns. */
     const val LOOP_REVERT_WATCH_AT = "loop_revert_watch_at_ms"
 
+    /** The Steam session state the last mobile heartbeat sent; a different one makes the heartbeat due. */
+    const val LOOP_LAST_SENT_STEAM_SESSION = "loop_last_sent_steam_session"
+
     /**
      * Stores the count of consecutive heartbeat server-error failures, so a persistent outage still
      * crosses the debounce threshold when the service worker dies between retries. See
