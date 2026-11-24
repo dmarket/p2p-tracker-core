@@ -158,6 +158,9 @@ class P2pTracker(
         var failed = false
         var dmarketRateLimited = false
         var directiveDropped = false
+
+        /** A create Steam did not answer: held, unreported, so the wake did not do its work. */
+        var createUnanswered = false
         var proofDeferred = false
         var proofOutOfBudget = false
 
@@ -799,8 +802,9 @@ class P2pTracker(
             loop.steamCredentialUnavailable && loop.needsReLogin -> WakeOutcome.failed(WakeCause.STEAM_SESSION)
             block == TrackerBlock.DM_SESSION_MISSING -> WakeOutcome.failed(WakeCause.AUTH)
             block != TrackerBlock.NONE || !probe.heartbeat || probe.dmarketRateLimited -> WakeOutcome.failed(WakeCause.NETWORK)
-            // No Steam credential this time (a refresh that failed on the network), or a leased write left undone.
-            loop.steamCredentialUnavailable || probe.directiveDropped -> WakeOutcome.failed(WakeCause.OTHER)
+            // No Steam credential this time (a refresh that failed on the network), or a leased write left undone or
+            // left without Steam's answer.
+            loop.steamCredentialUnavailable || probe.directiveDropped || probe.createUnanswered -> WakeOutcome.failed(WakeCause.OTHER)
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
             proofs && probe.proofUndelivered.isNotEmpty() -> WakeOutcome.failed(WakeCause.NETWORK)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
@@ -853,6 +857,7 @@ class P2pTracker(
             is LifecycleEvent.CycleCompleted -> if (event.watching > 0) watchedAt = clock.now()
             is LifecycleEvent.CycleFailed -> probe.failed = true
             is LifecycleEvent.DirectiveDropped -> probe.directiveDropped = true
+            is LifecycleEvent.CreateUnanswered -> probe.createUnanswered = true
             is LifecycleEvent.RateLimited -> {
                 val steam = event.surface == "steam"
                 if (steam) probe.steamRateLimited = true else probe.dmarketRateLimited = true

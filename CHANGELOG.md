@@ -61,6 +61,7 @@ GitHub Release.
 ### Fixed
 
 - Mobile: a `prove_offer` or `prove_release` wake whose deal still waits on its proof, an offer awaiting Steam Guard included, now ends with the final ack `deferred` (`cellular_not_allowed`) or `failed` (`notary`, `os_killed`, `other`) instead of `done`. The first ack stays `done` (DMA-1066).
+- Mobile: a wake whose Steam offer create got no answer from Steam now ends with the final ack `failed` (`other`) instead of `done` (DMA-664).
 - Mobile: a Steam offer create cut short by a wake's deadline after its request went out keeps the deal held across a restart until the offer is found among the account's sent offers, so a second offer is not created in the meantime (DMA-664).
 - Mobile: a Steam offer create that got no answer (a timeout, a dropped connection) is no longer reported `failed` at once: the tracker looks for the offer among the account's sent offers for 2 minutes and reports it when found. With `reportUnsentCreates = false` a create whose offer is not found is dropped unreported, so its lease lapses (DMA-664).
 - A Steam offer create or cancel stopped by the host (a wake's deadline, the OS stopping the work) is no longer reported `failed` on `/trade-actions` and no longer parks the partner (DMA-664).

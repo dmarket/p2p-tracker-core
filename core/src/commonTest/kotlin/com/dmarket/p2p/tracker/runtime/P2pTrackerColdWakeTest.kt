@@ -53,6 +53,7 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -96,7 +97,7 @@ class P2pTrackerColdWakeTest {
     private val sentOffers = mutableListOf<String>()
 
     /** Where a create POST stops answering: before Steam makes the offer, after it, or not at all. */
-    private enum class Hang { NONE, BEFORE_THE_OFFER, AFTER_THE_OFFER }
+    private enum class Hang { NONE, BEFORE_THE_OFFER, AFTER_THE_OFFER, PAST_THE_REQUEST_TIMEOUT }
 
     private var createHang = Hang.NONE
 
@@ -188,6 +189,7 @@ class P2pTrackerColdWakeTest {
             }
             community && path == "/tradeoffer/new/send" -> {
                 if (createHang == Hang.BEFORE_THE_OFFER) awaitCancellation()
+                if (createHang == Hang.PAST_THE_REQUEST_TIMEOUT) delay(1.minutes)
                 sentOffers += "8001"
                 if (createHang == Hang.AFTER_THE_OFFER) awaitCancellation()
                 respond("""{"tradeofferid":"8001","needs_mobile_confirmation":true}""")
@@ -466,5 +468,19 @@ class P2pTrackerColdWakeTest {
         assertEquals(2, createPosts, "no offer on Steam: the re-served create runs again")
         assertTrue(marketplace.directiveOutcomes.none { it.status == DirectiveStatus.FAILED }, "${marketplace.directiveOutcomes}")
         assertEquals(OfferId("8001"), marketplace.directiveOutcomes.single { it.directiveId.value == "dir-1" }.steamOfferId)
+    }
+
+    @Test
+    fun a_create_steam_did_not_answer_within_its_request_timeout_fails_the_wake_and_is_never_reported_failed() = runTest {
+        signedInEarlier()
+        lease(create("dir-1"))
+        createHang = Hang.PAST_THE_REQUEST_TIMEOUT
+
+        val outcome = process(reportUnsentCreates = false).tracker.onPush(wake("directive"))
+
+        assertEquals(WakeOutcome.failed(WakeCause.OTHER), outcome, "the work did not get done")
+        assertEquals(1, createPosts)
+        assertTrue(marketplace.directiveOutcomes.isEmpty(), "held for the grace, not reported: ${marketplace.directiveOutcomes}")
+        assertTrue(events.events.any { it is LifecycleEvent.CreateUnanswered })
     }
 }
