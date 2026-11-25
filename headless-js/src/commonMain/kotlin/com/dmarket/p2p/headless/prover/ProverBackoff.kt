@@ -7,9 +7,10 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
- * When the next proof may start, after the failures [waitAfter] makes wait. A proof that comes back, or a newly held
- * key, clears the wait; so does another Steam proxy, or none, when the wait is the proxy's. The same proxy answering
- * the tracker's reads again lifts a proxy's wait once per run of failures ([proxyRecovered]).
+ * When the next proof may start, after the failures [waitAfter] makes wait. A proof that comes back clears the wait,
+ * and so does a newly held key unless the wait is the proxy's; another Steam proxy, or none, clears a proxy's wait.
+ * The same proxy answering the tracker's reads again lifts a proxy's wait once per run of failures
+ * ([proxyRecovered]).
  */
 class ProverBackoff {
     private var notBefore: Instant? = null
@@ -59,7 +60,7 @@ class ProverBackoff {
      * The same proxy got the tracker's own Steam reads through again: the next proof may start now, once per run of
      * failures. A proxy that lets those through but not the prover's tunnel would otherwise have each cycle spend a
      * notary session on it; after this lift the run's next failure waits its doubled time, and only a proof that comes
-     * back, a new key or another proxy lets a recovery lift a wait again. A notary's wait stays.
+     * back or another proxy lets a recovery lift a wait again. A notary's wait stays.
      */
     fun proxyRecovered() {
         if (!proxyWait || recoveryLifted) return
