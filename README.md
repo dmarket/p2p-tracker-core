@@ -19,11 +19,14 @@ Kotlin codebase compiles to:
 - an **iOS XCFramework** *(target enabled on request)*,
 - an **Android AAR** *(target enabled on request)*.
 
-It is the **seller plugin core** of DMarket's new P2P flow, where skins stay in users' Steam
-inventories (not in DMarket custody). It heartbeats to the backend, executes device-leased
+It is the **plugin core** of DMarket's new P2P flow, where skins stay in users' Steam
+inventories (not in DMarket custody). For the seller it heartbeats to the backend, executes device-leased
 directives (`create_offer` / `cancel_offer` / `report_inventory`), watches both Steam trade axes,
 and reports **raw** Steam status codes — plus TLSN proofs for decisive transitions on
-`proof_required` deals. **The buyer has no plugin** (DMarket FE + Steam UI only). **It contains no
+`proof_required` deals. The buyer's mobile app links it too: it watches the same deal (`role: buyer`),
+reports the codes it reads (received offers, `assets_received` history rows), never writes to Steam, and
+leaves the proof of a changed transition to the seller's tracker; it still answers a `proveAfter` mark.
+On the web the buyer has no tracker (DMarket FE + Steam UI only). **It contains no
 UI** — each open-source client provides its own native UI and links this core.
 
 This is a **clean-room implementation**. The Steam JWT it uses is **device-only and never sent to the
