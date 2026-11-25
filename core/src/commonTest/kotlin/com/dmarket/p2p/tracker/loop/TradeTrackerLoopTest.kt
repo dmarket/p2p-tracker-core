@@ -24,6 +24,7 @@ import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.OfferId
@@ -6667,6 +6668,17 @@ class TradeTrackerLoopTest {
 
     @Test
     fun a_cycle_cut_after_steam_refused_the_create_releases_its_claim() = runTest {
+        assertTrue(cutAfterSteamAnswered(CreateOfferResult.Failed("There was an error sending your trade offer.")).isEmpty())
+    }
+
+    @Test
+    fun a_cycle_cut_after_steam_created_the_offer_still_holds_its_claim() = runTest {
+        val held = cutAfterSteamAnswered(CreateOfferResult.NeedsConfirmation(OfferId("offer-created"))).single()
+        assertEquals(setOf(AssetId("asset-1")), held.unanswered?.assetIds, "a release would let the deal be created twice")
+    }
+
+    /** The claims left after a create Steam answered with [answer], when the cycle is cut folding it into the throttle. */
+    private suspend fun cutAfterSteamAnswered(answer: CreateOfferResult): Collection<DealWriteClaim> {
         val claims = PersistedDealWriteClaimStore()
         val shipped = PersistedSteamWriteThrottleStore(limits = TrackerConfig.defaults().steamWrites, random = Random(7))
         // The cycle is stopped while the refusal is folded into the throttle, after Steam answered.
@@ -6676,7 +6688,7 @@ class TradeTrackerLoopTest {
         }
         val l = loop(
             marketplace = createLease(createDirective()),
-            creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed("There was an error sending your trade offer.")),
+            creator = FakeSteamOfferCreator(result = answer),
             claims = claims,
             throttle = cutOnResult,
             directivesEnabled = true,
@@ -6684,7 +6696,7 @@ class TradeTrackerLoopTest {
         )
 
         assertFailsWith<CancellationException> { l.runOnce() }
-        assertTrue(claims.all().isEmpty(), "Steam refused it: nothing was written, so nothing holds the deal")
+        return claims.all()
     }
 
     @Test

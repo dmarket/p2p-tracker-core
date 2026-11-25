@@ -490,7 +490,8 @@ class P2pTracker(
      * Whether [permit] has no session left for [dealId]. Bytes made and not delivered go again under a spent permit:
      * sending them is no notary session.
      * shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a proof
-     * due on the other also mints that one; gate the mint on the permit if both ever come due together.
+     * due on the other also mints that one, and so does the one update that finds Steam on another decisive code before
+     * its cycle drops the old bytes; gate the mint on the permit if either ever matters.
      */
     private fun spent(permit: Permit, allowed: Int, dealId: DealId, loop: TradeTrackerLoop): Boolean =
         permit.sessions > allowed && !loop.hasUndeliveredProof(dealId)

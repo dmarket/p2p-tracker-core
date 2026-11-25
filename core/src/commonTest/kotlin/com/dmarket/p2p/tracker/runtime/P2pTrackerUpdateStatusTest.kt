@@ -825,8 +825,9 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
-    fun a_session_a_stop_or_a_logout_cut_does_not_count() = runTest {
-        for (logout in listOf(false, true)) {
+    fun a_session_a_stop_a_logout_or_an_account_change_cut_does_not_count() = runTest {
+        // Only the stop tells: a logout and an account change also drop the permit.
+        for (cut in listOf("stop", "logout", "account change")) {
             var proving = false
             val hangsOnce = object : NotaryProver by FakeNotaryProver() {
                 override suspend fun proveTransition(
@@ -843,13 +844,21 @@ class P2pTrackerUpdateStatusTest {
             val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = hangsOnce, refresh = refresh))
             val run = launch { tracker.updateStatus(deal, retries = 0) }
             runCurrent()
-            assertTrue(proving, "logout=$logout: the session started")
+            assertTrue(proving, "$cut: the session started")
 
-            if (logout) tracker.onLogout() else tracker.stop()
+            when (cut) {
+                "stop" -> tracker.stop()
+                "logout" -> tracker.onLogout()
+                else -> {
+                    linked = SteamId("76561198000000002")
+                    tracker.start()
+                    linked = account
+                }
+            }
             run.join()
             val next = tracker.updateStatus(deal, retries = 0)
 
-            assertEquals(UpdateFailure.NOTARY, next.failure, "logout=$logout: the permit was whole, so the session ran")
+            assertEquals(UpdateFailure.NOTARY, next.failure, "$cut: the permit was whole, so the session ran")
         }
     }
 
