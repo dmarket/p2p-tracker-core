@@ -1051,6 +1051,53 @@ class TradeTrackerLoopTest {
         assertEquals(1, creator.created.size, "an UNKNOWN role must not block a legitimate create")
     }
 
+    // ---- the buyer as a reporter (DMA-664) -------------------------------------------------------------
+    //
+    // The buyer gets the same watch entry with `role: BUYER` and its reports move the deal like the seller's. It
+    // never writes to Steam, and a changed transition is proven by the seller alone: one MPC session per transition.
+
+    private fun buyerHeartbeat(deal: TrackedDeal, vararg directives: Directive) = FakeMarketplaceClient(
+        heartbeatResponse = HeartbeatResponse(activeTracking = listOf(deal), directives = directives.toList(), ttlSeconds = 60),
+    )
+
+    @Test
+    fun a_buyer_reports_its_received_offer_2_then_3_on_the_offer_axis_and_writes_nothing() = runTest {
+        val clock = FakeClock()
+        val creator = FakeSteamOfferCreator()
+        val canceller = FakeSteamOfferCanceller()
+        val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 2))
+        val mp = buyerHeartbeat(tracked(role = DealRole.BUYER), createDirective(), cancelDirective(offerId = "offer-1"))
+        val l = loop(marketplace = mp, reader = reader, creator = creator, canceller = canceller, directivesEnabled = true, clock = clock)
+
+        l.runOnce()
+        reader.offers = mapOf(OfferId("offer-1") to 3)
+        clock.advance(61.seconds)
+        l.runOnce()
+
+        assertEquals(listOf(2, 3), mp.tradeStatusReports.filter { it.source == TradeStatusSource.OFFER }.map { it.steamStatusCode })
+        assertTrue(creator.created.isEmpty(), "the buyer never creates an offer")
+        assertTrue(canceller.cancelledOffers.isEmpty(), "the buyer never cancels the seller's offer")
+    }
+
+    @Test
+    fun a_buyer_reports_the_completed_transfer_and_its_rollback_on_the_history_axis() = runTest {
+        val clock = FakeClock()
+        val reader = settledFixture().apply { offers = mapOf(OfferId("offer-1") to 3) }
+        reader.offerTradeIds = mapOf(OfferId("offer-1") to TradeId("trade-original"))
+        val mp = buyerHeartbeat(trackedBothAxes().copy(role = DealRole.BUYER))
+        val l = loop(marketplace = mp, reader = reader, clock = clock)
+
+        l.runOnce()
+        reader.transfers = rollbackFixture(ROLLBACK_CODE).transfers
+        clock.advance(2.hours)
+        l.runOnce()
+
+        assertEquals(
+            listOf(3, ROLLBACK_CODE),
+            mp.tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode },
+        )
+    }
+
     // ---- awaitDirectiveOutcome (the page's create trigger) -----------------------------------------
     // The page hands over a deal id and nothing else: what it waits on is the create the backend leased.
 

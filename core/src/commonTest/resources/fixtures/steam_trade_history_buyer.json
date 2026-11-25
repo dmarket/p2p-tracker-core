@@ -1,0 +1,78 @@
+{
+  "response": {
+    "more": false,
+    "trades": [
+      {
+        "tradeid": "594063027056180300",
+        "steamid_other": "76561198112233445",
+        "time_init": 1785900100,
+        "status": 3,
+        "assets_given": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "52011111111",
+            "classid": "8490849127",
+            "instanceid": "143865972",
+            "new_assetid": "52033333333",
+            "new_contextid": "2"
+          }
+        ]
+      },
+      {
+        "tradeid": "731422815690180200",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785800200,
+        "status": 3,
+        "assets_received": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "51978272400",
+            "classid": "8490849127",
+            "instanceid": "143865972",
+            "new_assetid": "52011111111",
+            "new_contextid": "2"
+          }
+        ],
+        "time_settlement": 1786405000
+      },
+      {
+        "tradeid": "594063027056180150",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760511,
+        "status": 3,
+        "assets_received": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "51978272357",
+            "classid": "5222000111",
+            "instanceid": "188530139",
+            "new_assetid": "51999999990",
+            "new_contextid": "2"
+          }
+        ],
+        "rollback_trade": "731422815690175777"
+      },
+      {
+        "tradeid": "731422815690175777",
+        "steamid_other": "76561198336610283",
+        "time_init": 1785760349,
+        "status": 12,
+        "assets_received": [
+          {
+            "appid": 730,
+            "contextid": "2",
+            "assetid": "51978272357",
+            "classid": "5222000111",
+            "instanceid": "188530139",
+            "new_assetid": "51999999980",
+            "new_contextid": "2"
+          }
+        ],
+        "time_mod": 1785760511
+      }
+    ]
+  }
+}
