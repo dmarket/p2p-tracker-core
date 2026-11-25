@@ -9,11 +9,14 @@ import com.dmarket.p2p.tracker.port.host.EventObserver
 interface NodeProofHost : ProofHost {
     fun keyChanged()
 
+    /** The Steam proxy proofs were held back for is out of the way (the host pushed another, or none): they may start. */
+    fun steamProxyChanged()
+
     /**
-     * The Steam proxy proofs were held back for is out of the way (the host pushed another, or none) or answers again
-     * ([LifecycleEvent.SteamProxyRecovered]): they may start.
+     * The same Steam proxy got the tracker's reads through again ([LifecycleEvent.SteamProxyRecovered]): proofs held
+     * back for it may start, once per run of failures (a read's tunnel is not the prover's).
      */
-    fun steamProxyMayAnswer()
+    fun steamProxyRecovered()
 
     fun close()
 }
@@ -26,9 +29,9 @@ fun interface NodeProofHostFactory {
 /**
  * [observer], with this host told first when the tracker reports its Steam proxy back
  * ([LifecycleEvent.SteamProxyRecovered]): proofs held back for the outage start with the next cycle, not after the
- * rest of their backoff, which may be minutes.
+ * rest of their backoff, which may be minutes; once per run of failures ([ProverBackoff.proxyRecovered]).
  */
 fun NodeProofHost.hearingSteamProxyRecovery(observer: EventObserver): EventObserver = EventObserver { event ->
-    if (event == LifecycleEvent.SteamProxyRecovered) steamProxyMayAnswer()
+    if (event == LifecycleEvent.SteamProxyRecovered) steamProxyRecovered()
     observer.onEvent(event)
 }

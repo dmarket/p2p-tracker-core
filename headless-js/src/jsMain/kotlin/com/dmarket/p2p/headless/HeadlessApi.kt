@@ -155,7 +155,7 @@ fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefine
     return call(handle) {
         val push = tracker.pushSteamToken(accessToken, proxy)
         // Another proxy, or none, may answer where the old one did not: the next proof need not wait it out.
-        if (push is SteamPushResult.Held && proxy != SteamProxyUpdate.Keep) proofHost?.steamProxyMayAnswer()
+        if (push is SteamPushResult.Held && proxy != SteamProxyUpdate.Keep) proofHost?.steamProxyChanged()
         push.toJs()
     }
 }

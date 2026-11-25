@@ -20,9 +20,11 @@ class SteamProxyRecoveryTest {
 
         override fun keyChanged() = backoff.keyChanged()
 
-        override fun steamProxyMayAnswer() {
+        override fun steamProxyChanged() = error("not a push")
+
+        override fun steamProxyRecovered() {
             heard += "proof host"
-            backoff.proxyMayAnswer()
+            backoff.proxyRecovered()
         }
 
         override fun close() = Unit
@@ -52,5 +54,19 @@ class SteamProxyRecoveryTest {
         BackoffHost(backoff, mutableListOf()).hearingSteamProxyRecovery { }.onEvent(LifecycleEvent.SteamProxyRecovered)
 
         assertNotNull(backoff.blocked(T0), "a notary that is down is not the proxy's to clear")
+    }
+
+    @Test
+    fun a_proxy_back_for_reads_only_does_not_lift_the_second_wait_of_the_run() = runTest {
+        val refused = ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429")
+        val backoff = ProverBackoff().apply { failed(refused, T0) }
+        val observer = BackoffHost(backoff, mutableListOf()).hearingSteamProxyRecovery { }
+
+        observer.onEvent(LifecycleEvent.SteamProxyRecovered)
+        assertNull(backoff.blocked(T0))
+        backoff.failed(refused, T0)
+        observer.onEvent(LifecycleEvent.SteamProxyRecovered)
+
+        assertNotNull(backoff.blocked(T0), "the prover's tunnel was refused again: the proof waits out its backoff")
     }
 }
