@@ -140,6 +140,8 @@ fun forceHeartbeat(handle: TrackerHandle): Promise<Unit> {
  * - `{ ok:false, status:"account_mismatch",   linkedSteamId, tokenSteamId }` — blocked before any write.
  * - `{ ok:false, status:"creates_paused" }` — the host paused offer creation ([setCreatesPaused]); nothing was sent
  *   to Steam. A deal whose offer this device already made still answers with that offer (`duplicate:true`).
+ * - `{ ok:false, status:"not_sent",           reason }` — the account's Steam proxy could not be reached; nothing
+ *   reached Steam, and the create is deferred rather than failed.
  * - `{ ok:false, error }` — a blank deal id (nothing was asked of the backend).
  *
  * **`cause` is the field to branch on for a failure, never `error`.** `error` is free-form text kept for
