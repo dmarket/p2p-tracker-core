@@ -501,6 +501,20 @@ class P2pTrackerUpdateStatusTest {
         assertEquals(1, setup.marketplace.tradeStatusReports.size)
     }
 
+    @Test
+    fun a_buyers_report_that_did_not_get_through_is_still_a_dmarket_failure() = runTest {
+        // Only the refusal for want of a proof is the seller's business: a 5xx or a dropped call is a report DMarket
+        // never heard, as on any other deal.
+        val marketplace = FakeMarketplaceClient(heartbeat(proofRequired = true, role = DealRole.BUYER))
+        marketplace.reportTradeStatusThrows = true
+        val setup = Setup(marketplace)
+
+        val update = tracker(setup).updateStatus(deal)
+
+        assertEquals(UpdateFailure.DMARKET, update.failure)
+        assertEquals(1, setup.marketplace.tradeStatusReports.size)
+    }
+
     // ---- proof gate ----------------------------------------------------------------------------
 
     @Test

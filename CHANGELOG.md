@@ -17,6 +17,7 @@ GitHub Release.
 ### Fixed
 
 - Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
+- Mobile: on a buyer's deal, a status report that did not reach DMarket (a 5xx, a dropped call) is again `UpdateFailure.DMARKET` on a manual status update and `failed` (`other`) on a wake; only DMarket's `P2P_PROOF_REQUIRED` refusal of it is skipped (DMA-664).
 
 ## [1.4.0-beta] - 2026-11-25
 

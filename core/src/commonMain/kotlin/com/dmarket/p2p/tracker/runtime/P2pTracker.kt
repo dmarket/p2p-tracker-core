@@ -179,7 +179,8 @@ class P2pTracker(
 
         /**
          * Deal and axis whose proof is the seller's ([ProofSkipReason.SELLER_PROVES]): this device is the buyer, sends
-         * the code once without a proof, and DMarket may refuse that report. Neither a failure nor a pending proof here.
+         * the code once without a proof, and DMarket may refuse that report for want of one ([PROOF_REQUIRED]). That
+         * refusal is neither a failure nor a pending proof here; a report that did not get through is still a failure.
          */
         val sellerProves = mutableSetOf<Pair<String, String>>()
     }
@@ -874,8 +875,10 @@ class P2pTracker(
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {
                 it.copy(lastCode = event.steamStatusCode, proofState = ProofState.NONE)
             }
-            is LifecycleEvent.TradeStatusReportFailed ->
-                if ((event.dealId to event.source) !in probe.sellerProves) probe.reportFailed += event.dealId
+            is LifecycleEvent.TradeStatusReportFailed -> {
+                val sellersProof = (event.dealId to event.source) in probe.sellerProves && event.reason?.contains(PROOF_REQUIRED) == true
+                if (!sellersProof) probe.reportFailed += event.dealId
+            }
             // The gate's deferral outlasts the withheld report it causes, which is announced after it.
             is LifecycleEvent.TradeStatusReportDeferred -> if ((event.dealId to event.source) !in probe.sellerProves) {
                 deal(event.dealId) { if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING) }
@@ -946,6 +949,9 @@ class P2pTracker(
 
         /** The refresh's own 429, as against Kong's, which names no P2P code. */
         private const val REFRESH_RATE_LIMITED = "P2P_REFRESH_RATE_LIMITED"
+
+        /** DMarket's refusal of a decisive report that came without its proof. */
+        private const val PROOF_REQUIRED = "P2P_PROOF_REQUIRED"
 
         /** A permit the refresh's 429 closed: no session is left under it. */
         private const val EXHAUSTED = Int.MAX_VALUE
