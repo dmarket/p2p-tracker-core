@@ -22,6 +22,8 @@ GitHub Release.
 - Headless: after a proof fails with `proxy_unreachable`, the next Steam answer through the same proxy, over a kept-alive connection too, ends the outage: `SteamProxyRecovered` arrives and `trackerState().steamProxyUnreachable` is `false` again (DMA-1012).
 - Headless: a proxy pushed in place of an unreachable one that cannot be reached either gets its own `SteamProxyUnreachable`, with its `detail` (DMA-1012).
 - Headless: a token push that names the proxy already held leaves the proofs waiting on it as they are (DMA-1012).
+- Android: a native proof keeps every frame the notary sent before it closed the socket, even when the prover had not read them yet (DMA-540).
+- Android: cancelling an MPC native proof while it connects to Steam ends it at once instead of after the connect timeout (DMA-540).
 
 ## [1.5.0-beta] - 2026-11-25
 

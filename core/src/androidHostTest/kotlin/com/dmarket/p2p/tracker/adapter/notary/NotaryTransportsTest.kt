@@ -8,12 +8,16 @@ import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketAddress
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import javax.net.SocketFactory
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
@@ -83,6 +87,24 @@ class NotaryTransportsTest {
         assertEquals(-1, transport.read(buffer))
         assertEquals(-1, transport.read(buffer))
         assertEquals(4001, transport.closeCode)
+        transport.close()
+    }
+
+    @Test
+    fun the_notarys_close_on_a_full_queue_keeps_every_frame_before_the_end() {
+        val server = notary()
+        val transport = connect(server)
+        // Exactly the queue's capacity, then the close: onClosing and onClosed both arrive while nothing is read.
+        repeat(256) { server.sendBinary(byteArrayOf(it.toByte())) }
+        server.sendClose(1000)
+        assertTrue(server.closeFrame.await(5, TimeUnit.SECONDS), "the close was handled before the first read")
+        Thread.sleep(200)
+
+        val buffer = ByteArray(1)
+        val frames = generateSequence { transport.read(buffer).takeIf { it > 0 }?.let { buffer[0].toInt() and 0xFF } }.toList()
+
+        assertEquals((0 until 256).toList(), frames)
+        assertEquals(-1, transport.read(buffer))
         transport.close()
     }
 
@@ -185,6 +207,58 @@ class NotaryTransportsTest {
         val unreachable = LazyTcpTransport(SocketFactory.getDefault(), "127.0.0.1", port, 5_000)
         assertFailsWith<IOException> { unreachable.write(byteArrayOf(1), 1) }
         assertNotNull(unreachable.targetError)
+    }
+
+    @Test
+    fun closing_the_target_ends_a_dial_in_progress_and_one_closed_before_the_connect() {
+        val connectStarted = CountDownLatch(1)
+        val connects = AtomicInteger()
+        lateinit var onCreate: () -> Unit
+        val factory = object : SocketFactory() {
+            override fun createSocket(): Socket = HangingSocket(connectStarted, connects).also { onCreate() }
+
+            override fun createSocket(host: String, port: Int) = throw UnsupportedOperationException()
+
+            override fun createSocket(host: String, port: Int, localHost: InetAddress, localPort: Int) =
+                throw UnsupportedOperationException()
+
+            override fun createSocket(host: InetAddress, port: Int) = throw UnsupportedOperationException()
+
+            override fun createSocket(address: InetAddress, port: Int, localAddress: InetAddress, localPort: Int) =
+                throw UnsupportedOperationException()
+        }
+
+        onCreate = {}
+        val dialling = LazyTcpTransport(factory, "127.0.0.1", 9, 30_000)
+        val write = CompletableFuture<Result<Unit>>()
+        thread { write.complete(runCatching { dialling.write(byteArrayOf(1), 1) }) }
+        assertTrue(connectStarted.await(5, TimeUnit.SECONDS))
+        dialling.close()
+        assertIs<IOException>(write.get(2, TimeUnit.SECONDS).exceptionOrNull(), "the close ended the dial, not its timeout")
+
+        // A close that lands after the dial's own check but before the connect.
+        lateinit var late: LazyTcpTransport
+        onCreate = { late.close() }
+        late = LazyTcpTransport(factory, "127.0.0.1", 9, 30_000)
+        assertFailsWith<IOException> { late.write(byteArrayOf(1), 1) }
+        assertEquals(1, connects.get(), "the late-closed target never connects")
+    }
+
+    /** Its connect waits until the socket is closed, as a dial to a host that does not answer. */
+    private class HangingSocket(private val connectStarted: CountDownLatch, private val connects: AtomicInteger) : Socket() {
+        private val closedLatch = CountDownLatch(1)
+
+        override fun connect(endpoint: SocketAddress, timeout: Int) {
+            connects.incrementAndGet()
+            connectStarted.countDown()
+            if (!closedLatch.await(10, TimeUnit.SECONDS)) throw SocketTimeoutException("connect timed out")
+            throw SocketException("Socket is closed")
+        }
+
+        override fun close() {
+            closedLatch.countDown()
+            super.close()
+        }
     }
 
     /** One connection: answers the upgrade (or [refuseWith]), collects binary payloads, sends frames on demand. */
