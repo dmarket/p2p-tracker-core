@@ -141,6 +141,7 @@ class SteamProxy private constructor(
             val user = percentDecoded(if (colon >= 0) userInfo.substring(0, colon) else userInfo)
             val password = if (colon >= 0) percentDecoded(userInfo.substring(colon + 1)) else null
             require(user.isNotEmpty()) { "proxy user must not be empty" }
+            require(':' !in user) { "proxy user must not contain a colon (RFC 7617)" }
             return user to password
         }
 

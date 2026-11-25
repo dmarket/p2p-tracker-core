@@ -43,6 +43,7 @@ class SteamProxyTest {
             "http://trader:s3cret pass@203.0.113.7:3128" to "spaces",
             "http://trader:s3cret-pass@bad_host!:3128" to "host name or an IP",
             "http://:s3cret-pass@203.0.113.7:3128" to "user must not be empty",
+            "http://tra%3Ader:s3cret-pass@203.0.113.7:3128" to "must not contain a colon",
             "http://trader:s3cret%4@203.0.113.7:3128" to "percent escape",
             "http://trader:s3cret%+1@203.0.113.7:3128" to "percent escape",
             "http://trader:s3cret%-1@203.0.113.7:3128" to "percent escape",
