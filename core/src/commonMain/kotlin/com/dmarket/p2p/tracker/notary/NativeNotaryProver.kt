@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
@@ -37,6 +38,14 @@ const val PROOF_CANCELLED_REASON: String = "the proof was cancelled on the devic
 
 /** A native proof's deadline: the extension's `NOTARY_PROOF_TIMEOUT_MS`. */
 val NATIVE_PROOF_DEADLINE: Duration = 180.seconds
+
+/**
+ * The caller cancelled a proof whose notary session had begun (the notary answered the upgrade with `101`): a
+ * [CancellationException] that propagates as one, and that the loop counts as a notary session, a cycle's deadline
+ * included (owner's decision, 2026-11-25). [cause] is the caller's own cancellation.
+ */
+class NotarySessionCutException(override val cause: CancellationException) :
+    CancellationException("the notary session was cut after the 101")
 
 /** One running proof, for a progress screen (T-14): the prover's stage (0–6), its advisory fraction and its traffic. */
 data class ProofProgress(
@@ -153,7 +162,11 @@ class NativeNotaryProver(
     private suspend fun issue(dealId: DealId, issuance: NativeIssuance): NativeIssuanceOutcome {
         mutableProgress.update { it + (dealId to ProofProgress()) }
         val listener = object : NativeIssuanceListener {
+            /** A stage came: the prover runs, and its stream to the notary exists only after the `101`. */
+            @Volatile var upgraded = false
+
             override fun onStage(index: Int, stage: String, fraction: Float) {
+                upgraded = true
                 mutableProgress.update { all ->
                     all[dealId]?.let {
                         all +
@@ -174,7 +187,18 @@ class NativeNotaryProver(
                 }
             }
         }
-        return coroutineScope {
+        // The caller's cancellation goes on as a cut session once the notary had answered; outside the scope, which would
+        // rethrow its own cancellation in place of this one.
+        return try {
+            issueIn(dealId, issuance, listener)
+        } catch (e: CancellationException) {
+            if (listener.upgraded && !currentCoroutineContext().isActive) throw NotarySessionCutException(e)
+            throw e
+        }
+    }
+
+    private suspend fun issueIn(dealId: DealId, issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome =
+        coroutineScope {
             // Registered before it starts, so a cancel() at the start finds it.
             val issue = async(start = CoroutineStart.LAZY) { withTimeoutOrNull(issuance.deadline) { engine.issue(issuance, listener) } }
             val run = Running(dealId, issue)
@@ -194,7 +218,6 @@ class NativeNotaryProver(
                 if (left.none { it.dealId == dealId }) mutableProgress.update { it - dealId }
             }
         }
-    }
 
     private class Running(val dealId: DealId, val issue: Deferred<NativeIssuanceOutcome?>) {
         @Volatile var cancelledByUser = false

@@ -3919,7 +3919,8 @@ class TradeTrackerLoop(
     /** Whether a prove that ended with [failure] (`null`: a proof) had a notary session; see [onNotarySession]. */
     private fun spentNotarySession(failure: Throwable?): Boolean = when (failure) {
         null -> true
-        // A timeout is a CancellationException too, so it goes first: the cycle's deadline is not the user's Cancel.
+        // A timeout is a CancellationException too, so it goes first: the cycle's deadline is not the user's Cancel. A
+        // native session it cut after the notary's 101 comes as a NotarySessionCutException instead and is counted below.
         is TimeoutCancellationException, is RateLimitedException -> false
         is CancellationException -> true
         is HostedProofException -> when (val cause = failure.failure) {

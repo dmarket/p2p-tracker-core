@@ -50,11 +50,14 @@ class NativeNotaryProverTest {
         var forever = false
         var cancelled = 0
 
+        /** Whether the prover reports a stage, which it does only once the notary answered the upgrade. */
+        var staged = true
+
         override fun unavailableReason(): String? = unavailable
 
         override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
             issued += issuance
-            listener.onStage(2, "MPC_SETUP", 0.5f)
+            if (staged) listener.onStage(2, "MPC_SETUP", 0.5f)
             listener.onBytes(sent = 1_000, received = 100)
             try {
                 if (forever) awaitCancellation()
@@ -190,6 +193,31 @@ class NativeNotaryProverTest {
 
         assertTrue(proof.isCancelled)
         assertEquals(1, engine.cancelled)
+    }
+
+    @Test
+    fun the_callers_cancellation_after_the_101_is_a_cut_session_and_before_it_a_plain_cancellation() = runTest {
+        for (staged in listOf(false, true)) {
+            val engine = FakeEngine().apply {
+                forever = true
+                this.staged = staged
+            }
+            var thrown: Throwable? = null
+            val proof = async {
+                try {
+                    prover(engine).proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+                } catch (e: CancellationException) {
+                    thrown = e
+                    throw e
+                }
+            }
+            runCurrent()
+            proof.cancel()
+            runCurrent()
+
+            assertTrue(proof.isCancelled, "staged=$staged")
+            assertEquals(staged, thrown is NotarySessionCutException, "staged=$staged: $thrown")
+        }
     }
 
     @Test

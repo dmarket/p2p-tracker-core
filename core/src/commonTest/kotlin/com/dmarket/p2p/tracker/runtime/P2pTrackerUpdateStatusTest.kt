@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.runtime
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamSessionRefresher
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.client.steam.SteamRateLimitedException
+import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.loop.LoopConfig
 import com.dmarket.p2p.tracker.loop.TradeTrackerLoop
@@ -25,6 +26,11 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.notary.HostedProofException
 import com.dmarket.p2p.tracker.notary.KillCause
+import com.dmarket.p2p.tracker.notary.NativeIssuance
+import com.dmarket.p2p.tracker.notary.NativeIssuanceListener
+import com.dmarket.p2p.tracker.notary.NativeIssuanceOutcome
+import com.dmarket.p2p.tracker.notary.NativeNotaryProver
+import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
 import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
@@ -32,6 +38,7 @@ import com.dmarket.p2p.tracker.port.marketplace.DealRefreshClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceServerErrorException
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
+import com.dmarket.p2p.tracker.port.notary.NotaryTokenProvider
 import com.dmarket.p2p.tracker.port.steam.SteamReadClient
 import com.dmarket.p2p.tracker.port.steam.SteamSessionRefresher
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
@@ -60,6 +67,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
@@ -976,6 +984,33 @@ class P2pTrackerUpdateStatusTest {
 
         assertEquals(UpdateFailure.TIMEOUT, next.failure, "the permit was whole, so the run went: ${next.failure}")
         assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
+    fun a_native_session_the_cycles_deadline_cut_counts_only_after_the_notarys_101() = runTest {
+        for (upgraded in listOf(false, true)) {
+            val hangs = object : NativeProverEngine {
+                override fun unavailableReason(): String? = null
+
+                override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
+                    if (upgraded) listener.onStage(2, "MPC_SETUP", 0.1f) // the prover's stream exists only after the 101
+                    awaitCancellation()
+                }
+            }
+            val prover = NativeNotaryProver(NotaryConfig(), NotaryTokenProvider { "notary-token" }, hangs, clock)
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = clock.now() + 1.hours) }
+            val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = prover, refresh = refresh))
+
+            assertEquals(UpdateFailure.TIMEOUT, tracker.updateStatus(deal, retries = 0).failure, "upgraded=$upgraded")
+            val next = tracker.updateStatus(deal, retries = 0)
+
+            assertEquals(
+                if (upgraded) UpdateFailure.RATE_LIMITED else UpdateFailure.TIMEOUT,
+                next.failure,
+                "upgraded=$upgraded: the session counts only once the notary answered",
+            )
+            assertEquals(1, refresh.calls.size)
+        }
     }
 
     @Test
