@@ -230,8 +230,6 @@ class NetworkRedactionTest {
         val bodies = listOf(
             "{\"site\":\"https://dmarket.com\",\"contact\":\"x@y.com\"}",
             "<a href=\"https://dmarket.com\">site</a><a href=\"mailto:x@y.com\">mail</a>",
-            "{'site':'https://dmarket.com','contact':'x@y.com'}",
-            "https://dmarket.com,x@y.com",
         )
         for (body in bodies) assertEquals(body, NetworkRedaction.redactBody(body), body)
     }
@@ -256,6 +254,14 @@ class NetworkRedactionTest {
         }
         val ipv6 = NetworkRedaction.redactBody("{\"p\":\"http://u:p\"w@[2001:db8::1]:443\"}").orEmpty()
         assertEquals("{\"p\":\"http://<redacted>@[2001:db8::1]:443\"}", ipv6)
+    }
+
+    @Test
+    fun a_proxy_echoed_without_its_default_port_loses_a_password_with_a_comma_or_quote() {
+        for (password in listOf("p,ss", "p'ss")) {
+            val redacted = NetworkRedaction.redactBody("connect to http://trader:$password@proxy.example.net/ failed").orEmpty()
+            assertEquals("connect to http://<redacted>@proxy.example.net/ failed", redacted)
+        }
     }
 
     @Test
