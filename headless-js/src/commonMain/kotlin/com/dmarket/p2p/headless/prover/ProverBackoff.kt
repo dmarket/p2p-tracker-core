@@ -8,7 +8,8 @@ import kotlin.time.Instant
 
 /**
  * When the next proof may start, after the failures [waitAfter] makes wait. A proof that comes back, or a newly held
- * key, clears the wait; so does another Steam proxy, or none, when the wait is the proxy's.
+ * key, clears the wait; so does another Steam proxy, or none, or the same one answering again, when the wait is the
+ * proxy's.
  */
 class ProverBackoff {
     private var notBefore: Instant? = null
@@ -45,8 +46,11 @@ class ProverBackoff {
         proxyWait = false
     }
 
-    /** The host pushed another Steam proxy, or none: a wait for the old one's sake is over. A notary's wait stays. */
-    fun proxyChanged() {
+    /**
+     * The proxy a wait was for is out of the way (the host pushed another, or none) or answers again: that wait is
+     * over. A notary's wait stays.
+     */
+    fun proxyMayAnswer() {
         if (proxyWait) succeeded()
     }
 

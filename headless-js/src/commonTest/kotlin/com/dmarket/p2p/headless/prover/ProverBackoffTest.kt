@@ -87,15 +87,15 @@ class ProverBackoffTest {
     }
 
     @Test
-    fun another_proxy_ends_a_proxys_wait_and_leaves_the_notarys_alone() {
+    fun another_proxy_or_the_same_one_back_ends_a_proxys_wait_and_leaves_the_notarys_alone() {
         val now = Instant.fromEpochSeconds(1_781_611_200)
         val proxyDown = ProverBackoff().apply { failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), now) }
         assertNotNull(proxyDown.blocked(now))
-        proxyDown.proxyChanged()
+        proxyDown.proxyMayAnswer()
         assertNull(proxyDown.blocked(now))
 
         val notaryDown = ProverBackoff().apply { failed(ProofFailure.NotaryUnreachable("ECONNREFUSED"), now) }
-        notaryDown.proxyChanged()
+        notaryDown.proxyMayAnswer()
         assertNotNull(notaryDown.blocked(now), "a busy notary is not the proxy's to clear")
     }
 }

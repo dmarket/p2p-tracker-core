@@ -10,6 +10,7 @@ import com.dmarket.p2p.headless.prover.ProofOutcomeJson
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.headless.prover.checkProverAssets
+import com.dmarket.p2p.headless.prover.hearingSteamProxyRecovery
 import com.dmarket.p2p.headless.prover.runProverChild
 import com.dmarket.p2p.headless.proxy.SteamHttpTransport
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
@@ -154,7 +155,7 @@ fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefine
     return call(handle) {
         val push = tracker.pushSteamToken(accessToken, proxy)
         // Another proxy, or none, may answer where the old one did not: the next proof need not wait it out.
-        if (push is SteamPushResult.Held && proxy != SteamProxyUpdate.Keep) proofHost?.proxyChanged()
+        if (push is SteamPushResult.Held && proxy != SteamProxyUpdate.Keep) proofHost?.steamProxyMayAnswer()
         push.toJs()
     }
 }
@@ -225,7 +226,9 @@ private fun create(
     val platform = HeadlessPlatform(
         storageFor = { accounts.storeFor(it.value) },
         clock = clock,
-        eventObserver = options.eventObserver() ?: NoOpEventObserver,
+        eventObserver = (options.eventObserver() ?: NoOpEventObserver).let { observer ->
+            proofHost?.hearingSteamProxyRecovery(observer) ?: observer
+        },
         httpEngine = httpEngine,
         proving = proofHost?.let { HeadlessProving(it, options.prover.maxConcurrency) },
         // Steam's calls alone: DMarket's stay on the platform's engine, and never go through the account's proxy.

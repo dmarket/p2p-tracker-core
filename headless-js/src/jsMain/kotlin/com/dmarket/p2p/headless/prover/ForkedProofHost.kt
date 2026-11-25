@@ -130,8 +130,8 @@ class ForkedProofHost(
     /** A newly held key may answer a notary 401: the next proof need not wait for the old one's backoff. */
     override fun keyChanged() = backoff.keyChanged()
 
-    /** Another proxy may answer where the old one did not: the next proof need not wait for its backoff. */
-    override fun proxyChanged() = backoff.proxyChanged()
+    /** Another proxy, or the same one again, may answer: the next proof need not wait for the old failure's backoff. */
+    override fun steamProxyMayAnswer() = backoff.proxyMayAnswer()
 
     /** Kills every prover process, idle or proving: the SDK is stopping. */
     override fun close() {
