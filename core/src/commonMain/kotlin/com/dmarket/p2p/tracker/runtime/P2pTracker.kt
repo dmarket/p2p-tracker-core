@@ -151,6 +151,9 @@ class P2pTracker(
 
     private class CycleProbe {
         var countsSessions = false
+
+        /** The update's permit was spent by the time its cycle got the lock: the cycle sent nothing. */
+        var permitSpent = false
         var heartbeat = false
         var retryAfter: Duration? = null
         var steamRateLimited = false
@@ -439,9 +442,10 @@ class P2pTracker(
      * Steam, for every deal) it sends nothing and answers [UpdateFailure.RATE_LIMITED] at once.
      *
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
-     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
-     * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
-     * Two updates at once take one permit: the second waits for the first one's refresh.
+     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (one the user
+     * cancelled counts, one a stop or logout cut does not): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
+     * Two updates at once take one permit: the second waits for the first one's refresh, and its cycle checks the
+     * permit again once it holds the lock, so it runs only while the first one left a session.
      * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
      * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
      * Retry spent, and a resend DMarket had already accepted reads as success.
@@ -463,21 +467,33 @@ class P2pTracker(
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
         permitLock.withLock {
             val permit = activePermit(dealId, now)
-            when {
-                permit == null -> takePermit(dealId, now, allowed)?.let { return it }
-                // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
-                // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
-                // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
-                permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
-                    return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+            if (permit == null) {
+                takePermit(dealId, now, allowed)?.let { return it }
+            } else if (spent(permit, allowed, dealId, s.loop)) {
+                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
             }
         }
-        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
-            ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+        // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session.
+        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true) {
+            activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } == true
+        } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+        if (run.probe.permitSpent) {
+            val until = activePermit(dealId, clock.now())?.until
+            return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = until?.let { it - clock.now() })
+        }
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
         return statusOf(dealId, failureOf(dealId, s.loop, run), allowed, retryAfter, s.loop.observedCode(dealId))
     }
+
+    /**
+     * Whether [permit] has no session left for [dealId]. Bytes made and not delivered go again under a spent permit:
+     * sending them is no notary session.
+     * shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a proof
+     * due on the other also mints that one; gate the mint on the permit if both ever come due together.
+     */
+    private fun spent(permit: Permit, allowed: Int, dealId: DealId, loop: TradeTrackerLoop): Boolean =
+        permit.sessions > allowed && !loop.hasUndeliveredProof(dealId)
 
     /** [dealId]'s permit while it holds. */
     private fun activePermit(dealId: DealId, now: Instant): Permit? = permits.value[dealId]?.takeIf { it.until > now }
@@ -513,12 +529,12 @@ class P2pTracker(
     }
 
     /**
-     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit.
-     * shortcut: counted when the attempt ends, so a re-tap that lands between Cancel and the old cycle's end still sees
-     * the session unspent; count at the prove's start if that window ever matters.
+     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit. Counted when the
+     * attempt ends; a re-tap that lands before then waits for the cycle lock and checks the permit again. A session a
+     * stop, a logout or an account change cut is not counted: the user did not cancel it.
      */
     private fun countNotarySession(dealId: DealId) {
-        if (!probe.countsSessions) return
+        if (!probe.countsSessions || session?.job?.isActive != true) return
         permits.update { all ->
             val permit = all[dealId] ?: return@update all
             if (permit.sessions == EXHAUSTED) all else all + (dealId to permit.copy(sessions = permit.sessions + 1))
@@ -667,7 +683,8 @@ class P2pTracker(
      * `null` when the session stopped under it. A [wake] or a [manual] update forces the heartbeat first: both always
      * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
-     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only).
+     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only), and a
+     * [manual] cycle whose [permitSpent] answers `true` under the lock sends nothing.
      */
     private suspend fun cycle(
         s: Session,
@@ -678,6 +695,7 @@ class P2pTracker(
         allowProof: Boolean = true,
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
+        permitSpent: () -> Boolean = { false },
     ): CycleRun? {
         val run = s.scope.async {
             locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions) {
@@ -686,6 +704,7 @@ class P2pTracker(
                         s.loop.forceHeartbeatNow()
                         s.loop.wakeFromPush(wake.signal)
                     }
+                    manual && permitSpent() -> probe.permitSpent = true
                     manual -> {
                         s.loop.forceHeartbeatNow()
                         s.loop.runOnceReporting()

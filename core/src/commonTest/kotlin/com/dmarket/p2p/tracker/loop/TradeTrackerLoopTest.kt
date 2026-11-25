@@ -56,6 +56,8 @@ import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.policy.SteamWriteFailureKind
+import com.dmarket.p2p.tracker.policy.SteamWriteThrottleState
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
@@ -6661,6 +6663,28 @@ class TradeTrackerLoopTest {
         val event = observer.events.filterIsInstance<LifecycleEvent.CreateUnanswered>().single()
         assertEquals("deal-1" to "dir-1", event.dealId to event.directiveId)
         assertTrue(observer.events.filterIsInstance<LifecycleEvent.DirectiveExecuted>().isEmpty())
+    }
+
+    @Test
+    fun a_cycle_cut_after_steam_refused_the_create_releases_its_claim() = runTest {
+        val claims = PersistedDealWriteClaimStore()
+        val shipped = PersistedSteamWriteThrottleStore(limits = TrackerConfig.defaults().steamWrites, random = Random(7))
+        // The cycle is stopped while the refusal is folded into the throttle, after Steam answered.
+        val cutOnResult = object : SteamWriteThrottleStore by shipped {
+            override suspend fun onResult(partner: SteamId, kind: SteamWriteFailureKind?, now: Instant): SteamWriteThrottleState =
+                throw CancellationException("stopped")
+        }
+        val l = loop(
+            marketplace = createLease(createDirective()),
+            creator = FakeSteamOfferCreator(result = CreateOfferResult.Failed("There was an error sending your trade offer.")),
+            claims = claims,
+            throttle = cutOnResult,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+
+        assertFailsWith<CancellationException> { l.runOnce() }
+        assertTrue(claims.all().isEmpty(), "Steam refused it: nothing was written, so nothing holds the deal")
     }
 
     @Test

@@ -3102,6 +3102,10 @@ class TradeTrackerLoop(
             val result = bound ?: runCatchingUnlessCancelled {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
+            // Steam refused it, or it never left: nothing was written, so a cancel from here on releases the claim. A
+            // created offer keeps it held, or the release would let the deal be created twice.
+            val refused = result is CreateOfferResult.Failed && result.cause != SteamCreateFailureCause.TRANSPORT
+            if (refused || result is CreateOfferResult.NotSent) posted = null
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
             // concurrently and re-gate on every step, so the sooner a refusal lands in the throttle the fewer
             // doomed creates they attempt. A bound offer is no write, so it says nothing about the surface.
@@ -3352,6 +3356,9 @@ class TradeTrackerLoop(
 
     /** Watch the tracked deals, report changed raw codes, and submit decisive proofs. Returns (reports, proofs). */
     private suspend fun watchAndReport(tracking: List<TrackedDeal>, credential: SteamCredential): Pair<Int, Int> {
+        // Bytes for a deal no longer tracked are never sent again: they would keep its manual update past the permit.
+        val trackedIds = tracking.mapTo(HashSet()) { it.dealId }
+        dropUndeliveredProofs { _, dealId -> dealId !in trackedIds }
         if (tracking.isEmpty()) return 0 to 0
         var proofsSubmitted = 0
         // Whether this pass has already spent a proof. The deadline bounds the CHAIN, so it cannot refuse the
@@ -3472,6 +3479,12 @@ class TradeTrackerLoop(
         val observed = observeTracked(tracking, credential, seededBaseline, attributionRetriable, uncorrelated)
         observedCodes.keys.retainAll(tracking.mapTo(HashSet()) { it.dealId })
         observed.forEach { (id, trade) -> (trade.historyStatus ?: trade.offerState)?.let { observedCodes[id] = it } }
+        // Steam now shows another code on the axis: that transition is past and its bytes go. An axis not read keeps them.
+        dropUndeliveredProofs { slot, _ ->
+            slot is ProofIntent &&
+                observed[slot.dealId]?.let { if (slot.source == TradeStatusSource.HISTORY) it.historyStatus else it.offerState }
+                    ?.let { it != slot.steamStatusCode } == true
+        }
         // Keep the expedited window open while any watched deal is still in a transient (state-9) offer
         // state. Must run before the empty-plan return: a persisting state 9 is deduped to no report, but
         // we still want to keep fast-polling for the imminent confirmation.
@@ -3992,6 +4005,12 @@ class TradeTrackerLoop(
         val live = undeliveredProofs.filterValues { now - it.provedFrom < PROOF_RESEND_WINDOW }
         if (live.size != undeliveredProofs.size) undeliveredProofs = live
         return live[slot]
+    }
+
+    /** Drops the kept bytes whose slot and deal are [stale]. */
+    private fun dropUndeliveredProofs(stale: (slot: Any, dealId: DealId) -> Boolean) {
+        val kept = undeliveredProofs.filter { (slot, proof) -> !stale(slot, proof.proof.dealId) }
+        if (kept.size != undeliveredProofs.size) undeliveredProofs = kept
     }
 
     /**

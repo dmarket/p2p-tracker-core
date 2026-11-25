@@ -825,6 +825,52 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
+    fun a_session_a_stop_or_a_logout_cut_does_not_count() = runTest {
+        for (logout in listOf(false, true)) {
+            var proving = false
+            val hangsOnce = object : NotaryProver by FakeNotaryProver() {
+                override suspend fun proveTransition(
+                    binding: ProvenReadBinding,
+                    source: TradeStatusSource,
+                    credential: SteamCredential,
+                ): ProofSubmission {
+                    if (proving) throw IllegalStateException("notary connection dropped")
+                    proving = true
+                    awaitCancellation()
+                }
+            }
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+            val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = hangsOnce, refresh = refresh))
+            val run = launch { tracker.updateStatus(deal, retries = 0) }
+            runCurrent()
+            assertTrue(proving, "logout=$logout: the session started")
+
+            if (logout) tracker.onLogout() else tracker.stop()
+            run.join()
+            val next = tracker.updateStatus(deal, retries = 0)
+
+            assertEquals(UpdateFailure.NOTARY, next.failure, "logout=$logout: the permit was whole, so the session ran")
+        }
+    }
+
+    @Test
+    fun two_updates_at_once_spend_no_more_sessions_than_the_permit_allows() = runTest {
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val notary = FakeNotaryProver().apply { proveThrows = IllegalStateException("notary connection dropped") }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
+
+        val first = async { tracker.updateStatus(deal, retries = 0) }
+        val second = async { tracker.updateStatus(deal, retries = 0) }
+
+        assertEquals(UpdateFailure.NOTARY, first.await().failure)
+        val late = second.await()
+        assertEquals(UpdateFailure.RATE_LIMITED, late.failure, "the first one spent the only session")
+        assertEquals(window() - clock.now(), late.retryAfter)
+        assertEquals(1, notary.proven.size)
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
     fun a_session_that_never_started_does_not_count() = runTest {
         val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
         val notary = FakeNotaryProver().apply { proveThrows = HostedProofException(ProofFailure.NotStarted("no DMarket session")) }
@@ -974,6 +1020,35 @@ class P2pTrackerUpdateStatusTest {
             assertNull(resent.failure, "retries=$retries")
             assertEquals(0, resent.retryLeft, "retries=$retries: delivered, the permit is spent")
             assertEquals(retries + 1, notary.proven.size, "retries=$retries: the resend ran no session")
+        }
+    }
+
+    @Test
+    fun undelivered_bytes_go_once_their_deal_is_untracked_or_steam_shows_another_code() = runTest {
+        for (moveOn in listOf("untracked", "another code", "steam unread")) {
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+            val reader = FakeSteamReadClient(initialOffers = mapOf(offer to 3))
+            val mp = FakeMarketplaceClient(heartbeat(proofRequired = true)).apply {
+                submitProofThrowable = MarketplaceServerErrorException(503)
+            }
+            val tracker = tracker(Setup(mp, reader = reader, refresh = refresh))
+            assertEquals(1, tracker.updateStatus(deal, retries = 0).retryLeft, moveOn)
+            mp.submitProofThrowable = MarketplaceServerErrorException(503)
+            when (moveOn) {
+                "untracked" -> mp.heartbeatResponse = HeartbeatResponse(ttlSeconds = 86_400)
+                "another code" -> reader.offers = mapOf(offer to 11) // not decisive: no new proof is due
+                else -> reader.offerStatusesThrows = true
+            }
+
+            val moved = tracker.updateStatus(deal, retries = 0)
+
+            if (moveOn == "steam unread") {
+                assertEquals(1, moved.retryLeft, "an axis not read is no sign the transition is past")
+            } else {
+                assertEquals(0, moved.retryLeft, moveOn)
+                assertEquals(UpdateFailure.RATE_LIMITED, tracker.updateStatus(deal, retries = 0).failure, moveOn)
+                assertEquals(1, mp.proofsSubmitted.size, "$moveOn: the bytes were not sent again")
+            }
         }
     }
 
