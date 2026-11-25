@@ -96,8 +96,8 @@ import kotlin.time.TimeSource
  * @param random the draws behind the 429 backoff's jitter.
  * @param clearAccountState what [onLogout] erases: the account's state, the Steam credential and the Steam session's
  *   cookies, never the device id.
- * @param eraseProofs erases the end-of-deal proofs the device keeps ([clearStoredProofs]); also run when
- *   [linkedAccount] answers `null` (the user unlinked Steam).
+ * @param eraseProofs removes the end-of-deal proofs version 1.4.0 kept in the account's storage ([clearStoredProofs]);
+ *   the device keeps no new ones. Also run when [linkedAccount] answers `null` (the user unlinked Steam).
  * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
  * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
@@ -269,7 +269,10 @@ class P2pTracker(
         clearAccountState()
     }
 
-    /** Erases the end-of-deal proofs this device keeps for the current account (D2): the app calls it on logout. */
+    /**
+     * Removes the end-of-deal proofs version 1.4.0 kept for the current account (D2); the device keeps no new ones.
+     * The app calls it on logout.
+     */
     suspend fun clearStoredProofs() = eraseProofs()
 
     /**

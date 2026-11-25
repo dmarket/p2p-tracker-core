@@ -518,9 +518,9 @@ class TradeTrackerLoop(
      */
     private val leaseClock: ElapsedClock? = null,
     /**
-     * Where an end-of-deal proof goes after it was sent ([ProofArchiveStore.endsDeal]): mobile keeps it 30 days from
-     * the deal's final status. Pruned by expiry before each transition proof pass. [NoProofArchive] (web, headless)
-     * keeps nothing.
+     * Where an end-of-deal proof goes after it was sent ([ProofArchiveStore.endsDeal]), pruned by expiry before each
+     * transition proof pass. Every host (mobile, web, headless) passes [NoProofArchive]: the device keeps no sent
+     * proof.
      */
     private val proofArchive: ProofArchiveStore = NoProofArchive,
 ) {
