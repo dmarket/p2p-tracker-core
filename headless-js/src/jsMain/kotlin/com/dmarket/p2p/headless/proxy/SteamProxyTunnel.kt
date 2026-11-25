@@ -17,7 +17,7 @@ import kotlin.js.Promise
  * would carry.
  */
 internal fun openSteamTunnel(proxy: SteamProxy, host: String, port: Int, timeoutMs: Int = TUNNEL_TIMEOUT_MS): Promise<dynamic> =
-    tunnel(nodeNet, proxy.host.trim('[', ']'), proxy.port, proxy.authorization(), host, port, timeoutMs, STEAM_PROXY_UNREACHABLE_CODE)
+    tunnel(nodeNet, proxy.dialHost, proxy.port, proxy.authorization(), host, port, timeoutMs, STEAM_PROXY_UNREACHABLE_CODE)
         .unsafeCast<Promise<dynamic>>()
 
 /** How long a tunnel may take to open, the proxy's answer included: under the prover's 15 s dial and the 30 s request. */

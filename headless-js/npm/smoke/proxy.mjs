@@ -35,7 +35,12 @@ const dmarket = http.createServer((request, response) => {
   request.on('end', () => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(request.url.endsWith('/p2p/ext/heartbeat')
-      ? JSON.stringify({ activeTracking: [{ dealId: 'deal-1', watch: ['GetTradeOffer'], role: 'seller' }], directives: [], ttlSeconds: 100, linkedSteamId: STEAM_ID })
+      ? JSON.stringify({
+          activeTracking: [{ dealId: 'deal-1', watch: ['GetTradeOffer'], role: 'seller' }],
+          directives: [],
+          ttlSeconds: 100,
+          linkedSteamId: STEAM_ID,
+        })
       : '{"results":[]}');
   });
 });

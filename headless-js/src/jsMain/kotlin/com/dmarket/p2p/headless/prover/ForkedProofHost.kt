@@ -212,29 +212,12 @@ class ForkedProofHost(
     }
 }
 
-private fun HostedProofOutcome.scrubbed(proxy: SteamProxy?): HostedProofOutcome =
-    if (this is HostedProofOutcome.Failed && proxy != null) HostedProofOutcome.Failed(failure.scrubbed(proxy)) else this
-
 /**
- * [this] with [proxy] taken out of every text in it: the child words a proxy failure without the proxy, and a text it
- * did not write itself (the prover's, Node's) is scrubbed here before the host sees it.
+ * [this] with [proxy] taken out of every text of its failure: the child words a proxy failure without the proxy, and a
+ * text it did not write itself (the prover's, Node's) is scrubbed here before the host sees it.
  */
-private fun ProofFailure.scrubbed(proxy: SteamProxy?): ProofFailure {
-    if (proxy == null) return this
-    val scrub = proxy::redact
-    return when (this) {
-        is ProofFailure.UpgradeRefused -> this
-        is ProofFailure.SessionClosed -> copy(reason = reason?.let(scrub))
-        is ProofFailure.NotaryUnreachable -> copy(detail = scrub(detail))
-        is ProofFailure.VersionMismatch -> copy(detail = scrub(detail))
-        is ProofFailure.SteamFailed -> copy(detail = scrub(detail))
-        is ProofFailure.ProxyUnreachable -> copy(detail = scrub(detail))
-        is ProofFailure.LimitsExceeded -> copy(detail = scrub(detail))
-        is ProofFailure.ProverKilled -> copy(detail = detail?.let(scrub))
-        is ProofFailure.NotStarted -> copy(reason = scrub(reason))
-        is ProofFailure.Other -> copy(detail = scrub(detail))
-    }
-}
+private fun HostedProofOutcome.scrubbed(proxy: SteamProxy?): HostedProofOutcome =
+    if (this is HostedProofOutcome.Failed && proxy != null) HostedProofOutcome.Failed(failure.mapTexts(proxy::redact)) else this
 
 /** Why a proof with a Steam proxy does not start in proxy issuance mode. */
 internal const val PROXY_ISSUANCE_BYPASSES_STEAM_PROXY =

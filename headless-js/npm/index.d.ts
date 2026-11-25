@@ -156,7 +156,10 @@ export declare function start(handle: TrackerHandle): void;
 /** Runs one cycle now, behind the cycle in flight. */
 export declare function cycle(handle: TrackerHandle): Promise<void>;
 
-/** Stops the tracker; kills every prover process and every tunnel through its Steam proxy at once. Every later call with the handle is refused. */
+/**
+ * Stops the tracker; kills every prover process and every tunnel through its Steam proxy at once. Every later call with
+ * the handle is refused.
+ */
 export declare function stop(handle: TrackerHandle): Promise<void>;
 
 /** Pushes the DMarket Trading API key pair (hex). */

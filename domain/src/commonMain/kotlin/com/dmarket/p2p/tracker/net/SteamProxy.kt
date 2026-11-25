@@ -34,6 +34,9 @@ class SteamProxy private constructor(
     private val password: String?,
     private val raw: String,
 ) {
+    /** [host] as a socket dials it: an IPv6 literal without its brackets. */
+    val dialHost: String get() = host.trim('[', ']')
+
     /** The `Proxy-Authorization` value for the `CONNECT`, or `null` for a proxy that takes none. */
     fun authorization(): String? {
         val user = username ?: return null
@@ -61,7 +64,7 @@ class SteamProxy private constructor(
             rawUserInfo.substringAfter(':', missingDelimiterValue = ""),
             "$host:$port",
             host,
-            host.trim('[', ']'),
+            dialHost,
             username.orEmpty(),
             password.orEmpty(),
             authorization()?.removePrefix("Basic ").orEmpty(),
