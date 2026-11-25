@@ -23,6 +23,7 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.await
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlin.js.Promise
@@ -155,6 +156,27 @@ class SteamProxyTransportTest {
             assertEquals("""{"response":{}}""", body)
             assertEquals(listOf(steam.base.removePrefix("http://")), proxy.connects.map { it.first })
             assertEquals(1, steam.seen.size)
+            assertFalse(route.isUnreachable)
+        }
+    }
+
+    @Test
+    fun an_answer_on_a_pooled_tunnel_ends_an_outage_another_leg_reported() = runTest {
+        withContext(Dispatchers.Default) {
+            val proxy = proxy()
+            val steam = steamServer()
+            val through = SteamProxy.parse(proxy.url)
+            val route = route { through }
+            val client = client(route)
+            client.get("${steam.base}/1").bodyAsText()
+
+            // `undici` hands the socket back to its pool a moment after the body is read; the next read comes later anyway.
+            delay(100)
+            // A proof through the same proxy failed to reach it; the Steam reads keep going on the pooled tunnel.
+            route.unreachable(through, "could not connect to the proxy: ETIMEDOUT")
+            client.get("${steam.base}/2").bodyAsText()
+
+            assertEquals(1, proxy.connects.size, "the second call reused the first one's tunnel")
             assertFalse(route.isUnreachable)
         }
     }

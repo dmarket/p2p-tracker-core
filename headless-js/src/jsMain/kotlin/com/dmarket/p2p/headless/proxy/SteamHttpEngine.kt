@@ -19,7 +19,8 @@ import kotlin.js.Promise
  * whose handler contract an `Agent` of another release can break), and which would ignore an option it did not know
  * — a request gone direct. A tunnel that cannot be opened fails the request with its error coded
  * `STEAM_PROXY_UNREACHABLE`, which the HTTP layer turns into a `SteamProxyUnreachableException`; nothing retries it
- * directly. Each tunnel opened, or not, is told to [route].
+ * directly. Each tunnel opened, or not, is told to [route], and so is every answer that came back through the proxy,
+ * a pooled keep-alive tunnel's included.
  *
  * `undici` is imported on the first call through a proxy, never when the package loads: importing it installs its own
  * `Agent` as Node's global dispatcher when none is set yet, which would move every `fetch` of the host's process — its
@@ -70,7 +71,12 @@ internal class SteamHttpTransport(private val route: SteamRoute, private val loa
             { tunnelling: dynamic ->
                 val options: dynamic = js("Object").assign(js("Object").create(null), init)
                 options.dispatcher = tunnelling.agent
-                tunnelling.undici.fetch(input, options).unsafeCast<Promise<Response>>()
+                // An answer came back through the proxy, on a tunnel opened now or a pooled one the connector never
+                // saw again: either way the proxy is reachable, which ends an outage another leg (a proof) reported.
+                tunnelling.undici.fetch(input, options).unsafeCast<Promise<Response>>().then { response: Response ->
+                    route.tunnelled(proxy)
+                    response
+                }
             },
             // `undici` did not load or the `Agent` could not be made: nothing was sent, and nothing goes direct. The
             // proxy was not asked, so the route hears nothing; the next request loads again.
