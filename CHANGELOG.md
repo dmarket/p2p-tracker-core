@@ -14,6 +14,8 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.5.0-beta] - 2026-11-25
+
 ### Added
 
 - A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
@@ -667,7 +669,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.5.0-beta...HEAD
+[1.5.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...v1.5.0-beta
 [1.4.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...v1.4.0-beta
 [1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
