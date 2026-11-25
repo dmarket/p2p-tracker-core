@@ -284,7 +284,8 @@ class DefaultSteamSessionRefresher(
      */
     private fun isAllowedSetTokenHost(url: String): Boolean = SteamHosts.isAllowed(url, SteamHosts.WEB)
 
-    private companion object {
+    internal companion object {
+        /** The domain of the `steamLoginSecure` session cookie; also where [com.dmarket.p2p.tracker.client.steam.CookieSteamSessionScraper] reads it. */
         const val COMMUNITY_DOMAIN = "steamcommunity.com"
 
         // The `steamid || access_token` separator, in both the forms a cookie store hands back — used only

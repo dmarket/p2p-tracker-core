@@ -11,13 +11,13 @@ import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.createBrowserMarketplaceCredentials
+import com.dmarket.p2p.tracker.client.steam.CookieSteamSessionScraper
 import com.dmarket.p2p.tracker.client.steam.FetchSteamOfferCanceller
 import com.dmarket.p2p.tracker.client.steam.FetchSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.FetchSteamWebSessionGateway
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamNotificationReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
-import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
@@ -93,10 +93,10 @@ internal fun startDebugTracker(
     )
 
     // Identity: LIVE steamcommunity.com — real steamId + token so the real backend leases directives.
-    val scraper =
-        KtorSteamSessionScraper(httpClient = steamHttp, scrapeConfig = config.steamScrape, communityBaseUrl = live.communityBaseUrl)
+    val sessionGateway = FetchSteamWebSessionGateway(httpClient = steamHttp)
+    val scraper = CookieSteamSessionScraper(sessionGateway, config.steamScrape.steamSessionCookieName)
     val sessionRefresher = DefaultSteamSessionRefresher(
-        gateway = FetchSteamWebSessionGateway(httpClient = steamHttp),
+        gateway = sessionGateway,
         clock = clock,
         gateHeadroom = config.credentials.sessionGateHeadroom,
         loginBaseUrl = live.loginBaseUrl,

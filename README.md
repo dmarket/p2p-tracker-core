@@ -882,7 +882,7 @@ and a default; substitute platform implementations as you enable iOS/Android.
 | `MarketplaceRefreshStateStore` | Refresh guards that must survive a process restart: the refused-token latch, the rotation rate limit, the transient-failure count. Stores a **fingerprint**, never the token. | `PersistedMarketplaceRefreshStateStore` |
 | `SteamReadClient` | Read-only Steam status polling — both axes: `offerStatuses` (`ETradeOfferState`) + `recentTransfers` (`ETradeStatus`), account-wide batch reads. | `KtorSteamReadClient` |
 | `SteamInventoryReader` | Read the seller's **own** inventory for the `report_inventory` directive → `POST /inventory` snapshot. Follows Steam's paging cursor and returns an `InventoryScan` carrying whether the enumeration was **complete**, so a truncated read reports `scan_complete=false` instead of looking like an empty inventory. | `KtorSteamInventoryReader` (web) / `NoOpSteamInventoryReader` |
-| `SteamSessionScraper` | Re-acquire a fresh Steam credential from an already-logged-in session. | `KtorSteamSessionScraper` |
+| `SteamSessionScraper` | Re-acquire a fresh Steam credential from an already-logged-in session (the access token in the `steamLoginSecure` cookie). | `CookieSteamSessionScraper` |
 | `SteamOfferCreator` | **Create** a Steam trade for the buyer, stopping at `CreatedNeedsConfirmation` — never confirms. | `FetchSteamOfferCreator` / `NoOpSteamOfferCreator` |
 | `SteamOfferCanceller` | **Cancel** a sent offer (the only other write surface). | `FetchSteamOfferCanceller` / `NoOpSteamOfferCanceller` |
 | `SteamSessionRefresher` / `SteamWebSessionGateway` | Keep the `steamLoginSecure` web session alive in the background. | `DefaultSteamSessionRefresher` / `FetchSteamWebSessionGateway` · `NoOpSteamSessionRefresher` |

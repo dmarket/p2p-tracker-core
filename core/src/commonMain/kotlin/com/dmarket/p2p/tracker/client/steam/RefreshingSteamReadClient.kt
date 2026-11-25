@@ -57,6 +57,8 @@ class RefreshingSteamReadClient(private val delegate: SteamReadClient, private v
         if (isAuthRejection(e)) {
             // Force a credential refresh. If logged out (null), re-throw the original rejection.
             val fresh = provider.forceRefresh() ?: throw e
+            // The same token back (the session cookie has not moved) would only be rejected again.
+            if (fresh.token == credential.token) throw e
             block(fresh) // retry once — a second 401/403 propagates
         } else {
             throw e

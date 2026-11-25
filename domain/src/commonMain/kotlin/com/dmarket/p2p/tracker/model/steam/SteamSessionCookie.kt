@@ -10,8 +10,8 @@ import kotlin.time.Instant
  *
  * The cookie value is `steamid64 || access_token`, where the `||` separator is URL-encoded as
  * `%7C%7C`. The embedded access token is a short-lived (~24h) `web`-audience JWT; its `exp` claim
- * gives [expiresAt]. Distinct from [SteamCredential] (the `data-loyalty_webapi_token` used for
- * IEconService reads) — this is the cookie that authenticates the browser's Steam session.
+ * gives [expiresAt]. The same access token is the [SteamCredential] used for IEconService reads
+ * (`CookieSteamSessionScraper` builds one from this cookie); this type is the cookie as a whole.
  *
  * Pure and IO-free: [parse] is used to inspect a cookie read elsewhere, and [cookieValue] builds the
  * wire value when a platform mints its own access token and must write the cookie itself (the native

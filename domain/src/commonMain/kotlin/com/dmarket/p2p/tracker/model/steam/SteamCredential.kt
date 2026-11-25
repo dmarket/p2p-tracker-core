@@ -6,8 +6,8 @@ import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 
 /**
- * A Steam Web API credential scraped from a logged-in steamcommunity.com session
- * (`data-loyalty_webapi_token`).
+ * A Steam Web API credential: the access token of a logged-in steamcommunity.com session, read from its
+ * `steamLoginSecure` cookie (see [SteamSessionCookie]).
  *
  * Hard audit boundary: this value is stored **on the device only** and is never transmitted to the
  * DMarket backend. No port in this codebase accepts a [SteamCredential] as a marketplace request

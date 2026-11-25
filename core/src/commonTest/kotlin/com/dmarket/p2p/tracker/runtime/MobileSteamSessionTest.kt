@@ -63,7 +63,7 @@ class MobileSteamSessionTest {
     private val alice = SteamId("76561198000000001")
     private val bob = SteamId("76561198000000002")
 
-    /** Every request the Steam client sent; Steam answers the community page as whoever the session cookie names. */
+    /** Every request the Steam client sent; Steam answers as whoever the session cookie names. */
     private val steamRequests = mutableListOf<HttpRequestData>()
 
     private inner class Platform : MobileTrackerPlatform(MarketplaceTokenSupplier { fakeMarketplaceCredential("dm-token") }) {
@@ -110,10 +110,7 @@ class MobileSteamSessionTest {
             steamRequests += request
             val owner = request.headers["Cookie"].orEmpty().substringAfter("steamLoginSecure=", "").substringBefore("%7C%7C")
             val community = request.url.host == "steamcommunity.com" && owner.isNotEmpty()
-            return if (community && request.url.encodedPath.trimEnd('/').isEmpty()) {
-                val token = steamAccessToken(owner, clock.now() + 20.hours)
-                respond("""<div data-loyalty_webapi_token="&quot;$token&quot;"></div><script>var g_steamID = "$owner";</script>""")
-            } else if (request.url.encodedPath == SteamEndpointsConfig().getTradeOffersPath) {
+            return if (request.url.encodedPath == SteamEndpointsConfig().getTradeOffersPath) {
                 respond("""{"response":{}}""") // no sent offer to bind a create to
             } else if (community && request.url.encodedPath == "/tradeoffer/new/send") {
                 respond("""{"tradeofferid":"8001","needs_mobile_confirmation":true}""")
@@ -348,7 +345,8 @@ class MobileSteamSessionTest {
         tracker.onPush(push)
         val delivery = tracker.startDelivery(DealId("d2"))
 
-        assertTrue(steamRequests.isNotEmpty(), "the session is alive and Steam is read")
+        assertEquals(SteamWebSessionState.ALIVE, tracker.state.value.steamSession)
+        assertEquals(alice, platform.vault.readSteamCredential()?.subjectSteamId, "the live session's credential is read")
         assertEquals(emptyList(), steamWrites.map { it.url.encodedPath })
         assertTrue(marketplace.directiveOutcomes.none { it.directiveId.value in setOf("create-1", "cancel-1") })
         assertIs<CreateOfferResult.Failed>(delivery.result)

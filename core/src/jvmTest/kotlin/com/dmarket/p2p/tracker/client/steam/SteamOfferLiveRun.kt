@@ -64,7 +64,7 @@ class SteamOfferLiveRun {
 
         suspend fun signIn(role: String): SteamCredential {
             vault.writeSteamCookies(listOf(cookie))
-            return checkNotNull(KtorSteamSessionScraper(http, communityBaseUrl = endpoints.communityBaseUrl).scrape()) {
+            return checkNotNull(CookieSteamSessionScraper(KtorSteamWebSessionGateway(http, jar)).scrape()) {
                 "the $role's steamLoginSecure does not open a Steam session"
             }
         }

@@ -8,7 +8,7 @@ import com.dmarket.p2p.tracker.port.SessionRefreshOutcome
  * without forcing the user to re-login.
  *
  * The tracker authenticates its Steam reads/writes against the browser's logged-in cookie session
- * (see `KtorSteamSessionScraper` / `FetchSteamOfferCanceller`). In the foreground the browser
+ * (see `CookieSteamSessionScraper` / `FetchSteamOfferCanceller`). In the foreground the browser
  * re-mints that ~24h cookie itself on navigation; in an MV3 **background** service worker nothing
  * navigates, so the cookie silently expires and the next scrape reports "logged out". This port
  * re-mints the session ahead of that, **without ever reading the durable refresh token**

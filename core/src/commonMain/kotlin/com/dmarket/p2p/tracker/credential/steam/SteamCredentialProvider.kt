@@ -98,8 +98,8 @@ class SteamCredentialProvider(
      * cheap fresh-cache confirmation below.
      *
      * Distinct from [lastRefreshFailedLoggedOut] **on purpose**, and stricter: `scraper.scrape()`
-     * returns `null` for a Steam non-2xx (rate limit, 5xx, interstitial), an HTML/regex drift and a
-     * malformed JWT just as it does for a real logout, so that flag stays the historical, signal-only
+     * returns `null` for an unparseable session cookie or a token naming another account just as it does
+     * for a real logout, so that flag stays the historical, signal-only
      * "interactive login required" hint. Only this one is fit to drive a user-facing *blocking* state
      * (`TrackerBlock.STEAM_SESSION_MISSING`), where a false positive would tell a logged-in user to
      * sign into Steam.
@@ -275,8 +275,8 @@ class SteamCredentialProvider(
         // cookie read decides). [sessionRefresher] RENEWS a live session — that is what its own expiry
         // self-gate is for — and Steam answers a renew for a session that is already gone with
         // `InvalidParam`, even when the durable refresh cookie is still valid (verified on real traffic).
-        // The scrape then reads its token from a page Steam only serves to a logged-in session, so it can
-        // only ever come back empty. Getting out of this state needs Steam's own login flow, which the host
+        // The scrape then reads its token from that same session cookie, so it can only ever come back
+        // empty. Getting out of this state needs Steam's own login flow, which the host
         // prompts for; the host also watches the session cookie, so the loop is woken the moment one
         // reappears — retrying on every wake buys no recovery speed, it just hammers Steam.
         val state = sessionState()
@@ -306,8 +306,8 @@ class SteamCredentialProvider(
         if (scraped == null) {
             // Scraper explicitly signalled logged-out.
             lastRefreshFailedLoggedOut = true
-            // Corroborate before claiming the *session* is gone: a null scrape is also what a Steam
-            // non-2xx / HTML drift / bad token regex looks like. Read AFTER the refresh attempt above, so
+            // Corroborate before claiming the *session* is gone: a null scrape is also what an unparseable
+            // cookie or a token naming another account looks like. Read AFTER the refresh attempt above, so
             // a successful re-mint counts. Cookie still there → signal-only, no blocking state (and a
             // returned cookie clears an earlier logged-out verdict, so it can't pin a stale prompt).
             sessionMissing = sessionState() == SteamWebSessionState.GONE
