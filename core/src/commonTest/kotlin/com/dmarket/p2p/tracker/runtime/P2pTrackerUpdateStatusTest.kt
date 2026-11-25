@@ -880,6 +880,52 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
+    fun an_update_whose_permit_lapsed_while_it_waited_for_the_lock_runs_under_a_new_one_or_not_at_all() = runTest {
+        for (ownRefresh in listOf(false, true)) {
+            var proves = 0
+            val hangsOnce = object : NotaryProver by FakeNotaryProver() {
+                override suspend fun proveTransition(
+                    binding: ProvenReadBinding,
+                    source: TradeStatusSource,
+                    credential: SteamCredential,
+                ): ProofSubmission {
+                    if (++proves > 1) throw IllegalStateException("notary connection dropped")
+                    awaitCancellation() // holds the lock until the cycle's deadline
+                }
+            }
+            // ownRefresh: the first update's refresh leaves no permit, so the second takes its own.
+            val refresh = FakeRefresh()
+            refresh.answer = {
+                if (ownRefresh && refresh.calls.size == 1) {
+                    DealRefresh(tracked = false)
+                } else {
+                    DealRefresh(tracked = true, nextAllowedAt = clock.now() + 1.minutes)
+                }
+            }
+            val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = hangsOnce, refresh = refresh))
+            val holder = async { tracker.updateStatus(deal, retries = 0) }
+            runCurrent()
+            val waiter = async { tracker.updateStatus(deal, retries = 0) }
+            runCurrent()
+            assertEquals(if (ownRefresh) 2 else 1, refresh.calls.size, "ownRefresh=$ownRefresh: the waiter is past its check")
+
+            clock.advance(2.minutes) // the permit's window closes while the waiter waits for the lock
+            assertEquals(UpdateFailure.TIMEOUT, holder.await().failure)
+            val late = waiter.await()
+
+            if (ownRefresh) {
+                assertEquals(UpdateFailure.RATE_LIMITED, late.failure, "one refresh per tap: no cycle without a permit")
+                assertEquals(2, refresh.calls.size)
+                assertEquals(1, proves, "the waiter ran no session")
+            } else {
+                assertEquals(UpdateFailure.NOTARY, late.failure, "the session ran under a new permit")
+                assertEquals(2, refresh.calls.size, "the waiter took the new permit itself")
+                assertEquals(UpdateFailure.RATE_LIMITED, tracker.updateStatus(deal, retries = 0).failure, "and its session counted")
+            }
+        }
+    }
+
+    @Test
     fun a_session_that_never_started_does_not_count() = runTest {
         val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
         val notary = FakeNotaryProver().apply { proveThrows = HostedProofException(ProofFailure.NotStarted("no DMarket session")) }

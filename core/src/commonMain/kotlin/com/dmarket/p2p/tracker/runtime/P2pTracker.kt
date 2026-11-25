@@ -465,22 +465,34 @@ class P2pTracker(
             ?.takeIf { it > now }
             ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
-        permitLock.withLock {
-            val permit = activePermit(dealId, now)
-            if (permit == null) {
-                takePermit(dealId, now, allowed)?.let { return it }
-            } else if (spent(permit, allowed, dealId, s.loop)) {
-                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+        var refreshed = false
+        while (true) {
+            val checkedAt = clock.now()
+            permitLock.withLock {
+                val permit = activePermit(dealId, checkedAt)
+                if (permit == null) {
+                    takePermit(dealId, checkedAt, allowed)?.let { return it }
+                    refreshed = true
+                } else if (spent(permit, allowed, dealId, s.loop)) {
+                    return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - checkedAt)
+                }
             }
-        }
-        // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session.
-        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true) {
-            activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } == true
-        } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
-        if (run.probe.permitSpent) {
+            val held = activePermit(dealId, clock.now()) != null
+            // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session, or the
+            // permit's window may have closed while this update waited, which leaves its session nothing to count against.
+            val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true) {
+                activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } ?: held
+            } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+            if (!run.probe.permitSpent) return finished(dealId, s, run, allowed)
             val until = activePermit(dealId, clock.now())?.until
-            return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = until?.let { it - clock.now() })
+            if (until != null) return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = until - clock.now())
+            // The window closed: one refresh per tap, so an update that took its own permit asks for no second one.
+            if (refreshed) return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = Duration.ZERO)
         }
+    }
+
+    /** [updateStatus]'s answer for the cycle [run] that ran under its permit. */
+    private suspend fun finished(dealId: DealId, s: Session, run: CycleRun, allowed: Int): StatusUpdate {
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
         return statusOf(dealId, failureOf(dealId, s.loop, run), allowed, retryAfter, s.loop.observedCode(dealId))
