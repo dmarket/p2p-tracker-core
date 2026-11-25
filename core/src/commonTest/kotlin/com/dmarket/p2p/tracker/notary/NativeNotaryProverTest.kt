@@ -193,6 +193,29 @@ class NativeNotaryProverTest {
     }
 
     @Test
+    fun a_proof_queued_for_the_permit_goes_with_its_callers_scope_and_never_issues() = runTest {
+        // Cancel on the app's screen cancels the caller's coroutine; cancel(dealId) sees only an issuing proof.
+        val engine = FakeEngine().apply { hold = CompletableDeferred() }
+        val prover = prover(engine, NotaryConfig(maxConcurrency = 1))
+        val other = ProvenReadBinding(dealId = DealId("deal-2"), steamOfferId = OfferId("556"), tradeId = TradeId("778"))
+        val holding = async { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+        val queued = async { prover.proveRead(other, ProvenReadKind.TRADE_OFFER, credential()) }
+        runCurrent()
+        assertEquals(1, engine.issued.size)
+        assertFalse(prover.cancel(DealId("deal-2")), "a queued proof is not running")
+
+        queued.cancel()
+        runCurrent()
+        engine.hold!!.complete(Unit)
+        holding.await()
+
+        assertTrue(queued.isCancelled)
+        assertEquals(1, engine.issued.size, "the cancelled proof never issued")
+        prover.proveRead(other, ProvenReadKind.TRADE_OFFER, credential())
+        assertEquals(2, engine.issued.size, "its place in the queue did not keep the permit")
+    }
+
+    @Test
     fun a_proof_past_its_deadline_is_killed_and_its_issuance_cancelled() = runTest {
         val engine = FakeEngine().apply { forever = true }
         val proof =
