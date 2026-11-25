@@ -88,7 +88,8 @@ private object NoWakeScheduler : Scheduler {
  * @param steamWrites whether this device writes Steam offers ([LoopConfig.steamWrites]). Off by default: offer
  *   creation in production waits for DMarket's security sign-off, so the app turns it on per environment. Off, a
  *   leased `create_offer` / `cancel_offer` is dropped unreported and its lease lapses.
- * @param reportUnsentCreates [LoopConfig.reportUnsentCreates]: whether a `create_offer` that never reached Steam is
+ * @param reportUnsentCreates [LoopConfig.reportUnsentCreates]: whether a `create_offer` that never reached Steam, or
+ *   that Steam did not answer and whose offer is not among the sent offers [UNANSWERED_CREATE_GRACE] later, is
  *   reported `failed`.
  * @param proofEngine the native prover's platform part; `null` (the default) keeps the no-op prover, so decisive
  *   transitions are reported client-side. Given, [tracker] proves through a [NativeNotaryProver] over it ([prover]).
@@ -208,6 +209,9 @@ class MobileTracker(
                     tunables = config,
                     steamWrites = steamWrites,
                     reportUnsentCreates = reportUnsentCreates,
+                    unansweredCreateGrace = UNANSWERED_CREATE_GRACE,
+                    // A session gone or not renewed is sent to DMarket, which then stops counting this device reachable.
+                    heartbeatWithoutCredential = true,
                     steamSessionInVault = true,
                     hostLinkedSteamId = account,
                     reportEachWrite = true,
@@ -263,5 +267,11 @@ class MobileTracker(
     private companion object {
         /** The bar the headless tracker's proofs and every create meet: no proof starts on a token closer to its expiry. */
         val MIN_PROOF_TOKEN_LIFETIME: Duration = 30.minutes
+
+        /**
+         * How long a create Steam did not answer is held before its offer's absence decides it
+         * ([LoopConfig.unansweredCreateGrace]); well under the claim's 15 min, as on the headless tracker.
+         */
+        val UNANSWERED_CREATE_GRACE: Duration = 2.minutes
     }
 }

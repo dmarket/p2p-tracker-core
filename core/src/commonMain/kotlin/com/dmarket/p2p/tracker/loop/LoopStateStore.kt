@@ -42,6 +42,17 @@ interface LoopStateStore {
         // no-op default
     }
 
+    /**
+     * The Steam session state (`SteamWebSessionState.name`) the last mobile heartbeat sent, or `null` if none has. The
+     * backend judges the device on that value until the next heartbeat, so a different state makes the heartbeat due.
+     * Defaulted so no existing implementation has to change.
+     */
+    suspend fun lastSentSteamSession(): String? = null
+
+    suspend fun setLastSentSteamSession(state: String) {
+        // no-op default
+    }
+
     /** Consecutive heartbeat server-error (non-401 4xx/5xx) failures, or `0` if the last one succeeded. */
     suspend fun serverErrorCount(): Int
 
@@ -118,6 +129,7 @@ class InMemoryLoopStateStore : LoopStateStore {
     private var nextHeartbeatAt: Instant? = null
     private var expeditedUntil: Instant? = null
     private var revertWatchAt: Instant? = null
+    private var lastSentSteamSession: String? = null
     private var serverErrorCount: Int = 0
     private var steamSessionMissing: Boolean = false
     private var steamMintAttempted: Boolean = false
@@ -140,6 +152,12 @@ class InMemoryLoopStateStore : LoopStateStore {
 
     override suspend fun setRevertWatchAt(at: Instant) {
         mutex.withLock { revertWatchAt = at }
+    }
+
+    override suspend fun lastSentSteamSession(): String? = mutex.withLock { lastSentSteamSession }
+
+    override suspend fun setLastSentSteamSession(state: String) {
+        mutex.withLock { lastSentSteamSession = state }
     }
 
     override suspend fun serverErrorCount(): Int = mutex.withLock { serverErrorCount }

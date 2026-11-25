@@ -158,6 +158,9 @@ class P2pTracker(
         var failed = false
         var dmarketRateLimited = false
         var directiveDropped = false
+
+        /** A create Steam did not answer: held, unreported, so the wake did not do its work. */
+        var createUnanswered = false
         var proofDeferred = false
         var proofOutOfBudget = false
 
@@ -173,6 +176,12 @@ class P2pTracker(
         val proofUndelivered = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
         val proofRefused = mutableSetOf<String>()
+
+        /**
+         * Deal and axis whose proof is the seller's ([ProofSkipReason.SELLER_PROVES]): this device is the buyer, sends
+         * the code once without a proof, and DMarket may refuse that report. Neither a failure nor a pending proof here.
+         */
+        val sellerProves = mutableSetOf<Pair<String, String>>()
     }
 
     /**
@@ -799,8 +808,9 @@ class P2pTracker(
             loop.steamCredentialUnavailable && loop.needsReLogin -> WakeOutcome.failed(WakeCause.STEAM_SESSION)
             block == TrackerBlock.DM_SESSION_MISSING -> WakeOutcome.failed(WakeCause.AUTH)
             block != TrackerBlock.NONE || !probe.heartbeat || probe.dmarketRateLimited -> WakeOutcome.failed(WakeCause.NETWORK)
-            // No Steam credential this time (a refresh that failed on the network), or a leased write left undone.
-            loop.steamCredentialUnavailable || probe.directiveDropped -> WakeOutcome.failed(WakeCause.OTHER)
+            // No Steam credential this time (a refresh that failed on the network), or a leased write left undone or
+            // left without Steam's answer.
+            loop.steamCredentialUnavailable || probe.directiveDropped || probe.createUnanswered -> WakeOutcome.failed(WakeCause.OTHER)
             proofs && probe.proofFailed.isNotEmpty() -> WakeOutcome.failed(WakeCause.NOTARY)
             proofs && probe.proofUndelivered.isNotEmpty() -> WakeOutcome.failed(WakeCause.NETWORK)
             proofs && probe.proofOutOfBudget -> WakeOutcome.failed(WakeCause.BUDGET)
@@ -853,6 +863,7 @@ class P2pTracker(
             is LifecycleEvent.CycleCompleted -> if (event.watching > 0) watchedAt = clock.now()
             is LifecycleEvent.CycleFailed -> probe.failed = true
             is LifecycleEvent.DirectiveDropped -> probe.directiveDropped = true
+            is LifecycleEvent.CreateUnanswered -> probe.createUnanswered = true
             is LifecycleEvent.RateLimited -> {
                 val steam = event.surface == "steam"
                 if (steam) probe.steamRateLimited = true else probe.dmarketRateLimited = true
@@ -863,16 +874,21 @@ class P2pTracker(
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {
                 it.copy(lastCode = event.steamStatusCode, proofState = ProofState.NONE)
             }
-            is LifecycleEvent.TradeStatusReportFailed -> probe.reportFailed += event.dealId
+            is LifecycleEvent.TradeStatusReportFailed ->
+                if ((event.dealId to event.source) !in probe.sellerProves) probe.reportFailed += event.dealId
             // The gate's deferral outlasts the withheld report it causes, which is announced after it.
-            is LifecycleEvent.TradeStatusReportDeferred -> deal(event.dealId) {
-                if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING)
+            is LifecycleEvent.TradeStatusReportDeferred -> if ((event.dealId to event.source) !in probe.sellerProves) {
+                deal(event.dealId) { if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofDeferred -> {
                 probe.proofDeferred = true
                 deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
             }
-            is LifecycleEvent.ProofSuppressed -> {
+            // A buyer's skip is announced before the report it lets out unproven, so that report's refusal or deferral can
+            // be told apart. No proof of this device's is pending.
+            is LifecycleEvent.ProofSuppressed -> if (event.reason == ProofSkipReason.SELLER_PROVES.message) {
+                probe.sellerProves += event.dealId to event.source
+            } else {
                 when (event.reason) {
                     ProofSkipReason.WAKE_BUDGET.message -> probe.proofOutOfBudget = true
                     ProofSkipReason.BUDGET_SPENT.message -> probe.proofBudgetSpent = true

@@ -34,6 +34,7 @@ import com.dmarket.p2p.tracker.support.fakeSteamCredential
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -108,6 +109,24 @@ class CreateChainExecutionTest {
     private fun RecordingEventObserver.stopped() = events.filterIsInstance<LifecycleEvent.CreateChainStopped>()
 
     // ---- failure isolation --------------------------------------------------------------------------
+
+    @Test
+    fun a_create_stopped_by_a_cancellation_is_neither_reported_nor_throttled() = runTest {
+        // The cycle was stopped (the wake's budget, the OS): nothing is known about Steam, so nothing goes on
+        // /trade-actions and the partner is not parked.
+        val creator = FakeSteamOfferCreator(throwable = CancellationException("wake budget spent"))
+        val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = creates(alice, 1, "a")))
+        val events = RecordingEventObserver()
+        val throttle = PersistedSteamWriteThrottleStore(limits = SteamWriteConfig(), random = Random(7))
+        val before = throttle.snapshot()
+
+        runCatching { loop(mp, creator, events, throttle = throttle).runOnce() }
+
+        assertEquals(1, creator.callsFor(alice), "the create reached the creator")
+        assertTrue(mp.directiveOutcomes.isEmpty(), "${mp.directiveOutcomes}")
+        assertTrue(events.events.none { it is LifecycleEvent.DirectiveExecuted }, "${events.events}")
+        assertEquals(before, throttle.snapshot())
+    }
 
     @Test
     fun a_refusal_stops_only_that_counterpartys_chain() = runTest {

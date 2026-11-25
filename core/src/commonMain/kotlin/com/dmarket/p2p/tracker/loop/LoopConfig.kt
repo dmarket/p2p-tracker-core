@@ -31,8 +31,10 @@ import kotlin.time.Duration.Companion.seconds
  *   the device present only while it can deliver. `null` (the default) reports [mode].
  * @param heartbeatWithoutCredential When `true`, a due heartbeat still goes out while no Steam credential is held —
  *   for the Steam account the last heartbeat named as linked, with `foreground: false` — and the cycle takes no
- *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. `false` (the
- *   default) keeps the browser behaviour: no Steam session, no heartbeat.
+ *   Steam action. With no linked account known there is nothing to heartbeat for, and it does not. With
+ *   [steamSessionInVault] (mobile) it goes only while the session reads other than `ALIVE`, for the linked account or
+ *   else [hostLinkedSteamId], and carries that state. `false` (the default) keeps the browser behaviour: no Steam
+ *   session, no heartbeat.
  * @param steamWrites When `false`, the loop writes no Steam offer, whatever is leased or asked: a `create_offer` or
  *   `cancel_offer` is dropped unreported (its lease lapses to a device that writes), and
  *   [TradeTrackerLoop.awaitDirectiveOutcome] answers with that refusal. For a client whose account only buys. `true`
@@ -40,8 +42,10 @@ import kotlin.time.Duration.Companion.seconds
  * @param reportUnsentCreates When `false`, a `create_offer` that never reached Steam is not reported `FAILED`: one
  *   refused by the account or the buyer-role guard, or deferred (the token, a cooldown, a stopped chain — even with
  *   `SteamWriteConfig.reportThrottledWrites` on). The backend reads `FAILED` as the seller failing to deliver, and
- *   nothing was tried; unanswered, the lease lapses to a device that can. `true` (the default) keeps the browser's
- *   reporting.
+ *   nothing was tried; unanswered, the lease lapses to a device that can. On a loop with a lease clock (mobile) it
+ *   also covers a create Steam did not answer and whose offer the [unansweredCreateGrace] read does not find: the
+ *   claim is released and the create dropped unreported instead of reported `FAILED`. `true` (the default) keeps
+ *   the browser's reporting.
  * @param unansweredCreateGrace When set, a `create_offer` that got no answer from Steam (a timeout, a refused
  *   connection — `SteamCreateFailureCause.TRANSPORT`) is not reported `FAILED`: whether Steam made the offer is unknown,
  *   and `FAILED` would leave an offer it did make with nobody to cancel it. The deal's claim is held instead, so no

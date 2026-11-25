@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.engine
 
+import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.policy.CooldownLadder
 import kotlin.time.Instant
 
@@ -76,6 +77,18 @@ enum class ProofSkipReason(val message: String) {
      * run the cycle past it. Never the reason for the first proof of a cycle — see [ProofMintPolicy.decide].
      */
     BUDGET_SPENT("this cycle's proving budget is spent; the next heartbeat is due"),
+
+    /**
+     * This device is the deal's buyer, and a changed transition is proven by the seller's tracker alone (DMA-664): both
+     * sides watch the same trade, so a buyer that proved too would spend a second MPC session on the same transition.
+     * [unprovable]: the buyer's report goes out once without a proof and the spent claim holds it after that. On a deal
+     * the backend runs with unproven reports inert (`dma-458`) it drops that report without a trace; on an older deal
+     * an unproven offer `3` from the buyer makes the 18 h deadline freeze the deal instead of closing it as the buyer's
+     * no-show. Last in the enum on purpose: Kotlin/JS incremental builds keep stale ordinals after a mid-enum insert.
+     *
+     * A freshness mark ([ProofMintPolicy.decideFreshness]) does not read the role: the buyer answers it like the seller.
+     */
+    SELLER_PROVES("the seller's tracker proves this transition; this device is the buyer"),
     ;
 
     /**
@@ -99,7 +112,7 @@ enum class ProofSkipReason(val message: String) {
      * and the mint decision cannot then disagree. Deliberately **false** for the two settled answers —
      * a verdict exists for those, and it reached the backend through the submission that produced it.
      */
-    val unprovable: Boolean get() = this == NO_PROVER || this == PROVER_PARKED || this == BUDGET_SPENT
+    val unprovable: Boolean get() = this == NO_PROVER || this == PROVER_PARKED || this == BUDGET_SPENT || this == SELLER_PROVES
 }
 
 /** Whether a due proof should be minted now, and if not, why not. */
@@ -160,6 +173,10 @@ object ProofMintPolicy {
      * @param cycleDeadline when this cycle must stop minting, or `null` for no bound.
      * @param networkDeferred whether the mobile proof gate is closed ([ProofSkipReason.NETWORK_DEFERRED]).
      * @param wakeBudget whether the wake gave no time for a proof ([ProofSkipReason.WAKE_BUDGET]).
+     * @param role this account's side of the deal ([com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.role]):
+     *   [DealRole.BUYER] skips as [ProofSkipReason.SELLER_PROVES], after the settled answers and ahead of the spending
+     *   gates; [DealRole.SELLER] and [DealRole.UNKNOWN] decide as before. A later "the buyer may prove" signal from
+     *   the backend belongs in this one branch.
      */
     fun decide(
         intent: ProofIntent,
@@ -173,9 +190,11 @@ object ProofMintPolicy {
         cycleDeadline: Instant?,
         networkDeferred: Boolean = false,
         wakeBudget: Boolean = false,
+        role: DealRole = DealRole.UNKNOWN,
     ): ProofMintVerdict = when {
         intent in refused -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED)
         isCorroborated(intent, now, accepted, acceptedTtlMs) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
+        role == DealRole.BUYER -> ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES)
         else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred, wakeBudget)
     }
 

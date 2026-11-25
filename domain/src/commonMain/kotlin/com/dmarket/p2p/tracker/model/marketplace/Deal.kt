@@ -73,8 +73,8 @@ data class Money(val currencyCode: String, val amountCents: Long)
  * is always empty — and the contract now says outright not to model it. History correlation keys on Steam's
  * own `tradeid` off the offer snapshot instead, falling back to [assetId]; neither ever came from here.
  *
- * [trustedAcceptUri] is the backend-vouched Steam link the buyer (who has no plugin) accepts in — primarily
- * a C2 concern, carried here for completeness.
+ * [trustedAcceptUri] is the backend-vouched Steam link the buyer accepts in (the buyer's tracker only reads and
+ * reports, never writes to Steam) — primarily a C2 concern, carried here for completeness.
  *
  * The deal detail's own fields, all absent on an older gateway:
  * - [cancellable]: `true` only in `AWAITING_SELLER_ACCEPT`, the one state the buyer can cancel in.

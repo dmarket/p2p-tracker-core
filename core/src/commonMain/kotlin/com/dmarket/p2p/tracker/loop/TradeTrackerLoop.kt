@@ -767,7 +767,7 @@ class TradeTrackerLoop(
      */
     private suspend fun reportOutcomeAcks(outcomes: List<DirectiveOutcome>): List<DirectiveOutcomeAck> {
         if (outcomes.isEmpty()) return emptyList()
-        val result = runCatching { marketplace.reportDirectives(outcomes) }
+        val result = runCatchingUnlessCancelled { marketplace.reportDirectives(outcomes) }
         // Non-null only when the call itself failed, in which case it is the reason for every action in the
         // batch — more informative than the matcher's "no result", which is about a response that did arrive.
         val transportFailure = result.exceptionOrNull()?.redactedSummary()
@@ -829,7 +829,11 @@ class TradeTrackerLoop(
      * [write] returns its own result plus how the claim ends ([ClaimEnd]): completed with the outcome of a **real
      * Steam write**, released when nothing was written (a rejected create) so a genuine retry is free to proceed, or
      * held in flight for a create Steam did not answer ([reconcileUnansweredCreates] settles it). A throw releases
-     * it too: a leaked in-flight claim would block the deal until the TTL backstop.
+     * it too: a leaked in-flight claim would block the deal until the TTL backstop. A cancellation once
+     * [heldIfCancelled] names an unanswered create (its POST started) holds the claim as that create instead, so a
+     * later cycle, in this process or the next, settles it from the account's sent offers. Both are written under
+     * [NonCancellable]: in a cancelled coroutine the store would skip its lock and write, leaving a bare in-flight
+     * claim on disk that nothing settles.
      *
      * [credential] is passed by the two create sites only. With it, a completed claim is not replayed until
      * its offer has been checked on Steam ([releaseIfOfferDead]): a dead offer releases the claim and the
@@ -841,6 +845,7 @@ class TradeTrackerLoop(
         directiveId: DirectiveId,
         onDuplicate: suspend (ClaimVerdict.Duplicate) -> T,
         credential: SteamCredential? = null,
+        heldIfCancelled: () -> UnansweredCreate? = { null },
         write: suspend () -> Pair<T, ClaimEnd>,
     ): T {
         // A deal-less write cannot be claim-guarded. Only report_inventory is deal-less and it never routes
@@ -872,7 +877,15 @@ class TradeTrackerLoop(
         val (result, end) = try {
             write()
         } catch (t: Throwable) {
-            claims.release(setOf(key))
+            val held = (t as? CancellationException)?.let { heldIfCancelled() }
+            withContext(NonCancellable) {
+                if (held != null) {
+                    emit(LifecycleEvent.CreateUnanswered(dealId.value, directiveId.value, t.redactedSummary()))
+                    claims.replace(pending, pending.copy(unanswered = held))
+                } else {
+                    claims.release(setOf(key))
+                }
+            }
             throw t
         }
         when (end) {
@@ -1600,7 +1613,9 @@ class TradeTrackerLoop(
         // DMarket logout is surfaced by the host's cookie watch (a forced heartbeat marks the
         // schedule due) or, at the latest, by the next due heartbeat.
         val cached = lastActiveTracking
-        val heartbeatDue = nextHeartbeatAt?.let { clock.now() >= it } ?: true
+        // A changed Steam session state is news for DMarket, but not while a refused DMarket credential is backed off.
+        val heartbeatDue = (nextHeartbeatAt?.let { clock.now() >= it } ?: true) ||
+            (consecutiveAuthFailures == 0 && steamSessionChangedSinceSent())
         val action = CyclePolicy.decide(heartbeatDue, hasTrackingList = cached != null)
         if (action == CycleAction.IDLE) return@withLock TickOutcome.EMPTY
         // Backing off a refused credential: until the retry is due the cycle does nothing, so the watch pass on a
@@ -1690,7 +1705,7 @@ class TradeTrackerLoop(
             if (credentials.lastRefreshFailedLoggedOut) emit(LifecycleEvent.ReLoginNeeded("steam"))
             // A host that heartbeats without a Steam session does so for the account it is already bound to, and
             // only when one is due: it stays known to DMarket, not present, and touches nothing on Steam.
-            val bound = lastLinkedSteamId?.takeIf { config.heartbeatWithoutCredential && action == CycleAction.HEARTBEAT }
+            val bound = if (action == CycleAction.HEARTBEAT) credentiallessHeartbeatAccount() else null
             return@withLock bound?.let { heartbeatWithoutCredential(it) } ?: TickOutcome.EMPTY
         }
         // A credential in hand proves the Steam session is live — clear the block before anything else can
@@ -1799,6 +1814,31 @@ class TradeTrackerLoop(
         emit(LifecycleEvent.HeartbeatSent(heartbeat.ttlSeconds, heartbeat.activeTracking.size, heartbeat.directives.size))
         if (mismatched) linked?.let { emit(LifecycleEvent.LinkedSteamIdMismatch(it.value, session.value)) }
         return TickOutcome(watching = heartbeat.activeTracking.size)
+    }
+
+    /**
+     * The account a heartbeat with no Steam credential goes for ([LoopConfig.heartbeatWithoutCredential]), `null` for
+     * none. Headless: the account the last heartbeat named. Mobile (the session in the vault): only while the session
+     * is not [SteamWebSessionState.ALIVE], for [expectedSteamId], so DMarket learns the device can no longer act and
+     * stops counting it reachable. An `ALIVE` read here is no proof (the refresher reads a failure as alive), and a
+     * heartbeat with it would keep a dead device reachable.
+     */
+    private suspend fun credentiallessHeartbeatAccount(): SteamId? = when {
+        !config.heartbeatWithoutCredential -> null
+        !config.steamSessionInVault -> lastLinkedSteamId
+        steamSessionState() == SteamWebSessionState.ALIVE -> null
+        else -> expectedSteamId
+    }
+
+    /**
+     * Mobile: whether the session's state differs from the one the last heartbeat sent. DMarket judges the device on
+     * that value (reachable needs `ALIVE`) until the next heartbeat, which the 24 h `ttl_seconds` would otherwise put
+     * off; so a change makes the heartbeat due, once. No network.
+     */
+    private suspend fun steamSessionChangedSinceSent(): Boolean {
+        if (!config.steamSessionInVault) return false
+        val sent = runCatching { loopState.lastSentSteamSession() }.getOrNull()
+        return steamSessionState().name != sent
     }
 
     /**
@@ -2167,6 +2207,7 @@ class TradeTrackerLoop(
         val sentAt = leaseClock?.elapsed()
         val response = marketplace.heartbeat(request)
         if (sentAt != null) recordLeases(response.directives, sentAt)
+        request.steamSession?.let { sent -> runCatching { loopState.setLastSentSteamSession(sent.name) } }
         return response
     }
 
@@ -2483,7 +2524,16 @@ class TradeTrackerLoop(
             // The answer the create never got, as Steam's offer list gives it.
             val result = when (val verdict = UnansweredCreateCheck.evaluate(claim, unanswered, sent, now, grace)) {
                 UnansweredCreateVerdict.NotYet -> continue
-                UnansweredCreateVerdict.Absent -> CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
+                UnansweredCreateVerdict.Absent -> {
+                    // On mobile (a lease clock) with unsent creates unreported, no answer and no offer is no proof the
+                    // seller failed: the claim goes, nothing is reported, and the lease lapses to the next serve.
+                    if (!config.reportUnsentCreates && leaseClock != null) {
+                        val directive = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId)
+                        if (claims.replace(claim, null)) emitDropped(directive, UNANSWERED_CREATE_ABSENT)
+                        continue
+                    }
+                    CreateOfferResult.Failed(UNANSWERED_CREATE_ABSENT)
+                }
                 is UnansweredCreateVerdict.Found -> verdict.offer.createResult()
             }
             val outcome = Directive(claim.directiveId, DirectiveAction.CREATE_OFFER, claim.dealId).createOutcome(result)
@@ -2946,10 +2996,13 @@ class TradeTrackerLoop(
         // Deal-keyed duplicate guard: directive-id single-flight cannot see a *fresh* directive_id leased
         // for a deal whose offer this device already created (a lost /trade-actions report, or a backend
         // retry), and Steam would happily create a second live offer for it.
+        // Set once the POST starts: from then on a cancelled cycle cannot tell whether Steam made the offer.
+        var posted: UnansweredCreate? = null
         return withDealClaim(
             dealId = directive.dealId,
             action = DirectiveAction.CREATE_OFFER,
             directiveId = directive.directiveId,
+            heldIfCancelled = { posted },
             onDuplicate = { verdict ->
                 // A suppressed duplicate wrote nothing and says nothing about Steam's appetite — carry on. Its
                 // replay reports itself (it restates an *earlier* write's outcome, not this cycle's), so it is
@@ -2999,7 +3052,12 @@ class TradeTrackerLoop(
             // fast path: fold it into the outcome below so it is reported and surfaced. Returning early
             // instead left the lease held with no /trade-actions answer and no lifecycle event, so the
             // backend re-leased the directive forever and the deal stalled invisibly.
-            val result = bound ?: runCatching {
+            // Only with a grace to settle it: without one nothing reads a held claim before its TTL.
+            if (bound == null && config.unansweredCreateGrace != null) {
+                posted = UnansweredCreate(partner, directive.assetIds.toSet(), directive.deadline)
+            }
+            // A cancellation is let through: the cycle was stopped, which says nothing about Steam or the seller.
+            val result = bound ?: runCatchingUnlessCancelled {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
@@ -3106,7 +3164,7 @@ class TradeTrackerLoop(
             // dangling — versus a transport blip or a 5xx, where the next re-lease very likely works. Without
             // it every failure looks identical, so the retries run out their fixed budget and the give-up
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
-            val result = runCatching { offerCanceller.cancelOffer(credential, offerId) }
+            val result = runCatchingUnlessCancelled { offerCanceller.cancelOffer(credential, offerId) }
                 .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
             // Never sent (the account's Steam proxy could not be reached): the offer is as it was, so there is nothing
             // to read and nothing to report. Deferred like a create not sent, its claim released; the backend re-leases
@@ -3468,6 +3526,7 @@ class TradeTrackerLoop(
                     cycleDeadline = proofDeadline,
                     networkDeferred = proofsDeferred,
                     wakeBudget = proofsOutOfBudget,
+                    role = DealRoleBinding.roleOf(tracking, intent.dealId),
                 )
             }
             if (verdict is ProofMintVerdict.Skip) {
@@ -4438,4 +4497,13 @@ class TradeTrackerLoop(
             steamOfferId = steamOfferId?.let { com.dmarket.p2p.tracker.model.OfferId(it) },
             error = error,
         )
+}
+
+/** [runCatching] that lets a cancellation through: a stopped cycle is no failure to report or to throttle on. */
+private inline fun <T> runCatchingUnlessCancelled(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
 }

@@ -24,6 +24,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.parameters
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * How a header-carrying write carries the Steam session: the `steamLoginSecure` and `sessionid` cookies, and the
@@ -115,7 +116,7 @@ class HeaderSessionSteamOfferCreator internal constructor(
         adapter: GameAdapter = Cs2GameAdapter(),
     ) : this(httpClient, SteamWriteSession.Vault(cookies, communityBaseUrl), communityBaseUrl, adapter)
 
-    override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = runCatching {
+    override suspend fun createOffer(credential: SteamCredential, draft: TradeDraft): CreateOfferResult = try {
         val sessionId = session.sessionId()
         val response = httpClient.submitForm(
             url = "$communityBaseUrl/tradeoffer/new/send",
@@ -127,13 +128,16 @@ class HeaderSessionSteamOfferCreator internal constructor(
             captureErrorBody(STEAM_CREATE_ERROR_BODY_MAX)
         }
         SteamOfferWire.parseCreate(response.bodyAsText())
-    }.getOrElse { e ->
-        when (e) {
-            is HttpStatusException -> SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
-            // Never reached Steam: not a create Steam may have made, and not one to report failed.
-            is SteamProxyUnreachableException -> CreateOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON)
-            else -> CreateOfferResult.Failed(e.redactedSummary())
-        }
+    } catch (e: CancellationException) {
+        // The caller stopped the work: no answer to report, whatever Steam did with the POST.
+        throw e
+    } catch (e: HttpStatusException) {
+        SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
+    } catch (_: SteamProxyUnreachableException) {
+        // Never reached Steam: not a create Steam may have made, and not one to report failed.
+        CreateOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON)
+    } catch (e: Throwable) {
+        CreateOfferResult.Failed(e.redactedSummary())
     }
 
     private companion object {

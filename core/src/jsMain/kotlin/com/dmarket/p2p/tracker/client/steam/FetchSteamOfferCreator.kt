@@ -16,6 +16,7 @@ import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.js.Promise
 
 /**
@@ -75,8 +76,13 @@ class FetchSteamOfferCreator(
         // here (serialized by createMutex), so this one install point covers all paths. See installAntiCsrfRule.
         installAntiCsrfRule(draft)
         try {
-            runCatching { postCreate(url, sessionId, draft) }
-                .getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }
+            try {
+                postCreate(url, sessionId, draft)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                CreateOfferResult.Failed(e.redactedSummary())
+            }
         } finally {
             removeAntiCsrfRule()
         }

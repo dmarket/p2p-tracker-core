@@ -59,10 +59,16 @@ GitHub Release.
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 - A 429 on `POST /exchange/v1/p2p/ext/notary` emits `RateLimited` instead of `ProofFailed`, and a manual status update reports it as `UpdateFailure.RATE_LIMITED`, not `NOTARY` (DMA-1016).
 - Mobile: a proof that was made but not delivered is `UpdateFailure.DMARKET` on a manual status update and `failed/other` on a wake, not `notary`, and a manual update sends it again even when the deal's permit is spent. `StatusUpdate.retryLeft` is at least 1 while such a proof waits; a 429 on its delivery still answers `RATE_LIMITED` with its `retryAfter` (DMA-1016).
+- On a deal where this device is the buyer (`TrackedDeal.role` `BUYER`), a changed decisive status no longer runs a notary session: the seller's tracker proves it, and the buyer's report goes once without a proof (`ProofSuppressed` with `ProofSkipReason.SELLER_PROVES`). DMarket refusing that report is no `UpdateFailure` and does not fail a wake; a `proveAfter` mark is still proven (DMA-664).
 
 ### Fixed
 
 - Mobile: a `prove_offer` or `prove_release` wake whose deal still waits on its proof, an offer awaiting Steam Guard included, now ends with the final ack `deferred` (`cellular_not_allowed`) or `failed` (`notary`, `os_killed`, `other`) instead of `done`. The first ack stays `done` (DMA-1066).
+- Mobile: when the Steam session is gone or could not be renewed, the tracker still sends a heartbeat with `trackerState.steamSession` set to that state, once per change of state, so DMarket stops counting the device reachable; before, it sent nothing until the session came back (DMA-664).
+- Mobile: a wake whose Steam offer create got no answer from Steam now ends with the final ack `failed` (`other`) instead of `done` (DMA-664).
+- Mobile: a Steam offer create cut short by a wake's deadline after its request went out keeps the deal held across a restart until the offer is found among the account's sent offers, so a second offer is not created in the meantime (DMA-664).
+- Mobile: a Steam offer create that got no answer (a timeout, a dropped connection) is no longer reported `failed` at once: the tracker looks for the offer among the account's sent offers for 2 minutes and reports it when found. With `reportUnsentCreates = false` a create whose offer is not found is dropped unreported, so its lease lapses (DMA-664).
+- A Steam offer create or cancel stopped by the host (a wake's deadline, the OS stopping the work) is no longer reported `failed` on `/trade-actions` and no longer parks the partner (DMA-664).
 - Android: a wake whose `P2pTrackerWorker` starts before the app has built the tracker waits up to 2 minutes for it and then runs, instead of ending at once with no sync and no ack. With no tracker by then the work ends with `outcome` `failed` and `cause` `other` and no ack is sent (DMA-540).
 
 ### Fixed

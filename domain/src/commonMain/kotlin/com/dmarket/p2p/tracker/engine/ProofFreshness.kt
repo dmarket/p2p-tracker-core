@@ -85,7 +85,8 @@ data class FreshProofPlan(val demands: List<FreshProofDemand> = emptyList(), val
  * **What the mark is for.** The backend used to release a protection hold on a completion flag recorded
  * earlier in the deal, and nothing re-read Steam at the moment of release. The real Steam order is
  * complete-**then**-roll-back, and the rollback goes unreported because the only reader of that trade is the
- * seller's own client — so the hold matured on a fact that was no longer true. At expiry the backend now
+ * seller's own client — so the hold matured on a fact that was no longer true. (A buyer's mobile tracker reads it
+ * too since DMA-664, but proves a changed transition only through this mark: [ProofMintPolicy.decide].) At expiry the backend now
  * stamps [TrackedDeal.proveAfter] on the watch entry, naming [TrackedDeal.steamTradeId] and the instant to
  * beat, and releases only against a proof attested at or after it.
  *

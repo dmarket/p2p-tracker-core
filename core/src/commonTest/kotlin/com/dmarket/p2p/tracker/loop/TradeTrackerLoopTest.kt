@@ -56,6 +56,7 @@ import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
@@ -203,6 +204,7 @@ class TradeTrackerLoopTest {
         // null keeps LoopConfig's own default (2 s, 4 s, 8 s).
         createDirectiveRetryDelays: List<Duration>? = null,
         proofArchive: ProofArchiveStore = NoProofArchive,
+        leaseClock: ElapsedClock? = null,
     ): TradeTrackerLoop {
         val vault = FakeCredentialVault(steamCredential = if (credential) vaultCredential else null)
         val provider = SteamCredentialProvider(
@@ -249,6 +251,7 @@ class TradeTrackerLoopTest {
             scanReceivedOffers = scanReceivedOffers,
             offerVerifier = offerVerifier,
             proofArchive = proofArchive,
+            leaseClock = leaseClock,
         )
     }
 
@@ -1048,6 +1051,119 @@ class TradeTrackerLoopTest {
         )
         loop(marketplace = mp, creator = creator, directivesEnabled = true).runOnce()
         assertEquals(1, creator.created.size, "an UNKNOWN role must not block a legitimate create")
+    }
+
+    // ---- the buyer as a reporter (DMA-664) -------------------------------------------------------------
+    //
+    // The buyer gets the same watch entry with `role: BUYER` and its reports move the deal like the seller's. It
+    // never writes to Steam, and a changed transition is proven by the seller alone: one MPC session per transition.
+
+    private fun buyerHeartbeat(deal: TrackedDeal, vararg directives: Directive) = FakeMarketplaceClient(
+        heartbeatResponse = HeartbeatResponse(activeTracking = listOf(deal), directives = directives.toList(), ttlSeconds = 60),
+    )
+
+    @Test
+    fun a_buyer_reports_its_received_offer_2_then_3_on_the_offer_axis_and_writes_nothing() = runTest {
+        val clock = FakeClock()
+        val creator = FakeSteamOfferCreator()
+        val canceller = FakeSteamOfferCanceller()
+        val reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 2))
+        val mp = buyerHeartbeat(tracked(role = DealRole.BUYER), createDirective(), cancelDirective(offerId = "offer-1"))
+        val l = loop(marketplace = mp, reader = reader, creator = creator, canceller = canceller, directivesEnabled = true, clock = clock)
+
+        l.runOnce()
+        reader.offers = mapOf(OfferId("offer-1") to 3)
+        clock.advance(61.seconds)
+        l.runOnce()
+
+        assertEquals(listOf(2, 3), mp.tradeStatusReports.filter { it.source == TradeStatusSource.OFFER }.map { it.steamStatusCode })
+        assertTrue(creator.created.isEmpty(), "the buyer never creates an offer")
+        assertTrue(canceller.cancelledOffers.isEmpty(), "the buyer never cancels the seller's offer")
+    }
+
+    @Test
+    fun a_buyer_reports_the_completed_transfer_and_its_rollback_on_the_history_axis() = runTest {
+        val clock = FakeClock()
+        val reader = settledFixture().apply { offers = mapOf(OfferId("offer-1") to 3) }
+        reader.offerTradeIds = mapOf(OfferId("offer-1") to TradeId("trade-original"))
+        val mp = buyerHeartbeat(trackedBothAxes().copy(role = DealRole.BUYER))
+        val l = loop(marketplace = mp, reader = reader, clock = clock)
+
+        l.runOnce()
+        reader.transfers = rollbackFixture(ROLLBACK_CODE).transfers
+        clock.advance(2.hours)
+        l.runOnce()
+
+        assertEquals(
+            listOf(3, ROLLBACK_CODE),
+            mp.tradeStatusReports.filter { it.source == TradeStatusSource.HISTORY }.map { it.steamStatusCode },
+        )
+    }
+
+    @Test
+    fun a_buyer_sends_a_decisive_code_once_without_a_proof_and_spends_no_session() = runTest {
+        val clock = FakeClock()
+        val notary = FakeNotaryProver()
+        val events = RecordingEventObserver()
+        val mp = buyerHeartbeat(tracked(proofRequired = true, role = DealRole.BUYER)).apply { tradeStatusAccepted = false }
+        val l = loop(
+            marketplace = mp,
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            notary = notary,
+            eventObserver = events,
+            clock = clock,
+        )
+
+        repeat(3) {
+            l.runOnce()
+            clock.advance(61.seconds)
+        }
+
+        assertTrue(notary.proven.isEmpty(), "the seller's tracker proves the transition")
+        assertEquals(1, mp.tradeStatusReports.size, "one report without a proof, then the spent claim holds it")
+        assertEquals(
+            ProofSkipReason.SELLER_PROVES.message,
+            events.events.filterIsInstance<LifecycleEvent.ProofSuppressed>().first().reason,
+        )
+        assertEquals(1, events.events.count { it is LifecycleEvent.TradeStatusClaimedUnproven })
+    }
+
+    @Test
+    fun a_transition_both_sides_see_costs_one_session_and_it_is_the_sellers() = runTest {
+        // The exit criterion of DMA-664's proof policy: the same accepted offer, read by both parties' trackers.
+        suspend fun side(role: DealRole): FakeNotaryProver {
+            val notary = FakeNotaryProver()
+            loop(
+                marketplace = buyerHeartbeat(tracked(proofRequired = true, role = role)),
+                reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+                notary = notary,
+            ).runOnce()
+            return notary
+        }
+        val seller = side(DealRole.SELLER)
+        val buyer = side(DealRole.BUYER)
+
+        assertEquals(listOf(DealId("deal-1") to TradeStatusSource.OFFER), seller.proven)
+        assertTrue(buyer.proven.isEmpty())
+    }
+
+    @Test
+    fun a_mark_on_a_proof_required_buyer_deal_is_still_answered() = runTest {
+        // The role gate is on changed transitions only: a freshness mark reads no role.
+        val clock = FakeClock()
+        val progress = InMemoryTrackerProgressStore()
+        progress.recordReported(mapOf(DealId("deal-1") to ReportedStatus(lastOfferCode = 3, lastHistoryCode = 3)))
+        val notary = FakeNotaryProver()
+
+        loop(
+            marketplace = markedHeartbeat(marked(role = DealRole.BUYER, proofRequired = true, proveAfter = clock.mark())),
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            notary = notary,
+            progress = progress,
+            clock = clock,
+        ).runOnce()
+
+        assertEquals(1, notary.proven.size)
     }
 
     // ---- awaitDirectiveOutcome (the page's create trigger) -----------------------------------------
@@ -6660,6 +6776,46 @@ class TradeTrackerLoopTest {
         assertEquals(DirectiveStatus.FAILED, failed.status)
         assertEquals(DirectiveId("dir-1"), failed.directiveId)
         assertEquals(2, creator.created.size, "the claim went with the FAILED, so the re-leased create runs again")
+    }
+
+    @Test
+    fun on_mobile_an_unanswered_create_steam_never_made_is_dropped_unreported_unless_unsent_creates_are_reported() = runTest {
+        val elapsed = object : ElapsedClock {
+            override fun elapsed(): Duration = 10.hours
+        }
+        for (reportUnsent in listOf(false, true)) {
+            val clock = FakeClock()
+            val observer = RecordingEventObserver()
+            val mp = createLease(createDirective())
+            val creator = FakeSteamOfferCreator(result = unanswered)
+            val l = loop(
+                marketplace = mp,
+                creator = creator,
+                reader = FakeSteamReadClient(),
+                claims = PersistedDealWriteClaimStore(),
+                clock = clock,
+                directivesEnabled = true,
+                eventObserver = observer,
+                unansweredCreateGrace = 2.minutes,
+                reportUnsentCreates = reportUnsent,
+                leaseClock = elapsed,
+            )
+            l.runOnce()
+            clock.advance(121.seconds)
+            l.forceHeartbeatNow()
+            l.runOnce()
+
+            val failed = mp.directiveOutcomes.filter { it.status == DirectiveStatus.FAILED }
+            val dropped = observer.events.filterIsInstance<LifecycleEvent.DirectiveDropped>().filter { it.directiveId == "dir-1" }
+            if (reportUnsent) {
+                assertEquals(listOf(DirectiveId("dir-1")), failed.map { it.directiveId }, "reported as before")
+                assertTrue(dropped.isEmpty())
+            } else {
+                assertTrue(failed.isEmpty(), "a failed report would fault the seller: $failed")
+                assertEquals(1, dropped.size, "said out loud instead")
+            }
+            assertEquals(2, creator.created.size, "the claim is gone either way: the re-leased create runs again")
+        }
     }
 
     @Test

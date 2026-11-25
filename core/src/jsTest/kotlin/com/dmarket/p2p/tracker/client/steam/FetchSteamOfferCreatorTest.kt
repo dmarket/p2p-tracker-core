@@ -12,9 +12,11 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -73,6 +75,14 @@ class FetchSteamOfferCreatorTest {
         assertTrue(capturedBody.contains("sessionid=sess123"), "missing sessionid: $capturedBody")
         assertTrue(capturedBody.contains("partner=76561198000000001"), "missing partner: $capturedBody")
         assertTrue(capturedBody.contains("json_tradeoffer="), "missing json_tradeoffer: $capturedBody")
+    }
+
+    @Test
+    fun a_create_stopped_by_its_caller_throws_the_cancellation_instead_of_a_failure() = runTest {
+        setupChrome("sess123")
+        val engine = MockEngine { throw CancellationException("cycle stopped") }
+
+        assertFailsWith<CancellationException> { creator(engine).createOffer(fakeSteamCredential(), draft) }
     }
 
     @Test
