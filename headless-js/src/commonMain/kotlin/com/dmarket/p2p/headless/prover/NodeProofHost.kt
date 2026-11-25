@@ -1,5 +1,6 @@
 package com.dmarket.p2p.headless.prover
 
+import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProofHost
@@ -34,4 +35,13 @@ fun interface NodeProofHostFactory {
 fun NodeProofHost.hearingSteamProxyRecovery(observer: EventObserver): EventObserver = EventObserver { event ->
     if (event == LifecycleEvent.SteamProxyRecovered) steamProxyRecovered()
     observer.onEvent(event)
+}
+
+/**
+ * A Steam token push heard by this host: when it moved the account to another proxy, or to none, proofs held back for
+ * the old one may start ([NodeProofHost.steamProxyChanged]). The same proxy named again moves nothing: it would hand
+ * a proxy that refuses the prover's tunnel a fresh lift on every push.
+ */
+fun NodeProofHost.heardSteamPush(push: SteamPushResult) {
+    if (push is SteamPushResult.Held && push.proxyChanged) steamProxyChanged()
 }

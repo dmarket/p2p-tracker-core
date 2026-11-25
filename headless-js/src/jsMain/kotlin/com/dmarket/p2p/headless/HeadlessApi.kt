@@ -10,6 +10,7 @@ import com.dmarket.p2p.headless.prover.ProofOutcomeJson
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.headless.prover.checkProverAssets
+import com.dmarket.p2p.headless.prover.heardSteamPush
 import com.dmarket.p2p.headless.prover.hearingSteamProxyRecovery
 import com.dmarket.p2p.headless.prover.runProverChild
 import com.dmarket.p2p.headless.proxy.SteamHttpTransport
@@ -19,7 +20,6 @@ import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
 import com.dmarket.p2p.tracker.credential.steam.SteamProxyUpdate
-import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -155,7 +155,7 @@ fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefine
     return call(handle) {
         val push = tracker.pushSteamToken(accessToken, proxy)
         // Another proxy, or none, may answer where the old one did not: the next proof need not wait it out.
-        if (push is SteamPushResult.Held && proxy != SteamProxyUpdate.Keep) proofHost?.steamProxyChanged()
+        proofHost?.heardSteamPush(push)
         push.toJs()
     }
 }

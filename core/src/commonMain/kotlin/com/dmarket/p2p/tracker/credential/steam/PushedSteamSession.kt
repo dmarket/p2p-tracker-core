@@ -15,8 +15,12 @@ import kotlin.time.Instant
 
 /** What a pushed Steam token did. No case carries the token's text. */
 sealed interface SteamPushResult {
-    /** The token for [steamId] is held now, until [expiresAt]; the loop acts on it from its next credential read. */
-    data class Held(val steamId: SteamId, val expiresAt: Instant) : SteamPushResult
+    /**
+     * The token for [steamId] is held now, until [expiresAt]; the loop acts on it from its next credential read.
+     * [proxyChanged]: the push moved the account's Steam traffic to another proxy, or to none, or off a direct
+     * connection; `false` when it kept the one held, the same proxy named again included.
+     */
+    data class Held(val steamId: SteamId, val expiresAt: Instant, val proxyChanged: Boolean = false) : SteamPushResult
 
     /** The token names [tokenSteamId], not the account DMarket links ([linkedSteamId]); the held token stays. */
     data class WrongAccount(val tokenSteamId: SteamId, val linkedSteamId: SteamId?) : SteamPushResult
@@ -97,12 +101,13 @@ class PushedSteamSession(private val clock: Clock, private val linkedSteamId: ()
             val expected = linked ?: held?.subjectSteamId
             if (expected != null && expected != subject) return@withLock SteamPushResult.WrongAccount(subject, linked)
             held = credential
+            val before = heldProxy
             heldProxy = when (proxy) {
                 SteamProxyUpdate.Keep -> heldProxy
                 SteamProxyUpdate.Clear -> null
                 is SteamProxyUpdate.Use -> proxy.proxy
             }
-            SteamPushResult.Held(subject, credential.expiresAt)
+            SteamPushResult.Held(subject, credential.expiresAt, proxyChanged = heldProxy != before)
         }
     }
 

@@ -1,7 +1,9 @@
 package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.T0
+import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.model.LifecycleEvent
+import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeSigner
@@ -20,7 +22,10 @@ class SteamProxyRecoveryTest {
 
         override fun keyChanged() = backoff.keyChanged()
 
-        override fun steamProxyChanged() = error("not a push")
+        override fun steamProxyChanged() {
+            heard += "proxy changed"
+            backoff.proxyChanged()
+        }
 
         override fun steamProxyRecovered() {
             heard += "proof host"
@@ -68,5 +73,25 @@ class SteamProxyRecoveryTest {
         observer.onEvent(LifecycleEvent.SteamProxyRecovered)
 
         assertNotNull(backoff.blocked(T0), "the prover's tunnel was refused again: the proof waits out its backoff")
+    }
+
+    @Test
+    fun the_same_proxy_pushed_again_neither_lifts_the_wait_nor_rearms_the_spent_recovery() = runTest {
+        val heard = mutableListOf<Any>()
+        val refused = ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429")
+        val backoff = ProverBackoff().apply { failed(refused, T0) }
+        val host = BackoffHost(backoff, heard)
+        val observer = host.hearingSteamProxyRecovery { }
+        observer.onEvent(LifecycleEvent.SteamProxyRecovered)
+        backoff.failed(refused, T0)
+
+        host.heardSteamPush(SteamPushResult.Held(SteamId("76561198000000001"), T0, proxyChanged = false))
+        observer.onEvent(LifecycleEvent.SteamProxyRecovered)
+        assertNotNull(backoff.blocked(T0), "a token renewal naming the same proxy is no new proxy")
+        assertEquals(listOf<Any>("proof host", "proof host"), heard)
+
+        host.heardSteamPush(SteamPushResult.Held(SteamId("76561198000000001"), T0, proxyChanged = true))
+        assertNull(backoff.blocked(T0), "another proxy, or none, may answer: the next proof starts")
+        assertEquals("proxy changed", heard.last())
     }
 }

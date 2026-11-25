@@ -268,6 +268,24 @@ class HeadlessTrackerProxyTest {
     }
 
     @Test
+    fun a_held_token_says_whether_its_push_moved_the_proxy() = runTest {
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        suspend fun moved(update: SteamProxyUpdate) = assertIs<SteamPushResult.Held>(tracker.pushSteamToken(token, update)).proxyChanged
+
+        assertEquals(false, moved(SteamProxyUpdate.Clear), "none held, none asked")
+        assertEquals(true, moved(SteamProxyUpdate.Use(proxy)))
+        assertEquals(
+            false,
+            moved(SteamProxyUpdate.Use(SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128"))),
+            "the same one again",
+        )
+        assertEquals(false, moved(SteamProxyUpdate.Keep))
+        assertEquals(true, moved(SteamProxyUpdate.Use(otherProxy)))
+        assertEquals(true, moved(SteamProxyUpdate.Clear))
+    }
+
+    @Test
     fun a_refused_token_changes_neither_the_token_nor_the_proxy() = runTest {
         val tracker = tracker()
         tracker.pushSteamToken(token, SteamProxyUpdate.Use(proxy))
