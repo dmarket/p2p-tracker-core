@@ -104,6 +104,15 @@ class SteamProxyTest {
     }
 
     @Test
+    fun a_bare_credential_beside_a_percent_escape_is_still_redacted() {
+        val proxy = SteamProxy.parse("http://steam:secret@203.0.113.7:3128")
+        val redacted = proxy.redact("target=http%3A%2F%2Fsteam%3Asecret%40203.0.113.7%3A3128 via %2Fsteamcommunity.com")
+        assertFalse("steam%3A" in redacted || "secret" in redacted, redacted)
+        assertTrue("%2Fsteamcommunity.com" in redacted, redacted)
+        assertEquals("crab@example.net", SteamProxy.parse("http://ab:cd@203.0.113.7:3128").redact("crab@example.net"))
+    }
+
+    @Test
     fun two_proxies_are_equal_by_value() {
         assertEquals(SteamProxy.parse(url), SteamProxy.parse(url))
         assertEquals(SteamProxy.parse(url).hashCode(), SteamProxy.parse(url).hashCode())

@@ -52,7 +52,8 @@ class SteamProxy private constructor(
      *
      * The URL, its authority, its user info (also as `user:pass@`, `user@`, `:pass@`), `host:port`, the host and the
      * `Basic` credential go wherever they appear. A bare user name or password goes only as a whole token: neither
-     * neighbour is a letter, a digit, `-`, `_`, or a `.` with a letter or digit beyond it. So a user `steam` leaves
+     * neighbour is a letter, a digit, `-`, `_`, or a `.` with a letter or digit beyond it (the hex digits of a `%XX`
+     * escape just before it do not count, so a percent-encoded URL loses them too). So a user `steam` leaves
      * `steamcommunity.com` and `store.steampowered.com` intact and still goes from `as steam.` or `user=steam`.
      */
     fun redact(text: String): String = secrets.fold(text) { acc, (secret, wholeToken) ->
@@ -69,10 +70,10 @@ class SteamProxy private constructor(
         val bare = listOf(rawUser, rawPassword, user, password.orEmpty())
         val forms = buildList {
             if (rawUserInfo.isNotEmpty()) add("$rawUserInfo@")
-            if (username != null) add("$user@")
+            if (user.length >= MIN_SECRET_LENGTH) add("$user@")
             if (password != null) add("$user:$password@")
-            if (rawPassword.isNotEmpty()) add(":$rawPassword@")
-            if (!password.isNullOrEmpty()) add(":$password@")
+            if (rawPassword.length >= MIN_SECRET_LENGTH) add(":$rawPassword@")
+            if (password.orEmpty().length >= MIN_SECRET_LENGTH) add(":$password@")
         }
         val anywhere = forms + listOf(
             raw,
@@ -217,9 +218,14 @@ class SteamProxy private constructor(
         /** Whether the character at [index] continues a token that [step] points away from: see [redact]. */
         private fun String.joinsToken(index: Int, step: Int): Boolean {
             val c = getOrNull(index) ?: return false
+            if (step < 0 && isEscapeEnd(index)) return false
             if (c.isLetterOrDigit() || c == '-' || c == '_') return true
             return c == '.' && getOrNull(index + step)?.isLetterOrDigit() == true
         }
+
+        /** Whether [index] is the last hex digit of a `%XX` escape. */
+        private fun String.isEscapeEnd(index: Int): Boolean =
+            getOrNull(index - 2) == '%' && isHexDigit(this[index]) && getOrNull(index - 1)?.let(::isHexDigit) == true
 
         private fun isHexDigit(c: Char): Boolean = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
 
