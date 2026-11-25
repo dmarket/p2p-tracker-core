@@ -2,8 +2,11 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.node.nodePath
 import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.nodeStream
 import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.headless.node.wsWebSocket
+import com.dmarket.p2p.headless.proxy.openSteamTunnel
+import com.dmarket.p2p.tracker.net.SteamProxy
 import kotlin.js.Promise
 
 /**
@@ -17,6 +20,9 @@ internal class ProverSessionRecord {
     var closeCode: Int? = null
     var closeReason: String? = null
     var targetError: String? = null
+
+    /** Why the tunnel through the account's Steam proxy did not open, in the tunnel's own words. */
+    var proxyError: String? = null
     var targetStatus: Int? = null
     var signingError: String? = null
 
@@ -155,3 +161,97 @@ internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> P
 
 /** How long the target's TCP dial may take: Steam answers a connect in well under a second. */
 internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000
+
+/**
+ * The target leg through the account's Steam proxy: a `CONNECT` tunnel through [proxy] ([openSteamTunnel]) handed to
+ * the transport as a socket the SDK owns. From prover package 1.1.0 that is `wrapTcpSocket(socket)` from
+ * `transport/dist/node.js` under [assetsDir], the transport's own handoff (with its close deadline); a package without
+ * it (1.0.1) gets the generic `connectTcp(host, port, { connect })` from `transport/dist/index.js`, the socket adapted
+ * as the transport's Node connector adapts a direct one ([tunnelSocket]). The tunnel's failure goes to [onProxyError]
+ * in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials Steam directly
+ * instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
+ */
+internal fun proxiedTcpConnector(
+    assetsDir: String,
+    proxy: SteamProxy,
+    onProxyError: (String) -> Unit,
+): (host: String, port: Int) -> Promise<Any?> {
+    val nodeEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val genericEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "index.js")).href as String
+    val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
+    val dial: dynamic = js(
+        """
+        (function (nodeEntry, genericEntry, open, onProxyError, adapt) {
+          let loading = null;
+          const tunnel = (host, port) => open(host, port).catch((error) => {
+            onProxyError(error && error.message ? error.message : 'the tunnel did not open');
+            throw error;
+          });
+          const handOff = (wrapTcpSocket) => (host, port) => tunnel(host, port).then((socket) => {
+            try {
+              return wrapTcpSocket(socket);
+            } catch (error) {
+              socket.destroy();
+              throw error;
+            }
+          });
+          const generic = (module) => (host, port) => module.connectTcp(host, port, {
+            connect: (targetHost, targetPort) => tunnel(targetHost, targetPort).then(adapt),
+          });
+          return (host, port) => {
+            if (loading === null) {
+              loading = import(nodeEntry).then((module) => module.wrapTcpSocket, () => undefined).then((wrapTcpSocket) =>
+                typeof wrapTcpSocket === 'function' ? handOff(wrapTcpSocket) : import(genericEntry).then(generic));
+            }
+            return loading.then((connect) => connect(host, port));
+          };
+        })
+        """,
+    )
+    return dial(nodeEntry, genericEntry, open, onProxyError, tunnelSocket).unsafeCast<(String, Int) -> Promise<Any?>>()
+}
+
+/**
+ * An open tunnel's Node socket as the transport's `TcpSocket` (`readable`, `writable`, `close`): the adaptation the
+ * transport's own Node connector makes of a direct socket, made here of one that is already connected. The two
+ * directions are adapted apart, so the read side's end does not end the write side, and a socket error reaches both.
+ */
+private val tunnelSocket: dynamic = js(
+    """
+    (function (stream) {
+      return function (socket) {
+        const readable = stream.Readable.toWeb(stream.Readable.from(socket.iterator({ destroyOnReturn: false }), { objectMode: false }));
+        const writable = new WritableStream({
+          start(controller) {
+            socket.on('error', (error) => controller.error(error));
+          },
+          write(data) {
+            return new Promise((resolve, reject) => socket.write(data, (error) => (error ? reject(error) : resolve())));
+          },
+          close() {
+            return new Promise((resolve, reject) => {
+              const cleanup = stream.finished(socket, { readable: false }, (error) => {
+                cleanup();
+                error ? reject(error) : resolve();
+              });
+              socket.end();
+            });
+          },
+          abort() {
+            socket.destroy();
+          },
+        });
+        return {
+          readable,
+          writable,
+          close() {
+            if (socket.closed) return Promise.resolve();
+            const closed = new Promise((resolve) => socket.once('close', () => resolve()));
+            socket.destroy();
+            return closed;
+          },
+        };
+      };
+    })
+    """,
+)(nodeStream)

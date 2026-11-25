@@ -3,14 +3,16 @@ package com.dmarket.p2p.tracker.client
 import io.ktor.client.engine.js.JsError
 
 /**
- * Ktor's JS engine rejects a failed fetch as `Error("Fail to fetch", JsError(<the fetch's rejection>))`. In a
- * browser that rejection is a `TypeError: Failed to fetch` with nothing under it. On Node it is a
- * `TypeError: fetch failed` whose `cause` says what happened: a system error (`ECONNRESET`, `ETIMEDOUT`, a DNS
- * `ENOTFOUND`) or an undici one (`UND_ERR_SOCKET`, `UND_ERR_CONNECT_TIMEOUT`), each with a `code` and a message.
- * That cause, and the one under it if any, as `code: message`.
+ * Ktor's JS engine rejects a failed fetch as `Error("Fail to fetch", <the fetch's rejection>)` — wrapped in a
+ * `JsError` before Ktor 3.6, bare since. In a browser that rejection is a `TypeError: Failed to fetch` with nothing
+ * under it. On Node it is a `TypeError: fetch failed` whose `cause` says what happened: a system error
+ * (`ECONNRESET`, `ETIMEDOUT`, a DNS `ENOTFOUND`) or an undici one (`UND_ERR_SOCKET`, `UND_ERR_CONNECT_TIMEOUT`, the
+ * Steam proxy's `STEAM_PROXY_UNREACHABLE`), each with a `code` and a message. That cause, and the one under it if any,
+ * as `code: message`.
  */
 internal actual fun Throwable.transportCause(): String? {
-    val origin = (cause as? JsError)?.origin ?: return null
+    // The bare rejection is read only under Ktor's own message: any other exception's cause is not a fetch's.
+    val origin: dynamic = (cause as? JsError)?.origin ?: cause?.takeIf { message == FAIL_TO_FETCH } ?: return null
     val described = mutableListOf<String>()
     var current: dynamic = origin.cause
     while (current != null && current != undefined && described.size < MAX_CAUSES) {
@@ -21,6 +23,9 @@ internal actual fun Throwable.transportCause(): String? {
 }
 
 private const val MAX_CAUSES = 2
+
+/** The message of Ktor's JS engine's error for a fetch that rejected. */
+private const val FAIL_TO_FETCH = "Fail to fetch"
 
 /** `code: message`, or whichever of the two the error has; `null` for a value that is neither. */
 private fun describe(error: dynamic): String? {

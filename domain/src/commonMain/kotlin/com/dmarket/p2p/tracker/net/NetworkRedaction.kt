@@ -127,6 +127,8 @@ object NetworkRedaction {
         // Shape-keyed backstop: a JWT with no key name in front of it (see the class KDoc). Runs last so
         // the name-keyed replacements above keep their readable `name=<redacted>` shape.
         scrubbed = scrubbed.replace(JWT_SHAPE, REDACTED)
+        // A URL's user info (`http://user:pass@host`): a proxy's credentials, wherever an error quoted the URL.
+        scrubbed = scrubbed.replace(URL_USER_INFO, "$1$REDACTED@")
         return if (scrubbed.length > maxLen) scrubbed.substring(0, maxLen) + "…[truncated]" else scrubbed
     }
 
@@ -142,6 +144,12 @@ object NetworkRedaction {
             Regex("(%22$escaped%22%3A%22).*?(%22)", IGNORE_CASE) to "$1$REDACTED$2",
         )
     }
+
+    /**
+     * The user info of a URL, up to its last `@` before the path: `scheme://` is kept, everything to that `@` goes.
+     * Greedy on purpose, as `SteamProxy.parse` splits on the last `@` and so accepts a raw `@` in the password.
+     */
+    private val URL_USER_INFO: Regex = Regex("([A-Za-z][A-Za-z0-9+.-]*://)[^\\s/?#]+@")
 
     /** Steam Community HTML token attribute (constant — compiled once, not per body). */
     private val LOYALTY_TOKEN_ATTR: Regex = Regex("(data-loyalty_webapi_token=)(\\S+)", IGNORE_CASE)

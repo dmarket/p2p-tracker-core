@@ -1103,6 +1103,8 @@ class TradeTrackerLoop(
         is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
         // Unreachable: a paused create is dropped before any write.
         CreateOfferResult.CreatesPaused -> outcome(DirectiveStatus.FAILED, error = CREATES_PAUSED_DROP_REASON)
+        // Unreachable: a create that was not sent is deferred in runCreate, before an outcome is made.
+        is CreateOfferResult.NotSent -> outcome(DirectiveStatus.FAILED, error = result.reason)
     }
 
     private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
@@ -1129,24 +1131,23 @@ class TradeTrackerLoop(
      *  [SteamWriteConfig.reportThrottledWrites] once agreed.
      */
     private suspend fun emitDeferredCreate(directive: Directive, reason: String, retryAfterSeconds: Int?) {
-        emitDeferred(directive.directiveId, directive.dealId, reason, retryAfterSeconds)
+        emitDeferred(directive, reason, retryAfterSeconds)
         resolveCreateWaiter(directive, directive.partnerSteamId?.let { throttledCreate(it) } ?: CreateOfferResult.Failed(reason))
         if (!config.tunables.steamWrites.reportThrottledWrites || !config.reportUnsentCreates) return
         reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = "$THROTTLED_WRITE_ERROR: $reason"))
     }
 
     /**
-     * The bare "this create was not attempted" event. Split from [emitDeferredCreate] because the host fast
-     * path has no leased [Directive] to report an outcome for — it synthesises one and answers its caller with
-     * [CreateOfferResult.Throttled] instead — so it needs the event without the reporting side effect.
+     * The bare "this write was not attempted" event, of [Directive.action]'s kind: [emitDeferredCreate] without its
+     * waiter and its optional report, for a write (a create or a cancel the proxy kept from going out) that has neither.
      */
-    private suspend fun emitDeferred(directiveId: DirectiveId, dealId: DealId?, reason: String, retryAfterSeconds: Int?) {
+    private suspend fun emitDeferred(directive: Directive, reason: String, retryAfterSeconds: Int?) {
         emit(
             LifecycleEvent.SteamWriteDeferred(
-                kind = DirectiveAction.CREATE_OFFER.wireName,
-                directiveId = directiveId.value,
+                kind = directive.action.wireName,
+                directiveId = directive.directiveId.value,
                 reason = reason,
-                dealId = dealId?.value,
+                dealId = directive.dealId?.value,
                 retryAfterSeconds = retryAfterSeconds,
             ),
         )
@@ -3065,6 +3066,13 @@ class TradeTrackerLoop(
             // doomed creates they attempt. A bound offer is no write, so it says nothing about the surface.
             if (bound == null) recordCreateResult(partner, result)
             resolveCreateWaiter(directive, result)
+            // Never sent (the account's Steam proxy could not be reached): deferred like a create the token is too
+            // short for, so it is never reported failed, and the claim goes with nothing written. The chain stops:
+            // the next create for this partner would go the same way.
+            if (result is CreateOfferResult.NotSent) {
+                emitDeferred(directive, result.reason, retryAfterSeconds = null)
+                return@withDealClaim WriteAttempt(stopChain = true, reason = result.reason) to ClaimEnd.Released
+            }
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {
                 val error = (result as CreateOfferResult.Failed).error
@@ -3159,6 +3167,13 @@ class TradeTrackerLoop(
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
             val result = runCatchingUnlessCancelled { offerCanceller.cancelOffer(credential, offerId) }
                 .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
+            // Never sent (the account's Steam proxy could not be reached): the offer is as it was, so there is nothing
+            // to read and nothing to report. Deferred like a create not sent, its claim released; the backend re-leases
+            // it once the lease lapses.
+            if (result is CancelOfferResult.NotSent) {
+                emitDeferred(directive, result.reason, retryAfterSeconds = null)
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
             val write = result.write()
             // One read of the offer for any cancel that did not plainly land ([LoopConfig.checkFailedCancels]): its
             // state is what tells a live offer from one already gone, and an unanswered write from a landed one.
@@ -3225,7 +3240,8 @@ class TradeTrackerLoop(
         CancelOfferResult.Cancelled -> null
         CancelOfferResult.NotLive -> CancelWrite.NOT_LIVE
         is CancelOfferResult.Unanswered -> CancelWrite.UNANSWERED
-        is CancelOfferResult.Refused -> CancelWrite.REFUSED
+        // Not sent, so not landed; deferred before it is ever read this way.
+        is CancelOfferResult.Refused, is CancelOfferResult.NotSent -> CancelWrite.REFUSED
     }
 
     /** The text a cancel that did not land reports; `null` for one that did. */
@@ -3234,6 +3250,7 @@ class TradeTrackerLoop(
         CancelOfferResult.NotLive -> CANCEL_NOT_LIVE_ERROR
         is CancelOfferResult.Unanswered -> error
         is CancelOfferResult.Refused -> error
+        is CancelOfferResult.NotSent -> reason
     }
 
     /**
@@ -3877,8 +3894,12 @@ class TradeTrackerLoop(
             // prover's health. The case this is for is a stale proving context right after a host reload,
             // which failed two proofs in 7 ms and 15 ms and parked nine healthy deals for it. The clock is
             // re-read rather than reusing `now`: `now` predates the attempt, and the fold must measure it.
+            //
+            // A Steam proxy that could not be reached is excluded too: the proof never got past the proxy, so it
+            // says nothing about the prover, and a park it armed would outlast the proxy's recovery.
             val spentEnough = clock.now() - attemptStartedAt >= config.tunables.notary.breaker.countedFailureMinMs.milliseconds
-            if (failure !is CancellationException && spentEnough) {
+            val proxyDown = failure is HostedProofException && failure.failure is ProofFailure.ProxyUnreachable
+            if (failure !is CancellationException && spentEnough && !proxyDown) {
                 notaryThrottle.onResult(generated = false, now = clock.now())
             }
             // A refusal that names the online budget it needed is the one failure on this path that teaches

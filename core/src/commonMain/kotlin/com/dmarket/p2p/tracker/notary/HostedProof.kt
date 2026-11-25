@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.notary
 
+import com.dmarket.p2p.tracker.net.SteamProxy
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -13,9 +14,17 @@ import kotlinx.serialization.Serializable
  *   (`revealRequestTarget = false`) and never sent to DMarket.
  * @property steamSessionId the `sessionid` double-submit value a cookie-authenticated read sends beside the
  *   `steamLoginSecure` cookie built from the token. The same value the tracker's own Steam writes send.
+ * @property steamProxy the proxy the account's Steam traffic goes through: the proof's Steam leg is a `CONNECT`
+ *   tunnel through it, never a direct connection. `null` to dial Steam directly. A secret like the token.
  */
-class HostedProofRequest(val request: NotaryProofRequest, val steamAccessToken: String, val steamSessionId: String) {
-    override fun toString(): String = "HostedProofRequest(request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>)"
+class HostedProofRequest(
+    val request: NotaryProofRequest,
+    val steamAccessToken: String,
+    val steamSessionId: String,
+    val steamProxy: SteamProxy? = null,
+) {
+    override fun toString(): String = "HostedProofRequest(request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>, " +
+        "steamProxy=${steamProxy?.let { "<redacted>" }})"
 }
 
 /**
@@ -109,6 +118,17 @@ sealed interface ProofFailure {
         override val summary: String get() = "the proven Steam read failed${status?.let { ": HTTP $it" }.orEmpty()}: $detail"
     }
 
+    /**
+     * The Steam leg could not go through the account's proxy: no connection to it, no answer, or a `CONNECT` it
+     * refused. Nothing reached Steam, and nothing fell back to a direct connection. [detail] names no address and no
+     * credential.
+     */
+    @Serializable
+    @SerialName("proxy_unreachable")
+    data class ProxyUnreachable(val detail: String) : ProofFailure {
+        override val summary: String get() = "the Steam proxy could not be reached: $detail"
+    }
+
     /** The read did not fit the MPC limits the proof was configured with. */
     @Serializable
     @SerialName("limits_exceeded")
@@ -186,6 +206,7 @@ object ProofFailures {
      * @param closeReason the close frame's reason text.
      * @param targetStatus Steam's response status, when the prover got that far.
      * @param targetError why the dial to Steam failed, when it did.
+     * @param proxyError why the tunnel through the account's Steam proxy could not be opened, when it could not.
      * @param notaryConnected whether the notary socket opened; `false` with no [upgradeStatus] means it never
      *   answered at all.
      * @param message the prover's error, or `null` when it produced a presentation.
@@ -198,6 +219,7 @@ object ProofFailures {
         targetError: String? = null,
         notaryConnected: Boolean = true,
         message: String? = null,
+        proxyError: String? = null,
     ): ProofFailure? {
         val text = message.orEmpty()
         return when {
@@ -210,6 +232,8 @@ object ProofFailures {
                 },
             )
             !notaryConnected -> ProofFailure.NotaryUnreachable(text.ifBlank { "no answer to the upgrade" })
+            // The proxy's failure is the Steam leg's, and the more exact word for it.
+            proxyError != null -> ProofFailure.ProxyUnreachable(proxyError)
             targetError != null -> ProofFailure.SteamFailed(detail = targetError)
             targetStatus != null && targetStatus !in SUCCESS -> ProofFailure.SteamFailed(targetStatus, "Steam answered HTTP $targetStatus")
             message == null -> null

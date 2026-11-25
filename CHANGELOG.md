@@ -14,10 +14,16 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Added
+
+- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
+- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
+
 ### Fixed
 
 - Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
 - Mobile: on a buyer's deal, a status report that did not reach DMarket (a 5xx, a dropped call) is again `UpdateFailure.DMARKET` on a manual status update and `failed` (`other`) on a wake; only DMarket's `P2P_PROOF_REQUIRED` refusal of it is skipped (DMA-664).
+- A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
 
 ## [1.4.0-beta] - 2026-11-25
 

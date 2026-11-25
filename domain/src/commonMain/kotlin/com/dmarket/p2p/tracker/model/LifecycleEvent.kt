@@ -122,7 +122,8 @@ sealed interface LifecycleEvent {
      * A leased `create_offer` was **not attempted this cycle** — the create surface's own back-pressure
      * firing, not a Steam failure. [reason] names which limit deferred it (the surface or the partner is
      * cooling down after a Steam refusal, a per-partner / per-cycle cap, or the concurrent-chain limit), and
-     * [retryAfterSeconds] is set when the reason is a cooldown with a known deadline.
+     * [retryAfterSeconds] is set when the reason is a cooldown with a known deadline. A `create_offer` or a
+     * `cancel_offer` ([kind]) the account's Steam proxy kept from going out is deferred the same way.
      *
      * Nothing was written and (pending agreement with the backend) nothing was reported, so the directive is
      * simply re-leased later. Without this event that is indistinguishable from a client silently ignoring
@@ -481,6 +482,22 @@ sealed interface LifecycleEvent {
      * cycle carries on without the refused call, as before.
      */
     data class RateLimited(val surface: String, val retryAfterSeconds: Long?) : LifecycleEvent
+
+    /**
+     * The Steam proxy this account's traffic goes through could not be reached (no connection, no answer, or a
+     * `CONNECT` it refused), so nothing reaches Steam: nothing falls back to a direct connection, no create is sent
+     * and none is reported failed. Emitted once when the problem starts; [SteamProxyRecovered] ends it.
+     *
+     * [dealIds] are the deals the tracker was tracking then, every one of them held back; [detail] says what failed
+     * in fixed words and an error code (`ECONNREFUSED`, `HTTP 407`), never the proxy's address or credentials.
+     */
+    data class SteamProxyUnreachable(val dealIds: List<String>, val detail: String) : LifecycleEvent
+
+    /**
+     * The [SteamProxyUnreachable] problem is over: a connection went through the proxy, or the host pushed another
+     * proxy, or none.
+     */
+    data object SteamProxyRecovered : LifecycleEvent
 
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :

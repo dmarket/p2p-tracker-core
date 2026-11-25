@@ -39,6 +39,10 @@ kotlin {
             // The notary socket of a prover process: sends the signed upgrade headers and names a refused upgrade's
             // status. The version Ktor's JS client already brings, so the lock does not move.
             implementation(npm("ws", "8.22.0"))
+            // The Steam calls' proxy: an Agent that tunnels each connection through the account's proxy, and the
+            // fetch of the same release, so the two always match whatever Node bundles. 7.x: 8.x needs Node 22.19 or
+            // later, past this package's `node >= 22`. Exact, never a range.
+            implementation(npm("undici", "7.30.2"))
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

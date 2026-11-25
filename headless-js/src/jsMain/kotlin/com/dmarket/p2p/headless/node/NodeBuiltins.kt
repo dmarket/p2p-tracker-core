@@ -25,6 +25,13 @@ internal external val nodeWorkerThreads: dynamic
 @JsModule("node:buffer")
 internal external val nodeBuffer: dynamic
 
+@JsModule("node:stream")
+internal external val nodeStream: dynamic
+
+/** `node:net`: the Steam proxy's tunnels, and the loopback servers the socket tests dial. */
+@JsModule("node:net")
+internal external val nodeNet: dynamic
+
 /** The `ws` package: its export is the `WebSocket` class. */
 @JsModule("ws")
 internal external val wsWebSocket: dynamic

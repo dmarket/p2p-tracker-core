@@ -193,6 +193,8 @@ class HeadlessFacadeTest {
             "linkedSteamId" to "null",
             "readySinceMs" to "null",
             "steamNotLinked" to "boolean",
+            "steamProxyUnreachable" to "boolean",
+            "steamProxyUnreachableSinceMs" to "null",
             "steamTokenExpiresAtMs" to "null",
             "steamTokenSteamId" to "null",
             "trackedDealIds" to "array",

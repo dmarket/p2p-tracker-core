@@ -2,8 +2,10 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.node.nodeChildProcess
 import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeSigner
 import com.dmarket.p2p.tracker.notary.ProofFailure
@@ -90,10 +92,17 @@ class ForkedProofHost(
             onOutcome(dealId, held)
             return HostedProofOutcome.Failed(held)
         }
+        // In proxy issuance the notary dials Steam itself: the account's proxy cannot carry the proof's Steam leg, and
+        // the token would reach Steam from the notary's address. Refused rather than proved around the proxy.
+        if (proof.steamProxy != null && settings.mode == IssuanceMode.PROXY) {
+            val refused = ProofFailure.NotStarted(PROXY_ISSUANCE_BYPASSES_STEAM_PROXY)
+            onOutcome(dealId, refused)
+            return HostedProofOutcome.Failed(refused)
+        }
         val (child, id) = lock.withLock { (takeIdle() ?: fork()) to nextProofId++ }
         onNotice("proof started", false, listOf("dealId" to dealId, "pid" to child.pid))
         val outcome = try {
-            run(child, id, proof, upgrade)
+            run(child, id, proof, upgrade).scrubbed(proof.steamProxy)
         } catch (e: CancellationException) {
             child.kill()
             throw e
@@ -121,6 +130,9 @@ class ForkedProofHost(
     /** A newly held key may answer a notary 401: the next proof need not wait for the old one's backoff. */
     override fun keyChanged() = backoff.keyChanged()
 
+    /** Another proxy, or the same one again, may answer: the next proof need not wait for the old failure's backoff. */
+    override fun steamProxyMayAnswer() = backoff.proxyMayAnswer()
+
     /** Kills every prover process, idle or proving: the SDK is stopping. */
     override fun close() {
         live.forEach { it.kill() }
@@ -131,7 +143,10 @@ class ForkedProofHost(
     private suspend fun run(child: ForkedChild, id: Int, proof: HostedProofRequest, upgrade: NotaryUpgradeSigner): HostedProofOutcome {
         val started = TimeSource.Monotonic.markNow()
         var connected: TimeMark? = null
-        if (!child.send(ProverIpc.encode(ToChild.Prove(id, proof.request, proof.steamAccessToken, proof.steamSessionId, settings)))) {
+        // The child's lines are scrubbed of this proof's proxy too, whatever printed it.
+        proof.steamProxy?.let { child.proxies += it }
+        val prove = ToChild.Prove(id, proof.request, proof.steamAccessToken, proof.steamSessionId, settings, proof.steamProxy?.url())
+        if (!child.send(ProverIpc.encode(prove))) {
             return killed(KillCause.EXITED, "the prover's channel was closed")
         }
         child.served++
@@ -198,6 +213,17 @@ class ForkedProofHost(
 }
 
 /**
+ * [this] with [proxy] taken out of every text of its failure: the child words a proxy failure without the proxy, and a
+ * text it did not write itself (the prover's, Node's) is scrubbed here before the host sees it.
+ */
+private fun HostedProofOutcome.scrubbed(proxy: SteamProxy?): HostedProofOutcome =
+    if (this is HostedProofOutcome.Failed && proxy != null) HostedProofOutcome.Failed(failure.mapTexts(proxy::redact)) else this
+
+/** Why a proof with a Steam proxy does not start in proxy issuance mode. */
+internal const val PROXY_ISSUANCE_BYPASSES_STEAM_PROXY =
+    "the notary dials Steam in proxy issuance mode, so a proof cannot go through the account's Steam proxy"
+
+/**
  * The environment a prover process gets: the few variables a Node process and its locale need, never the SDK's own
  * (no management secret, no config path, no `NODE_OPTIONS`).
  */
@@ -234,6 +260,9 @@ private class ForkedChild(
     var served = 0
     var gone = false
         private set
+
+    /** The proxies of the proofs this child has served: taken out of every line it prints. */
+    val proxies = mutableSetOf<SteamProxy>()
     private var killedBySdk = false
 
     init {
@@ -312,6 +341,6 @@ private class ForkedChild(
     private fun emit(stream: String, line: String) {
         val text = line.trimEnd('\r')
         if (text.isBlank()) return
-        onLine(pid, stream, ProverOutput.redact(text))
+        onLine(pid, stream, ProverOutput.redact(proxies.fold(text) { acc, proxy -> proxy.redact(acc) }))
     }
 }

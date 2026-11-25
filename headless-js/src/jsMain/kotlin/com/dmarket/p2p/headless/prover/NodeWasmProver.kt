@@ -6,6 +6,7 @@ import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeHeaders
 import com.dmarket.p2p.tracker.notary.ProofFailure
@@ -28,7 +29,8 @@ import kotlin.js.Promise
  *  - the module: `client_wasm_bg.wasm` compiled from disk, handed to the init as `module_or_path`;
  *  - the notary: a `ws` socket with the upgrade headers the SDK signs when asked, and no `bearer.` entry;
  *  - the target: the transport's Node `connectTcp` to the target's port 443 ([ProverSettings.targetAddress] on a test
- *    stand), with a dial timeout and the leg's failure recorded ([recordedTargetChannel]).
+ *    stand), or with [ToChild.Prove.steamProxy] a `CONNECT` tunnel through the account's proxy and never a direct
+ *    dial ([proxiedTcpConnector]); a dial timeout and the leg's failure recorded ([recordedTargetChannel]).
  *
  * The prover's threads run as worker threads ([installBrowserWorker]). Its trace goes to stdout, which the SDK
  * logs redacted. A failure is classified from what the sockets saw and the prover's words ([ProofFailures]).
@@ -37,6 +39,7 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
     override suspend fun prove(proof: ToChild.Prove, headers: suspend () -> NotaryUpgradeHeaders): ChildResult {
         installBrowserWorker()
         val settings = proof.settings
+        val proxy = proof.steamProxy?.let { runCatching { SteamProxy.parse(it) }.getOrNull() ?: return refusedProxy() }
         val record = ProverSessionRecord()
         val host = WasmProverHost(
             assetUrl = { path -> fileUrl(nodePath.join(settings.assetsDir, path) as String) },
@@ -54,7 +57,11 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
                 headerWebSocket(signed.values, record)
             },
             connectTarget = { serverName, port ->
-                recordedTargetChannel(settings.targetAddress ?: "$serverName:$port", record, connect = nodeTcpConnector(settings.assetsDir))
+                // Through the account's proxy when it has one, and then only through it.
+                val connect = proxy?.let { through ->
+                    proxiedTcpConnector(settings.assetsDir, through) { record.proxyError = record.proxyError ?: it }
+                } ?: nodeTcpConnector(settings.assetsDir)
+                recordedTargetChannel(settings.targetAddress ?: "$serverName:$port", record, connect = connect)
             },
             onTargetResponse = { status ->
                 record.targetStatus = status
@@ -123,8 +130,12 @@ class NodeWasmProver(private val clock: Clock) : ChildProver {
             // A failure before any connect is not the notary's.
             notaryConnected = !record.notaryAttempted || record.notaryOpened || record.upgradeStatus != null,
             message = message,
+            proxyError = record.proxyError,
         ) ?: ProofFailure.Other(message)
     }
+
+    /** A proxy that does not parse is never dialled around: the proof is not started. */
+    private fun refusedProxy(): ChildResult = ChildResult.Failed(ProofFailure.NotStarted("the Steam proxy is not a valid proxy URL"))
 
     private companion object {
         val SUCCESS = 200..299

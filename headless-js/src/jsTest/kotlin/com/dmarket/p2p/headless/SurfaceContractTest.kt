@@ -1,6 +1,11 @@
 package com.dmarket.p2p.headless
 
+import com.dmarket.p2p.headless.node.nodeChildProcess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.await
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlin.js.Promise
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -32,6 +37,7 @@ class SurfaceContractTest {
         "runProverChild",
         "start",
         "steamNotLinkedCode",
+        "steamProxyInvalidCode",
         "stop",
         "trackerState",
     )
@@ -48,7 +54,14 @@ class SurfaceContractTest {
         val entry = importEntry()
         val reasons = entry.reasons()
         assertEquals(
-            listOf("noProver", "offerWritesDisabled", "proofTokenExpiring", "steamSessionMissing", "tokenExpiringDefer"),
+            listOf(
+                "noProver",
+                "offerWritesDisabled",
+                "proofTokenExpiring",
+                "steamProxyUnreachable",
+                "steamSessionMissing",
+                "tokenExpiringDefer",
+            ),
             shapeOf(reasons).keys.sorted(),
         )
         assertTrue(shapeOf(reasons).values.all { it == "string" })
@@ -60,6 +73,7 @@ class SurfaceContractTest {
         assertEquals("already_traded", entry.failedCancelKinds().alreadyTraded)
         assertEquals("cancel_offer", entry.directiveActions().cancelOffer)
         assertEquals("P2P_STEAM_NOT_LINKED", entry.steamNotLinkedCode())
+        assertEquals("STEAM_PROXY_INVALID", entry.steamProxyInvalidCode())
         assertEquals(1_800_000.0, entry.minWriteTokenLifetimeMs())
         assertEquals(60_000.0, entry.maxClockSkewMs())
         assertEquals("wss://api.dmarket.com/provenance/v1/", entry.defaultNotaryUrl())
@@ -82,6 +96,7 @@ class SurfaceContractTest {
             }
         }
         assertTrue("steamNotLinkedCode(): ${JSON.stringify(entry.steamNotLinkedCode())};" in types)
+        assertTrue("steamProxyInvalidCode(): ${JSON.stringify(entry.steamProxyInvalidCode())};" in types)
     }
 
     @Test
@@ -92,5 +107,36 @@ class SurfaceContractTest {
                 .let { found -> found.singleOrNull() ?: error("$name is declared ${found.size} times") }
         }
         assertEquals(golden("p2p-tracker-headless.d.mts.golden").trimEnd('\n'), declarations.joinToString("\n"))
+    }
+
+    /**
+     * Importing the package changes nothing process-wide: `undici`, which installs an `Agent` of its own as Node's global
+     * dispatcher when none is set yet, is not imported until a Steam call goes through a proxy. A CommonJS host's process
+     * has none set when it imports the package; one taken over would move all of its `fetch` calls onto this package's
+     * `undici`.
+     */
+    @Test
+    fun importing_the_package_leaves_nodes_global_dispatcher_alone() = runTest {
+        val script = """
+            const keys = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
+            const before = keys.map((key) => typeof globalThis[key]);
+            import(process.argv[1]).then(() => {
+              const after = keys.map((key) => typeof globalThis[key]);
+              process.stdout.write(JSON.stringify({ before, after }));
+            });
+        """.trimIndent()
+        val output = withContext(Dispatchers.Default) {
+            Promise<String> { resolve, reject ->
+                nodeChildProcess.execFile(js("process.execPath"), arrayOf("-e", script, entryUrl())) {
+                        error: dynamic,
+                        stdout: String,
+                        _: String,
+                    ->
+                    if (error != null) reject(error.unsafeCast<Throwable>()) else resolve(stdout)
+                }
+            }.await()
+        }
+        val seen: dynamic = JSON.parse(output)
+        assertEquals(JSON.stringify(seen.before), JSON.stringify(seen.after), output)
     }
 }

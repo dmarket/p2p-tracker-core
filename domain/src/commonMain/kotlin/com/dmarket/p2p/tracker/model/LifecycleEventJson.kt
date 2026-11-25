@@ -274,6 +274,12 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             put("surface", event.surface)
             put("retryAfterSeconds", event.retryAfterSeconds)
         }
+        is LifecycleEvent.SteamProxyUnreachable -> {
+            put("event", "SteamProxyUnreachable")
+            putJsonArray("dealIds") { event.dealIds.forEach { add(it) } }
+            put("detail", event.detail)
+        }
+        LifecycleEvent.SteamProxyRecovered -> put("event", "SteamProxyRecovered")
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")
             put("directivesExecuted", event.directivesExecuted)

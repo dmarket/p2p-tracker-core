@@ -13,6 +13,9 @@ private fun buildDir(variable: String): String =
 /** A golden file under `src/jsTest/resources`. */
 suspend fun golden(name: String): String = readFile(join(buildDir("HEADLESS_TEST_RESOURCES"), name), "utf8").await()
 
+/** The built package's directory, laid out as it ships. */
+fun distributedDir(): String = buildDir("HEADLESS_DIST_DIR")
+
 /** A file of the built package. */
 suspend fun distributed(name: String): String = readFile(join(buildDir("HEADLESS_DIST_DIR"), name), "utf8").await()
 
@@ -21,3 +24,6 @@ suspend fun importEntry(): dynamic {
     val url = pathToFileURL(join(buildDir("HEADLESS_DIST_DIR"), "p2p-tracker-headless.mjs")).href as String
     return js("import(url)").unsafeCast<Promise<dynamic>>().await()
 }
+
+/** The built package's entry file, for a process of its own to import. */
+fun entryUrl(): String = pathToFileURL(join(buildDir("HEADLESS_DIST_DIR"), "p2p-tracker-headless.mjs")).href as String

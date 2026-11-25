@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.client.HttpStatusException
+import com.dmarket.p2p.tracker.client.SteamProxyUnreachableException
 import com.dmarket.p2p.tracker.client.captureErrorBody
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
 import com.dmarket.p2p.tracker.game.GameAdapter
@@ -8,6 +9,7 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamSessionCookie
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.port.steam.CancelOfferResult
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
@@ -131,6 +133,9 @@ class HeaderSessionSteamOfferCreator internal constructor(
         throw e
     } catch (e: HttpStatusException) {
         SteamOfferWire.createRefusal(e.statusCode, e.errorBody)
+    } catch (_: SteamProxyUnreachableException) {
+        // Never reached Steam: not a create Steam may have made, and not one to report failed.
+        CreateOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON)
     } catch (e: Throwable) {
         CreateOfferResult.Failed(e.redactedSummary())
     }
