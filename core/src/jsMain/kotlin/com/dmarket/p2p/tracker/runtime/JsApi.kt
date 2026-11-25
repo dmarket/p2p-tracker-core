@@ -16,13 +16,14 @@ import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.createBrowserMarketplaceCredentials
+import com.dmarket.p2p.tracker.client.steam.CookieSteamSessionScraper
 import com.dmarket.p2p.tracker.client.steam.FetchSteamOfferCanceller
 import com.dmarket.p2p.tracker.client.steam.FetchSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.FetchSteamWebSessionGateway
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamNotificationReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
-import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
+import com.dmarket.p2p.tracker.client.steam.steamSessionId
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
@@ -147,20 +148,18 @@ fun createBrowserLoop(
     val clock = SystemClock()
     val vault = WebExtStorageCredentialVault()
     // One credentialed Steam transport shared by every Steam-facing Ktor client (reader, inventory,
-    // session scraper). createSteamHttpClient → platformHttpEngine(credentialsInclude=true) sets fetch
+    // session gateway). createSteamHttpClient → platformHttpEngine(credentialsInclude=true) sets fetch
     // credentials:"include", so the logged-in Steam cookie session rides along and reads no longer 403.
     val steamHttpClient = createSteamHttpClient(
         requestTimeoutMs = config.http.requestTimeoutMs.toLong(),
         observer = networkObserver,
         secretParamNames = steamSecretParamNames(config.steamEndpoints),
     )
-    val scraper = KtorSteamSessionScraper(
-        httpClient = steamHttpClient,
-        scrapeConfig = config.steamScrape,
-        communityBaseUrl = config.steamEndpoints.communityBaseUrl,
-    )
+    // One cookie gateway: the scraper reads the session cookie the refresher keeps fresh.
+    val sessionGateway = FetchSteamWebSessionGateway(httpClient = steamHttpClient)
+    val scraper = CookieSteamSessionScraper(sessionGateway, config.steamScrape.steamSessionCookieName)
     val sessionRefresher = DefaultSteamSessionRefresher(
-        gateway = FetchSteamWebSessionGateway(httpClient = steamHttpClient),
+        gateway = sessionGateway,
         clock = clock,
         gateHeadroom = config.credentials.sessionGateHeadroom,
         loginBaseUrl = config.steamEndpoints.loginBaseUrl,
@@ -199,6 +198,10 @@ fun createBrowserLoop(
             maxConcurrency = config.notary.maxConcurrency,
             tokenProvider = MarketplaceNotaryTokenProvider(marketplaceCredentials),
             delegate = notaryProofDelegate,
+            // The homepage GET the cookie scraper replaced also minted Steam's browser-session `sessionid` after a
+            // browser restart; proven writes read it in the offscreen document, which cannot mint it. No request
+            // while the cookie is there.
+            beforeProof = { steamHttpClient.steamSessionId(config.steamEndpoints.communityBaseUrl) },
         )
     } else {
         NoOpNotaryProver

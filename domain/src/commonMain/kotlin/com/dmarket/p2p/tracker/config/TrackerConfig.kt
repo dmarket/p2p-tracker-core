@@ -1091,13 +1091,18 @@ data class SteamProfileConfig(
 }
 
 /**
- * Regex patterns and cookie/attribute names the credential scrapers depend on. The token/steamID
- * regexes are the most fragile third-party surface (they break whenever Steam reshapes its Community
- * HTML), so being able to override them remotely is the highest-value tuning here.
+ * Cookie names the Steam credential and session code depend on.
+ *
+ * [tokenRegex] and [steamIdRegex] are unused since DMA-1070: the credential is read from the
+ * [steamSessionCookieName] cookie, because Steam stopped putting the token in the steamcommunity.com homepage.
+ * They stay only because hosts map overrides onto the positional `copy()` by index; removing them is a
+ * lockstep change with those hosts.
  */
 @JsExport
 data class SteamScrapeConfig(
+    /** Unused since DMA-1070; kept for its `copy()` slot. */
     val tokenRegex: String = """data-loyalty_webapi_token="&quot;([a-zA-Z0-9_.\-]+)&quot;""",
+    /** Unused since DMA-1070; kept for its `copy()` slot. */
     val steamIdRegex: String = """g_steamID\s*=\s*"(\d+)"""",
     val steamSessionCookieName: String = "steamLoginSecure",
     val steamSessionIdCookieName: String = "sessionid",

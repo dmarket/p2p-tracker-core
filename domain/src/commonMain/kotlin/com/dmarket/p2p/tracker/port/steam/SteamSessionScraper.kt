@@ -8,8 +8,10 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
  * acquisition; the interactive half (presenting a login UI) is the host application's job — see
  * "Background vs interactive" below.
  *
- * The credential is the `data-loyalty_webapi_token` JWT embedded in the Steam Community HTML for
- * authenticated users. The long-lived secret is the platform's Steam **cookie session**, which we
+ * The credential is the access token inside the `steamLoginSecure` session cookie
+ * (`steamid64 || access_token`); `api.steampowered.com` accepts it as `access_token`. (Until 2026-11-24 the
+ * same token was also on the steamcommunity.com homepage as `data-loyalty_webapi_token`; Steam removed it
+ * there, DMA-1070.) The long-lived secret is the platform's Steam **cookie session**, which we
  * never store and never transmit — each platform's actual reads it from wherever that session
  * already lives:
  * - **Web extension:** the browser's shared cookie jar (`fetch(..., credentials = "include")`).
@@ -27,7 +29,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamCredential
  * Return contract:
  * - Returns the fresh [SteamCredential] on success.
  * - Returns `null` if no authenticated session is available (expected "needs login" signal).
- * - **Throws** on transient infrastructure errors (network failure, unexpected HTML shape) so the
+ * - **Throws** on transient infrastructure errors (a failed cookie-store read, a network failure) so the
  *   caller can distinguish "needs login" (a UI prompt) from "try again later" (no prompt).
  *
  * Hard audit boundary: the scraped token is stored **on the device only** and is never transmitted

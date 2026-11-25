@@ -17,7 +17,7 @@ import kotlin.time.Instant
 class MalformedSteamTokenException(message: String, cause: Throwable? = null) : IllegalArgumentException(message, cause)
 
 /**
- * Minimal, pure parser for Steam Web API JWTs (`data-loyalty_webapi_token`).
+ * Minimal, pure parser for Steam access-token JWTs (the token in the `steamLoginSecure` cookie).
  *
  * We **do not verify the signature** — we trust the source (the user's own authenticated
  * steamcommunity.com session), not the JWT's cryptographic integrity.

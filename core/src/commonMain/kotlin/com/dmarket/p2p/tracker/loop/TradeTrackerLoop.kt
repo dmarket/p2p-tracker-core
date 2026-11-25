@@ -1695,7 +1695,7 @@ class TradeTrackerLoop(
             // Steam-session guard. The sticky is set (and persisted) BEFORE the event is emitted, per the
             // same discipline as the marketplace paths below: delivery is synchronous and a host reads
             // blockingState from inside the handler. Only the provider's corroborated verdict raises the
-            // block — a bare failed scrape (Steam 429/5xx, HTML/regex drift) stays the signal-only
+            // block — a bare failed scrape (an unparseable cookie, a token of another account) stays the signal-only
             // ReLoginNeeded hint it has always been, so a Steam hiccup never tells a logged-in user to
             // sign in. Unlike the marketplace emits this one is deliberately NOT entry-gated: this path
             // emits nothing else, so repeating it every blocked cycle is what lets an event-mirroring

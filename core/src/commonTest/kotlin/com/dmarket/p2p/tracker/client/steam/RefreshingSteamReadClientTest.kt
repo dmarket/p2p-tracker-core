@@ -125,6 +125,18 @@ class RefreshingSteamReadClientTest {
     }
 
     @Test
+    fun a_refresh_that_returns_the_same_token_does_not_retry() = runTest {
+        // The session cookie has not moved, so the forced refresh hands back the rejected token itself.
+        val (client, scraper) = buildRefreshing(
+            listOf(HttpStatusCode.Forbidden to "", HttpStatusCode.OK to """{"response": {}}"""),
+            freshToken = "old",
+        )
+
+        assertFailsWith<HttpStatusException> { client.offerStates(fakeSteamCredential(token = "old"), setOf(OfferId("1"))) }
+        assertEquals(1, scraper.scrapeCalls)
+    }
+
+    @Test
     fun second_403_on_retry_propagates_without_another_refresh() = runTest {
         val (client, scraper) = buildRefreshing(
             listOf(HttpStatusCode.Forbidden to "", HttpStatusCode.Forbidden to ""),

@@ -5289,7 +5289,7 @@ class TradeTrackerLoopTest {
         assertTrue(creator.created.isEmpty())
 
         // The user signs into the linked account: Steam re-Set-Cookies steamLoginSecure for the new account,
-        // and the community page would now yield that account's token. The cached credential is still fresh
+        // and the scraper would now read that account's token from it. The cached credential is still fresh
         // (24h JWT), so nothing but the session's own identity can tell the loop it is stale.
         refresher.cookieSteamId = matchingSteamId
         scraper.result = fakeSteamCredential(steamId = matchingSteamId.value)

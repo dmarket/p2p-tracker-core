@@ -14,11 +14,11 @@ import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.createBrowserMarketplaceCredentials
+import com.dmarket.p2p.tracker.client.steam.CookieSteamSessionScraper
 import com.dmarket.p2p.tracker.client.steam.FetchSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.FetchSteamWebSessionGateway
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
-import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
 import com.dmarket.p2p.tracker.config.MarketplaceScrapeConfig
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
@@ -122,8 +122,8 @@ class DebugSession internal constructor(private val baseUrl: String, private val
     private val steamHttp =
         createSteamHttpClient(secretParamNames = NetworkRedaction.plusSecretParam(SteamEndpointsConfig().paramAccessToken))
 
-    private val scraper: SteamSessionScraper = KtorSteamSessionScraper(httpClient = steamHttp)
     private val gateway: SteamWebSessionGateway = FetchSteamWebSessionGateway(httpClient = steamHttp)
+    private val scraper: SteamSessionScraper = CookieSteamSessionScraper(gateway)
 
     private val steamReader: SteamReadClient = KtorSteamReadClient(httpClient = steamHttp, endpoints = steamEndpoints)
     private val inventoryReader: SteamInventoryReader = KtorSteamInventoryReader(
@@ -603,8 +603,8 @@ class DebugSession internal constructor(private val baseUrl: String, private val
  * returns an opaque [DebugSessionHandle]. Zero-config entry the service worker calls at boot.
  *
  * Steam is **live**: reads/writes/inventory hit real Steam, so a `create` POSTs a real offer (stops at
- * `NeedsConfirmation`). Steam **identity** is scraped from the LIVE logged-in `steamcommunity.com`
- * session (the real backend's `steam_id == account.linked_steam_id` check needs a real id); the Steam
+ * `NeedsConfirmation`). Steam **identity** is read from the LIVE logged-in `steamcommunity.com`
+ * session cookie (the real backend's `steam_id == account.linked_steam_id` check needs a real id); the Steam
  * credential never crosses this boundary.
  *
  * @param logCallback invoked with one session-log entry JSON string per network exchange / lifecycle

@@ -38,8 +38,7 @@ private val ExchangeStartKey = AttributeKey<ExchangeStart>("NetworkObservationSt
  * Marker attribute: when present on a request, the [NetworkObservation] plugin records the exchange
  * (method/url/status/timing + the redacted request body) but **omits the response body** from the
  * observed [NetworkExchange]. Use it for Steam responses that carry a secret redaction cannot be
- * relied on to catch — the loyalty-token HTML (session scrape) and the session-refresh `ajaxrefresh`
- * nonce. Set it via [suppressResponseBodyCapture]. (Request bodies are still captured and redacted —
+ * relied on to catch, such as the session-refresh `ajaxrefresh` nonce. Set it via [suppressResponseBodyCapture]. (Request bodies are still captured and redacted —
  * the `settoken` form's nonce/auth are scrubbed by [NetworkRedaction], matching the pre-Ktor path.)
  */
 val SuppressResponseBodyCapture = AttributeKey<Unit>("NetworkObservationSuppressResponseBody")
@@ -95,7 +94,7 @@ val NetworkObservation = createClientPlugin("NetworkObservation", ::NetworkObser
         val start = response.call.attributes.getOrNull(ExchangeStartKey) ?: return@onResponse
         // Ktor caches the non-streaming body, so reading it here leaves the caller's later read intact;
         // guarded so a read failure can never corrupt the real call. Skipped when the request opted out
-        // via [suppressResponseBodyCapture] (secret-bearing responses: loyalty-token HTML / refresh nonce).
+        // via [suppressResponseBodyCapture] (secret-bearing responses, e.g. the refresh nonce).
         val rawResponseBody = if (start.suppressResponseBody) null else runCatching { response.bodyAsText() }.getOrNull()
         val exchange = NetworkExchange(
             origin = origin,

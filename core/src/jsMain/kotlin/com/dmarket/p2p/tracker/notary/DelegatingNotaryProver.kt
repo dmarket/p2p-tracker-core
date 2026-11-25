@@ -43,6 +43,8 @@ class DelegatingNotaryProver(
     override val maxConcurrency: Int,
     private val tokenProvider: NotaryTokenProvider,
     private val delegate: (String, String, String) -> Promise<String>,
+    /** Runs before each proof is handed over; the web loop mints Steam's `sessionid` cookie here. */
+    private val beforeProof: suspend () -> Unit = {},
 ) : NotaryProver {
 
     /** Stated, not inherited: this relays to a real prover, and the port's default claims neither. */
@@ -50,6 +52,7 @@ class DelegatingNotaryProver(
 
     override suspend fun proveRead(binding: ProvenReadBinding, kind: ProvenReadKind, credential: SteamCredential): ProofSubmission {
         val request = notaryProofRequest(binding, kind, credential.subjectSteamId)
+        beforeProof()
         val payload = delegate(Json.encodeToString(request), tokenProvider.notaryToken(), credential.token).await()
         return ProofSubmission(dealId = binding.dealId, proofPayload = payload)
     }

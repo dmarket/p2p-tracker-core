@@ -63,6 +63,7 @@ GitHub Release.
 
 ### Fixed
 
+- Trackers no longer go offline after Steam's November 24 update: the Steam credential is read from the `steamLoginSecure` session cookie. `SteamScrapeConfig.tokenRegex` and `steamIdRegex` are no longer read (DMA-1070).
 - Mobile: a `prove_offer` or `prove_release` wake whose deal still waits on its proof, an offer awaiting Steam Guard included, now ends with the final ack `deferred` (`cellular_not_allowed`) or `failed` (`notary`, `os_killed`, `other`) instead of `done`. The first ack stays `done` (DMA-1066).
 - Mobile: when the Steam session is gone or could not be renewed, the tracker still sends a heartbeat with `trackerState.steamSession` set to that state, once per change of state, so DMarket stops counting the device reachable; before, it sent nothing until the session came back (DMA-664).
 - Mobile: a wake whose Steam offer create got no answer from Steam now ends with the final ack `failed` (`other`) instead of `done` (DMA-664).
@@ -70,10 +71,11 @@ GitHub Release.
 - Mobile: a Steam offer create that got no answer (a timeout, a dropped connection) is no longer reported `failed` at once: the tracker looks for the offer among the account's sent offers for 2 minutes and reports it when found. With `reportUnsentCreates = false` a create whose offer is not found is dropped unreported, so its lease lapses (DMA-664).
 - A Steam offer create or cancel stopped by the host (a wake's deadline, the OS stopping the work) is no longer reported `failed` on `/trade-actions` and no longer parks the partner (DMA-664).
 - Android: a wake whose `P2pTrackerWorker` starts before the app has built the tracker waits up to 2 minutes for it and then runs, instead of ending at once with no sync and no ack. With no tracker by then the work ends with `outcome` `failed` and `cause` `other` and no ack is sent (DMA-540).
-
-### Fixed
-
 - A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
+
+### Removed
+
+- `KtorSteamSessionScraper` is replaced by `CookieSteamSessionScraper(gateway, sessionCookieName)`; hosts that construct it must switch (DMA-1070).
 
 ## [1.3.0-beta] - 2026-11-10
 

@@ -94,8 +94,8 @@ class P2pTrackerColdWakeTest {
     private var historyStatus: Int? = null
     private val trade = TradeId("744935517744884653")
 
-    /** Steam's community page errors: the session cookie is live, the token cannot be read. */
-    private var scrapeFails = false
+    /** The session cookie is live, but its token names another account, so no credential can be read from it. */
+    private var tokenUnreadable = false
 
     /** Offers this account has sent and Steam lists as active: what a bind read finds. */
     private val sentOffers = mutableListOf<String>()
@@ -172,11 +172,6 @@ class P2pTrackerColdWakeTest {
         val path = request.url.encodedPath
         val endpoints = SteamEndpointsConfig()
         return when {
-            community && path.trimEnd('/').isEmpty() && scrapeFails -> respond("", HttpStatusCode.InternalServerError)
-            community && path.trimEnd('/').isEmpty() -> {
-                val token = steamAccessToken(owner, clock.now() + 20.hours)
-                respond("""<div data-loyalty_webapi_token="&quot;$token&quot;"></div><script>var g_steamID = "$owner";</script>""")
-            }
             path == endpoints.getTradeOffersPath -> {
                 // bob as accountid_other: his steamid64 less 76561197960265728.
                 val offers = sentOffers.joinToString(",") {
@@ -219,7 +214,10 @@ class P2pTrackerColdWakeTest {
         return Process(mobile, mobile.tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, events))
     }
 
-    private fun loginSecure(owner: SteamId) = "${owner.value}%7C%7C${steamAccessToken(owner.value, clock.now() + 20.hours)}"
+    private fun loginSecure(owner: SteamId): String {
+        val sub = if (tokenUnreadable) bob.value else owner.value
+        return "${owner.value}%7C%7C${steamAccessToken(sub, clock.now() + 20.hours)}"
+    }
 
     private fun session(owner: SteamId = alice) = listOf(
         SteamCookie("steamLoginSecure", loginSecure(owner), "steamcommunity.com"),
@@ -538,8 +536,8 @@ class P2pTrackerColdWakeTest {
 
     @Test
     fun a_live_session_whose_token_cannot_be_read_sends_no_heartbeat_without_it() = runTest {
+        tokenUnreadable = true
         signedInEarlier()
-        scrapeFails = true
 
         process().tracker.onPush(wake("watch"))
 

@@ -7,11 +7,11 @@ import com.dmarket.p2p.tracker.client.createMarketplaceHttpClient
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.client.marketplace.KtorMarketplaceClient
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
+import com.dmarket.p2p.tracker.client.steam.CookieSteamSessionScraper
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCanceller
 import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
-import com.dmarket.p2p.tracker.client.steam.KtorSteamSessionScraper
 import com.dmarket.p2p.tracker.client.steam.KtorSteamWebSessionGateway
 import com.dmarket.p2p.tracker.client.steam.VaultCookieJar
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
@@ -170,8 +170,9 @@ class MobileTracker(
         val cookies = VaultCookieJar(platform.steamCookies, platform.clock)
         val steamHttp = createSteamHttpClient(platform.steamEngine(), timeoutMs, networkObserver, cookies = cookies)
         // One refresher for the process: every loop's provider and the ON_START check run it under their locks.
+        val sessionGateway = KtorSteamWebSessionGateway(steamHttp, cookies)
         val refresher = DefaultSteamSessionRefresher(
-            gateway = KtorSteamWebSessionGateway(steamHttp, cookies),
+            gateway = sessionGateway,
             clock = platform.clock,
             loginBaseUrl = config.steamEndpoints.loginBaseUrl,
             communityBaseUrl = config.steamEndpoints.communityBaseUrl,
@@ -218,7 +219,7 @@ class MobileTracker(
                 ),
                 marketplace = marketplace,
                 steamReader = KtorSteamReadClient(steamHttp, config.steamEndpoints),
-                scraper = KtorSteamSessionScraper(steamHttp, config.steamScrape, community),
+                scraper = CookieSteamSessionScraper(sessionGateway),
                 sessionRefresher = refresher,
                 offerCreator = offerCreator,
                 offerCanceller = offerCanceller,
