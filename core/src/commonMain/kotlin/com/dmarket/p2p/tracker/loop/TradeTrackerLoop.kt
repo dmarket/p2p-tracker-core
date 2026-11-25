@@ -356,6 +356,8 @@ private data class WriteAttempt(
     val countedOutOfBand: Boolean = false,
     /** A settled cancel's offer code, read off Steam, for `/trade-events` — see [LoopConfig.reportNotActionable]. */
     val offerReport: TradeStatusReport? = null,
+    /** Set when the transport could not send this create: the rest of its chain is held back for the same reason. */
+    val notSent: CreateOfferResult.NotSent? = null,
 ) {
     /**
      * Whether this attempt counts towards the cycle's executed-directive tally: a real Steam write always does,
@@ -2939,7 +2941,7 @@ class TradeTrackerLoop(
             attempts += attempt
             if (attempt.stopChain) {
                 // This create did run (and failed), so the abandoned tail starts after it.
-                abandonChain(chain, directive, attempt.reason ?: "create failed", index + 1, null)
+                abandonChain(chain, directive, attempt.reason ?: "create failed", index + 1, null, attempt.notSent)
                 return attempts
             }
         }
@@ -2951,8 +2953,19 @@ class TradeTrackerLoop(
      * directive it stopped at and how many creates were dropped, then a per-directive deferral for each one so
      * none of them vanishes from the log silently. A chain that stopped on its own last directive has an empty
      * tail and says nothing — there is nothing left to abandon.
+     *
+     * A chain stopped by a create the transport could not send ([notSent]: the Steam proxy is unreachable) holds its
+     * tail back for that reason, as that create was: each one deferred with the proxy reason, its waiter answered
+     * [notSent], and never reported.
      */
-    private suspend fun abandonChain(chain: CreateChain, at: Directive, reason: String, tailFrom: Int, retryAfterSeconds: Int?) {
+    private suspend fun abandonChain(
+        chain: CreateChain,
+        at: Directive,
+        reason: String,
+        tailFrom: Int,
+        retryAfterSeconds: Int?,
+        notSent: CreateOfferResult.NotSent? = null,
+    ) {
         val tail = chain.directives.drop(tailFrom)
         if (tail.isEmpty()) return
         emit(
@@ -2963,7 +2976,14 @@ class TradeTrackerLoop(
                 skipped = tail.size,
             ),
         )
-        tail.forEach { emitDeferredCreate(it, PARTNER_PARKED_MID_CHAIN, retryAfterSeconds) }
+        tail.forEach {
+            if (notSent != null) {
+                emitDeferred(it, notSent.reason, retryAfterSeconds = null)
+                resolveCreateWaiter(it, notSent)
+            } else {
+                emitDeferredCreate(it, PARTNER_PARKED_MID_CHAIN, retryAfterSeconds)
+            }
+        }
     }
 
     /**
@@ -3092,7 +3112,7 @@ class TradeTrackerLoop(
             // the next create for this partner would go the same way.
             if (result is CreateOfferResult.NotSent) {
                 emitDeferred(directive, result.reason, retryAfterSeconds = null)
-                return@withDealClaim WriteAttempt(stopChain = true, reason = result.reason) to ClaimEnd.Released
+                return@withDealClaim WriteAttempt(stopChain = true, reason = result.reason, notSent = result) to ClaimEnd.Released
             }
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {

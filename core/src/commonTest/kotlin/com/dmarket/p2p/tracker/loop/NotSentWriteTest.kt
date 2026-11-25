@@ -1,5 +1,6 @@
 package com.dmarket.p2p.tracker.loop
 
+import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.DealId
@@ -30,11 +31,16 @@ import com.dmarket.p2p.tracker.support.FakeSteamReadClient
 import com.dmarket.p2p.tracker.support.FakeSteamSessionScraper
 import com.dmarket.p2p.tracker.support.RecordingEventObserver
 import com.dmarket.p2p.tracker.support.fakeSteamCredential
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * A write the transport could not send ([CreateOfferResult.NotSent], [CancelOfferResult.NotSent]: the account's Steam
@@ -90,6 +96,7 @@ class NotSentWriteTest {
         vararg directives: Directive,
         canceller: SteamOfferCanceller = FakeSteamOfferCanceller(),
         checkFailedCancels: Boolean = false,
+        tunables: TrackerConfig = TrackerConfig.defaults(),
     ): Setup {
         val clock = FakeClock()
         val mp = FakeMarketplaceClient(heartbeatResponse = HeartbeatResponse(ttlSeconds = 60, directives = directives.toList()))
@@ -100,6 +107,7 @@ class NotSentWriteTest {
                 "1.0.0",
                 RuntimeSurface.Headless,
                 TrackerMode.Background,
+                tunables,
                 reportUnsentCreates = reportUnsentCreates,
                 unansweredCreateGrace = 2.minutes,
                 checkFailedCancels = checkFailedCancels,
@@ -162,6 +170,52 @@ class NotSentWriteTest {
 
         assertEquals(OfferId("offer-1"), s.mp.directiveOutcomes.first { it.directiveId == DirectiveId("a-1") }.steamOfferId)
         assertTrue(s.mp.directiveOutcomes.none { it.status.name == "FAILED" }, "${s.mp.directiveOutcomes}")
+    }
+
+    @Test
+    fun the_tail_of_a_chain_a_create_not_sent_stopped_is_held_back_for_the_proxy_and_its_waiter_hears_not_sent() = runTest {
+        val reportingThrottled = TrackerConfig.defaults().let { it.copy(steamWrites = it.steamWrites.copy(reportThrottledWrites = true)) }
+        val creator = ProxyCreator()
+        val s = setup(
+            creator,
+            reportUnsentCreates = true,
+            create("a-1", "deal-1"),
+            create("a-2", "deal-2"),
+            create("a-3", "deal-3"),
+            tunables = reportingThrottled,
+        )
+        // A page waiting on deal-2's create while the heartbeat's chain runs it.
+        val waiting =
+            async { s.loop.awaitDirectiveOutcome(DealId("deal-2"), 30.seconds, backgroundScope, exclusive = { awaitCancellation() }) }
+        runCurrent()
+
+        s.loop.runOnce()
+
+        assertEquals(1, creator.attempts, "the chain stops at the first create not sent")
+        assertEquals(CreateOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON), assertIs<CreateOfferResult.NotSent>(waiting.await()))
+        assertEquals(
+            listOf("a-1", "a-2", "a-3").map { it to STEAM_PROXY_UNREACHABLE_REASON },
+            s.events.events.filterIsInstance<LifecycleEvent.SteamWriteDeferred>().map { it.directiveId to it.reason },
+        )
+        val stopped = s.events.events.filterIsInstance<LifecycleEvent.CreateChainStopped>().single()
+        assertEquals(listOf("a-1", STEAM_PROXY_UNREACHABLE_REASON, "2"), listOf(stopped.directiveId, stopped.reason, "${stopped.skipped}"))
+        assertEquals(emptyList(), s.mp.directiveOutcomes, "nothing reached Steam, so nothing is reported, the throttled report included")
+    }
+
+    @Test
+    fun the_tail_of_a_chain_a_refused_create_stopped_keeps_the_mid_chain_reason() = runTest {
+        val s = setup(
+            FakeSteamOfferCreator(result = CreateOfferResult.Failed("Steam refused")),
+            reportUnsentCreates = false,
+            create("a-1", "deal-1"),
+            create("a-2", "deal-2"),
+        )
+
+        s.loop.runOnce()
+
+        val tail = s.events.events.filterIsInstance<LifecycleEvent.SteamWriteDeferred>().single()
+        assertEquals("a-2", tail.directiveId)
+        assertTrue(tail.reason != STEAM_PROXY_UNREACHABLE_REASON, tail.reason)
     }
 
     @Test
