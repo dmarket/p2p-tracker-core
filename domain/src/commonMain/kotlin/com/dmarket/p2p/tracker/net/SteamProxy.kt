@@ -50,11 +50,12 @@ class SteamProxy private constructor(
      * [text] with every part of this proxy that could identify it — the URL, the address, the credentials, raw and
      * percent-encoded — replaced by `<proxy>`. The backstop for a text this library did not write itself.
      *
-     * The URL, its authority, its user info (also as `user:pass@`, `user@`, `:pass@`), `host:port`, the host and the
-     * `Basic` credential go wherever they appear. A bare user name or password goes only as a whole token: neither
+     * The URL, its authority, its user info (also as `user:pass@`, `user@`, `:pass@`), `host:port` and the `Basic`
+     * credential go wherever they appear. A bare host, user name or password goes only as a whole token: neither
      * neighbour is a letter, a digit, `-`, `_`, or a `.` with a letter or digit beyond it (the hex digits of a `%XX`
-     * escape just before it do not count, so a percent-encoded URL loses them too). So a user `steam` leaves
-     * `steamcommunity.com` and `store.steampowered.com` intact and still goes from `as steam.` or `user=steam`.
+     * escape just before it do not count, so a percent-encoded URL loses them too). So a user or host `steam` leaves
+     * `steamcommunity.com` and `store.steampowered.com` intact and still goes from `as steam.` or `user=steam`, a host
+     * `10.0.0.1` leaves `110.0.0.12`, and a host `proxy` leaves `proxy.internal`.
      */
     fun redact(text: String): String = secrets.fold(text) { acc, (secret, wholeToken) ->
         if (wholeToken) acc.replaceToken(secret) else acc.replace(secret, REDACTED)
@@ -67,7 +68,7 @@ class SteamProxy private constructor(
         val rawUser = rawUserInfo.substringBefore(':')
         val rawPassword = rawUserInfo.substringAfter(':', missingDelimiterValue = "")
         val user = username.orEmpty()
-        val bare = listOf(rawUser, rawPassword, user, password.orEmpty())
+        val bare = listOf(rawUser, rawPassword, user, password.orEmpty(), host, dialHost)
         val forms = buildList {
             if (rawUserInfo.isNotEmpty()) add("$rawUserInfo@")
             if (user.length >= MIN_SECRET_LENGTH) add("$user@")
@@ -80,8 +81,6 @@ class SteamProxy private constructor(
             authority,
             rawUserInfo,
             "$host:$port",
-            host,
-            dialHost,
             authorization()?.removePrefix("Basic ").orEmpty(),
         )
         val tokenOnly = bare.filter { it.length >= MIN_SECRET_LENGTH }.toSet()

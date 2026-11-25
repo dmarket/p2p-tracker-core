@@ -113,6 +113,18 @@ class SteamProxyTest {
     }
 
     @Test
+    fun a_bare_host_is_redacted_as_a_token_and_never_inside_a_longer_name() {
+        val proxy = SteamProxy.parse("http://u:p@proxy:3128")
+        for (text in listOf("connect to proxy:3128", "http://proxy/", "host=proxy", "via proxy.")) {
+            assertFalse("proxy" in proxy.redact(text).replace("<proxy>", ""), "$text -> ${proxy.redact(text)}")
+        }
+        val kept = "connect steamcommunity.com:443"
+        assertEquals(kept, SteamProxy.parse("http://u:p@steam:3128").redact(kept))
+        val ip = SteamProxy.parse("http://u:p@10.0.0.1:3128")
+        assertEquals("from 110.0.0.12 via <proxy>", ip.redact("from 110.0.0.12 via 10.0.0.1"))
+    }
+
+    @Test
     fun two_proxies_are_equal_by_value() {
         assertEquals(SteamProxy.parse(url), SteamProxy.parse(url))
         assertEquals(SteamProxy.parse(url).hashCode(), SteamProxy.parse(url).hashCode())
