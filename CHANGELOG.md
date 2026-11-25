@@ -16,6 +16,19 @@ GitHub Release.
 
 ### Added
 
+- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
+- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
+
+### Fixed
+
+- Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
+- Mobile: on a buyer's deal, a status report that did not reach DMarket (a 5xx, a dropped call) is again `UpdateFailure.DMARKET` on a manual status update and `failed` (`other`) on a wake; only DMarket's `P2P_PROOF_REQUIRED` refusal of it is skipped (DMA-664).
+- A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
+
+## [1.4.0-beta] - 2026-11-25
+
+### Added
+
 - Android: `NativeProverBridge` exposes the native TLSN prover (issuance, progress, cancellation, the proven response, saved material and presentation), and `NativeProverStream` runs a prover stream over a host `NativeProverTransport`. Call issuance off the main thread; failures throw `NativeProverException` with a `NativeProverStatus` (DMA-540).
 - The core is published as Maven artifacts `com.dmarket.p2p:trade-tracker-core` and `com.dmarket.p2p:trade-tracker-domain`, with an Android AAR (minSdk 24). On Android, `platformEd25519Signer` throws `UnsupportedOperationException` for now (DMA-661).
 - Android: the tracker runs. Call `AndroidTracker.install(...)` in `Application.onCreate`, then `startTracker()`; `AndroidTracker.tracker` is a `P2pTracker` with `state`, `setForeground`, `onPush` and `deviceId`. Enqueue each wake push with `P2pTrackerWorker.enqueue(context, payload)`: the core acknowledges it and syncs, and polls only while the app is in the foreground (DMA-661).
@@ -45,8 +58,6 @@ GitHub Release.
 - Mobile: `UpdateFailure.PROOF_REFUSED` reports a proof DMarket received and refused (`verified: false`) during a manual status update (DMA-1016).
 - A proof whose delivery to DMarket got no verdict (a 5xx, a timeout, a 429) is sent again with the same bytes within the hour instead of a new notary session, and a resend DMarket answers "already accepted", or one on a deal that no longer needs a status update, counts as verified. `LifecycleEvent.ProofFailed` gains `undelivered`, and `Deal` gains `needsStatusUpdate` (DMA-1016).
 - `TrackedDeal.transactionId` carries the deal record's id from the heartbeat, the id a mobile wake names its deal by (DMA-1066).
-- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
-- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
 
 ### Changed
 
@@ -71,7 +82,6 @@ GitHub Release.
 - Mobile: a Steam offer create that got no answer (a timeout, a dropped connection) is no longer reported `failed` at once: the tracker looks for the offer among the account's sent offers for 2 minutes and reports it when found. With `reportUnsentCreates = false` a create whose offer is not found is dropped unreported, so its lease lapses (DMA-664).
 - A Steam offer create or cancel stopped by the host (a wake's deadline, the OS stopping the work) is no longer reported `failed` on `/trade-actions` and no longer parks the partner (DMA-664).
 - Android: a wake whose `P2pTrackerWorker` starts before the app has built the tracker waits up to 2 minutes for it and then runs, instead of ending at once with no sync and no ack. With no tracker by then the work ends with `outcome` `failed` and `cause` `other` and no ack is sent (DMA-540).
-- A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
 
 ### Removed
 
@@ -657,7 +667,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...HEAD
+[1.4.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...v1.4.0-beta
 [1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
 [1.1.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...v1.1.0-beta
