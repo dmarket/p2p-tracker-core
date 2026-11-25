@@ -50,6 +50,8 @@ class ProverBackoff {
 
     /** The proxy a wait was for is out of the way (the host pushed another, or none): that wait is over. A notary's wait stays. */
     fun proxyChanged() {
+        // The lift a recovery already spent was the old proxy's: the new one gets its own.
+        recoveryLifted = false
         if (proxyWait) succeeded()
     }
 

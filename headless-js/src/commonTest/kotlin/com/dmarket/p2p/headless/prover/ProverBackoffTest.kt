@@ -144,4 +144,19 @@ class ProverBackoffTest {
             assertNull(backoff.blocked(T0))
         }
     }
+
+    @Test
+    fun another_proxy_pushed_while_the_notary_waits_gives_the_new_proxy_its_own_lift_and_keeps_the_notarys_wait() {
+        val backoff = ProverBackoff()
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429"), T0)
+        backoff.proxyRecovered()
+        backoff.failed(ProofFailure.NotaryUnreachable("ECONNREFUSED"), T0)
+
+        backoff.proxyChanged()
+        assertNotNull(backoff.blocked(T0), "a busy notary is not the proxy's to clear")
+
+        backoff.failed(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED"), T0)
+        backoff.proxyRecovered()
+        assertNull(backoff.blocked(T0), "the new proxy's first recovery lifts its wait")
+    }
 }
