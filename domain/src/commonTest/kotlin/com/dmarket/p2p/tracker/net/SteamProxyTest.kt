@@ -80,6 +80,30 @@ class SteamProxyTest {
     }
 
     @Test
+    fun a_bare_user_or_password_is_redacted_as_a_token_and_never_inside_a_host_name() {
+        val kept = "connect steamcommunity.com:443 then store.steampowered.com:443 and api.steampowered.com"
+        val tokens = listOf("as steam.", "user=steam", "\"steam\"", "(steam)", "steam:pw", "steam@x", "pw:steam", "[steam]")
+        val cases = mapOf(
+            "http://steam:store@203.0.113.7:3128" to listOf("steam", "store"),
+            "http://store:steam@203.0.113.7:3128" to listOf("steam", "store"),
+            "http://steam@203.0.113.7:3128" to listOf("steam"),
+        )
+        for ((url, secrets) in cases) {
+            val proxy = SteamProxy.parse(url)
+            assertEquals(kept, proxy.redact(kept), url)
+            for (text in tokens + tokens.map { it.replace("steam", "store") }) {
+                val redacted = proxy.redact(text)
+                for (secret in secrets) assertFalse(secret in redacted, "$url: $text -> $redacted")
+            }
+        }
+        val proxy = SteamProxy.parse("http://steam:st%40re@203.0.113.7:3128")
+        val text = "log in steamcommunity.com as steam with st@re (st%40re), header steam:st@re@ and steam:st%40re@x"
+        val redacted = proxy.redact(text)
+        assertTrue("steamcommunity.com" in redacted, redacted)
+        assertFalse("st@re" in redacted || "st%40re" in redacted || " steam " in redacted || "steam:" in redacted, redacted)
+    }
+
+    @Test
     fun two_proxies_are_equal_by_value() {
         assertEquals(SteamProxy.parse(url), SteamProxy.parse(url))
         assertEquals(SteamProxy.parse(url).hashCode(), SteamProxy.parse(url).hashCode())

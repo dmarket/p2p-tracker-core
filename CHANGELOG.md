@@ -23,6 +23,7 @@ GitHub Release.
 - Headless: a proxy pushed in place of an unreachable one that cannot be reached either gets its own `SteamProxyUnreachable`, with its `detail` (DMA-1012).
 - Headless: a token push that names the proxy already held leaves the proofs waiting on it as they are (DMA-1012).
 - Headless: a proxy whose user or password has both a percent escape and a character outside the BMP, such as an emoji, now authenticates with exactly that user and password (DMA-1012).
+- Headless: a proxy user or password that is part of a word, such as `steam`, is redacted only where it stands alone, so `onProverLine` lines and proof failure texts keep Steam host names like `steamcommunity.com` intact (DMA-1012).
 - Android: a native proof keeps every frame the notary sent before it closed the socket, even when the prover had not read them yet (DMA-540).
 - Android: cancelling an MPC native proof while it connects to Steam ends it at once instead of after the connect timeout (DMA-540).
 - Mobile: `updateStatus` no longer spends a Retry on a proof cut by `stop()`, and two updates of the same deal at once no longer run more notary sessions than the permit allows (DMA-1016).

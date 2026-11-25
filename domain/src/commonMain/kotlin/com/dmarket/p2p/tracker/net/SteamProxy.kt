@@ -49,26 +49,44 @@ class SteamProxy private constructor(
     /**
      * [text] with every part of this proxy that could identify it — the URL, the address, the credentials, raw and
      * percent-encoded — replaced by `<proxy>`. The backstop for a text this library did not write itself.
+     *
+     * The URL, its authority, its user info (also as `user:pass@`, `user@`, `:pass@`), `host:port`, the host and the
+     * `Basic` credential go wherever they appear. A bare user name or password goes only as a whole token: neither
+     * neighbour is a letter, a digit, `-`, `_`, or a `.` with a letter or digit beyond it. So a user `steam` leaves
+     * `steamcommunity.com` and `store.steampowered.com` intact and still goes from `as steam.` or `user=steam`.
      */
-    fun redact(text: String): String = secrets.fold(text) { acc, secret -> acc.replace(secret, REDACTED) }
+    fun redact(text: String): String = secrets.fold(text) { acc, (secret, wholeToken) ->
+        if (wholeToken) acc.replaceToken(secret) else acc.replace(secret, REDACTED)
+    }
 
-    // Longest first, so the URL goes whole before its parts are looked for.
-    private val secrets: List<String> by lazy {
+    // Longest first, so the URL goes whole before its parts are looked for; `true` = only as a whole token.
+    private val secrets: List<Pair<String, Boolean>> by lazy {
         val authority = raw.substringAfter("://").substringBefore('/')
         val rawUserInfo = authority.substringBeforeLast('@', missingDelimiterValue = "")
-        listOf(
+        val rawUser = rawUserInfo.substringBefore(':')
+        val rawPassword = rawUserInfo.substringAfter(':', missingDelimiterValue = "")
+        val user = username.orEmpty()
+        val bare = listOf(rawUser, rawPassword, user, password.orEmpty())
+        val forms = buildList {
+            if (rawUserInfo.isNotEmpty()) add("$rawUserInfo@")
+            if (username != null) add("$user@")
+            if (password != null) add("$user:$password@")
+            if (rawPassword.isNotEmpty()) add(":$rawPassword@")
+            if (!password.isNullOrEmpty()) add(":$password@")
+        }
+        val anywhere = forms + listOf(
             raw,
             authority,
             rawUserInfo,
-            rawUserInfo.substringBefore(':'),
-            rawUserInfo.substringAfter(':', missingDelimiterValue = ""),
             "$host:$port",
             host,
             dialHost,
-            username.orEmpty(),
-            password.orEmpty(),
             authorization()?.removePrefix("Basic ").orEmpty(),
-        ).filter { it.length >= MIN_SECRET_LENGTH }.distinct().sortedByDescending { it.length }
+        )
+        val tokenOnly = bare.filter { it.length >= MIN_SECRET_LENGTH }.toSet()
+        (anywhere.filter { it.length >= MIN_SECRET_LENGTH && it !in tokenOnly }.map { it to false } + tokenOnly.map { it to true })
+            .distinct()
+            .sortedByDescending { it.first.length }
     }
 
     override fun equals(other: Any?): Boolean = other is SteamProxy &&
@@ -177,6 +195,30 @@ class SteamProxy private constructor(
             } catch (_: CharacterCodingException) {
                 throw IllegalArgumentException("proxy credentials have a malformed percent escape")
             }
+        }
+
+        private fun String.replaceToken(token: String): String {
+            val out = StringBuilder(length)
+            var from = 0
+            var at = indexOf(token)
+            while (at >= 0) {
+                val end = at + token.length
+                if (!joinsToken(at - 1, -1) && !joinsToken(end, 1)) {
+                    out.append(this, from, at).append(REDACTED)
+                    from = end
+                    at = indexOf(token, end)
+                } else {
+                    at = indexOf(token, at + 1)
+                }
+            }
+            return out.append(this, from, length).toString()
+        }
+
+        /** Whether the character at [index] continues a token that [step] points away from: see [redact]. */
+        private fun String.joinsToken(index: Int, step: Int): Boolean {
+            val c = getOrNull(index) ?: return false
+            if (c.isLetterOrDigit() || c == '-' || c == '_') return true
+            return c == '.' && getOrNull(index + step)?.isLetterOrDigit() == true
         }
 
         private fun isHexDigit(c: Char): Boolean = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
