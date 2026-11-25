@@ -337,7 +337,13 @@ class P2pTrackerWakeTest {
                 calls += deviceId to null
             }
         }
-        val tracker = tracker(Setup(FakeMarketplaceClient(), registry = DeviceRegistry(client, "android", "2.1.0", steamWrites = true)))
+        val tracker =
+            tracker(
+                Setup(
+                    FakeMarketplaceClient(),
+                    registry = DeviceRegistry(client, "android", "2.1.0", steamWrites = true, backgroundProve = true),
+                ),
+            )
 
         assertNull(tracker.registerDevice("fcm-token", PushProvider.FCM))
         assertNull(tracker.unregisterDevice())
@@ -347,7 +353,7 @@ class P2pTrackerWakeTest {
 
         val device = tracker.deviceId()
         assertEquals(listOf(device, device), calls.map { it.first })
-        assertEquals(listOf("wake_v1", "steam_writes"), calls[0].second?.capabilities)
+        assertEquals(listOf("wake_v1", "steam_writes", "background_prove"), calls[0].second?.capabilities)
         assertNull(calls[1].second, "the second call is the delete")
         assertEquals(
             DealCallErrorKind.UNAVAILABLE,

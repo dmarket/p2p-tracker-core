@@ -11,19 +11,28 @@ import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
 import com.dmarket.p2p.tracker.loop.NoProofArchive
 import com.dmarket.p2p.tracker.loop.PersistedProofArchiveStore
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.DeviceRegistration
 import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
+import com.dmarket.p2p.tracker.model.marketplace.PushProvider
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.notary.NativeIssuance
+import com.dmarket.p2p.tracker.notary.NativeIssuanceListener
+import com.dmarket.p2p.tracker.notary.NativeIssuanceOutcome
+import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
@@ -124,6 +133,35 @@ class MobileTrackerTest {
         scope: CoroutineScope = backgroundScope,
     ): P2pTracker = MobileTracker(platform, linkedAccount = { linked }, cellularProofs = { false }, hostMarketplaceClient = factory)
         .tracker(scope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
+
+    @Test
+    fun theRegistrationOffersBackgroundProveOnlyWithTheNativeProver() = runTest {
+        val sent = mutableListOf<List<String>>()
+        val backend = object : MarketplaceClient by FakeMarketplaceClient(), DeviceRegistryClient {
+            override suspend fun registerDevice(deviceId: DeviceId, registration: DeviceRegistration) {
+                sent += registration.capabilities
+            }
+
+            override suspend fun unregisterDevice(deviceId: DeviceId) = Unit
+        }
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener) = NativeIssuanceOutcome()
+        }
+        for (proofEngine in listOf(null, engine)) {
+            MobileTracker(
+                platform,
+                linkedAccount = { linked },
+                cellularProofs = { false },
+                hostMarketplaceClient = MarketplaceClientFactory { _, _, _, _ -> backend },
+                proofEngine = proofEngine,
+            ).tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
+                .registerDevice("fcm-token", PushProvider.FCM)
+        }
+
+        assertEquals(listOf(listOf("wake_v1"), listOf("wake_v1", "background_prove")), sent)
+    }
 
     @Test
     fun aThrowFromTheHostSupplierIsATemporaryFailureAndNullIsALogout() = runTest {

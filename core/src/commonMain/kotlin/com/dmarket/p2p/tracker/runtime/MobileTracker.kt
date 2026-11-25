@@ -259,7 +259,7 @@ class MobileTracker(
             // The core's DMarket client acks, registers and takes the update permit; a host client without those routes gets none.
             acknowledger = marketplace as? WakeAcknowledger ?: NoOpWakeAcknowledger,
             deviceRegistry = (marketplace as? DeviceRegistryClient)?.let {
-                DeviceRegistry(it, platform.surface.platformWireName, clientVersion, steamWrites)
+                DeviceRegistry(it, platform.surface.platformWireName, clientVersion, steamWrites, backgroundProve = proofEngine != null)
             },
             dealRefresh = marketplace as? DealRefreshClient,
         ).also { built = it }

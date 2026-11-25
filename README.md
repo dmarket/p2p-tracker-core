@@ -841,7 +841,8 @@ val tracker = AndroidTracker.tracker!!  // P2pTracker: state, setForeground, onP
 - **Device registry.** `tracker.registerDevice(fcmToken, PushProvider.FCM)` after login, on a new token and on start
   when the token changed; `tracker.unregisterDevice()` on logout, before `AndroidTracker.onLogout()` while the DMarket
   session still works, and on a Steam account switch. The core adds the device id, platform, client version and the
-  capabilities (`wake_v1`, and `steam_writes` with `steamWrites = true`).
+  capabilities (`wake_v1`, `steam_writes` with `steamWrites = true`, and `background_prove` with the native prover
+  installed).
 - **Foreground.** `tracker.setForeground(true)` while the app is on screen: only then does the tracker poll. In the
   background nothing is scheduled; a wake runs a cycle. The heartbeat only says "last seen", so a day-long
   `ttl_seconds` wakes nothing.
