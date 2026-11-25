@@ -194,6 +194,9 @@ class P2pTracker(
 
     private val permits = MutableStateFlow<Map<DealId, Permit>>(emptyMap())
 
+    /** One permit check at a time: a second update waits for the first one's refresh and runs under its permit. */
+    private val permitLock = Mutex()
+
     /**
      * One surface's 429s, whichever cycle or deal ran into them: until when the server's own `Retry-After` asks to wait,
      * and until when the backoff's wait runs. An answer from the surface ends the run of 429s and the backoff's wait;
@@ -435,6 +438,7 @@ class P2pTracker(
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
      * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
      * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
+     * Two updates at once take one permit: the second waits for the first one's refresh.
      * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
      * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
      * Retry spent, and a resend DMarket had already accepted reads as success.
@@ -454,14 +458,16 @@ class P2pTracker(
             ?.takeIf { it > now }
             ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
-        val permit = activePermit(dealId, now)
-        when {
-            permit == null -> takePermit(dealId, now, allowed)?.let { return it }
-            // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
-            // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
-            // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
-            permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
-                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+        permitLock.withLock {
+            val permit = activePermit(dealId, now)
+            when {
+                permit == null -> takePermit(dealId, now, allowed)?.let { return it }
+                // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
+                // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
+                // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
+                permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
+                    return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+            }
         }
         val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
             ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
@@ -484,7 +490,8 @@ class P2pTracker(
             val retryAfter = e.retryAfterSeconds
             val wait = if (e.errorCode == REFRESH_RATE_LIMITED && retryAfter != null) {
                 val until = now + retryAfter.coerceAtLeast(0).seconds
-                permits.update { it + (dealId to Permit(until, EXHAUSTED)) }
+                // A permit still held keeps its sessions: the 429 only says this refresh came too soon.
+                if (activePermit(dealId, now) == null) permits.update { it + (dealId to Permit(until, EXHAUSTED)) }
                 until - now
             } else {
                 dmarketCooldown.refused(now, retryAfter).also { wait -> deal(dealId.value) { it.copy(cooldownUntil = now + wait) } }

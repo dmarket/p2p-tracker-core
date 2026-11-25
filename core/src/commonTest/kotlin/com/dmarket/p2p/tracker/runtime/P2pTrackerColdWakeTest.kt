@@ -565,6 +565,30 @@ class P2pTrackerColdWakeTest {
     }
 
     @Test
+    fun a_session_change_whose_heartbeat_fails_waits_a_heartbeat_floor_before_the_next_one() = runTest {
+        process().tracker.onPush(wake("watch")) // GONE sent; the next heartbeat by the schedule is 24 h away
+        val next = process()
+        next.tracker.start()
+        next.mobile.platform.steamCookies.writeSteamCookies(session())
+        marketplace.heartbeatThrows = true
+        val before = marketplace.heartbeatAttempts
+
+        // The app comes back on screen every 31 s, each time with the change still unsent.
+        repeat(3) {
+            next.tracker.setForeground(true)
+            advanceTimeBy(1.seconds)
+            next.tracker.setForeground(false)
+            clock.advance(31.seconds)
+        }
+        assertEquals(1, marketplace.heartbeatAttempts - before, "the failed heartbeat waits its 90 s floor")
+
+        next.tracker.setForeground(true)
+        advanceTimeBy(1.seconds)
+        assertEquals(2, marketplace.heartbeatAttempts - before, "and goes again after it")
+        next.tracker.setForeground(false)
+    }
+
+    @Test
     fun a_live_session_whose_token_cannot_be_read_sends_no_heartbeat_without_it() = runTest {
         tokenUnreadable = true
         signedInEarlier()

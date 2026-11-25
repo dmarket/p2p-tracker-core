@@ -88,6 +88,7 @@ import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
 import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.OnlineBudgetLesson
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
@@ -124,6 +125,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -1173,6 +1175,13 @@ class TradeTrackerLoop(
     /** In-memory cache of when the next heartbeat is due, mirrored to [loopState] for respawn survival. */
     private var nextHeartbeatAt: Instant? = null
 
+    /**
+     * After a heartbeat that failed (a 429, a 5xx, the network), a changed Steam session state makes no heartbeat due
+     * before this: one heartbeat floor, or the 429's `Retry-After` when longer. In memory; a heartbeat that gets
+     * through clears it.
+     */
+    private var steamSessionResendAt: Instant? = null
+
     /** When the last cycle started: a heartbeat that came due after it has not been tried yet. */
     private var cycleStartedAt: Instant? = null
 
@@ -1323,9 +1332,11 @@ class TradeTrackerLoop(
     var proofsOutOfBudget: Boolean = false
 
     /**
-     * Hears each notary session a proof attempt ran for a deal, once it ends: a delivered proof, a failed one, a
-     * cancelled one (Cancel on T-14). Not an attempt that never opened one ([ProofFailure.NotStarted]). Set by
-     * `P2pTracker`, which counts them against the manual update's permit (DMA-1016).
+     * Hears each notary session a proof attempt ran for a deal, once it ends: a proof, a failure after the notary's
+     * `101`, the user's Cancel (on T-14, or the prover's own cancel). Not an attempt the notary never took
+     * ([ProofFailure.NotStarted], [ProofFailure.UpgradeRefused], [ProofFailure.NotaryUnreachable], no connect by the
+     * deadline, DMarket's 429 on the notary token) nor one the cycle's deadline cut. Set by `P2pTracker`, which counts
+     * them against the manual update's permit (DMA-1016).
      */
     var onNotarySession: ((DealId) -> Unit)? = null
 
@@ -1615,7 +1626,7 @@ class TradeTrackerLoop(
         val cached = lastActiveTracking
         // A changed Steam session state is news for DMarket, but not while a refused DMarket credential is backed off.
         val heartbeatDue = (nextHeartbeatAt?.let { clock.now() >= it } ?: true) ||
-            (consecutiveAuthFailures == 0 && steamSessionChangedSinceSent())
+            (consecutiveAuthFailures == 0 && steamSessionResendAt.let { it == null || clock.now() >= it } && steamSessionChangedSinceSent())
         val action = CyclePolicy.decide(heartbeatDue, hasTrackingList = cached != null)
         if (action == CycleAction.IDLE) return@withLock TickOutcome.EMPTY
         // Backing off a refused credential: until the retry is due the cycle does nothing, so the watch pass on a
@@ -1929,6 +1940,7 @@ class TradeTrackerLoop(
             // — because the successful heartbeat that clears it never comes. A deterministic 4xx surfaces
             // immediately; a transient 5xx must fail SERVER_ERROR_THRESHOLD cycles first.
             val before = blockingState
+            holdSteamSessionResend()
             marketplaceConnectionMissingSticky = false
             marketplaceReLoginAnnounced = false
             consecutiveServerErrors += 1
@@ -1945,6 +1957,7 @@ class TradeTrackerLoop(
             }
             return null
         } catch (e: RateLimitedException) {
+            holdSteamSessionResend(e.retryAfterSeconds)
             emitIfRateLimited(e)
             return null
         } catch (_: CancellationException) {
@@ -1952,6 +1965,7 @@ class TradeTrackerLoop(
             // behavior for a cancelled cycle), so a Tracker.stop mid-heartbeat can't flash an error.
             return null
         } catch (_: Throwable) {
+            holdSteamSessionResend()
             countConnectionFailure()
             return null
         }
@@ -1977,8 +1991,15 @@ class TradeTrackerLoop(
         }
     }
 
+    /** See [steamSessionResendAt]. */
+    private fun holdSteamSessionResend(retryAfterSeconds: Long? = null) {
+        val wait = maxOf(cadence.heartbeatFloor(config.surface, mode), (retryAfterSeconds ?: 0).seconds)
+        steamSessionResendAt = clock.now() + wait
+    }
+
     /** The heartbeat round-tripped, so the DMarket connection is live: the error states clear. */
     private suspend fun heartbeatReturned() {
+        steamSessionResendAt = null
         // The episode is over, so the next logout announces itself again.
         marketplaceConnectionMissingSticky = false
         marketplaceReLoginAnnounced = false
@@ -3862,6 +3883,21 @@ class TradeTrackerLoop(
         return result
     }
 
+    /** Whether a prove that ended with [failure] (`null`: a proof) had a notary session; see [onNotarySession]. */
+    private fun spentNotarySession(failure: Throwable?): Boolean = when (failure) {
+        null -> true
+        // A timeout is a CancellationException too, so it goes first: the cycle's deadline is not the user's Cancel.
+        is TimeoutCancellationException, is RateLimitedException -> false
+        is CancellationException -> true
+        is HostedProofException -> when (val cause = failure.failure) {
+            is ProofFailure.NotStarted, is ProofFailure.UpgradeRefused, is ProofFailure.NotaryUnreachable -> false
+            is ProofFailure.ProverKilled -> cause.cause != KillCause.CONNECT_DEADLINE
+            else -> true
+        }
+        // The prover's own words, with nothing to say whether the notary was reached: counted, as before.
+        else -> true
+    }
+
     /**
      * One notary session for [binding]: the proof, or `null` when it failed, in which case the attempt has already had its
      * say. See [mintAndSubmit] for why the failure handling lives here and nowhere else.
@@ -3876,8 +3912,7 @@ class TradeTrackerLoop(
         attemptStartedAt: Instant,
     ): ProofSubmission? {
         val outcome = runCatching { notary.proveTransition(binding, source, credential) }
-        val notStarted = (outcome.exceptionOrNull() as? HostedProofException)?.failure is ProofFailure.NotStarted
-        if (!notStarted) onNotarySession?.invoke(binding.dealId)
+        if (spentNotarySession(outcome.exceptionOrNull())) onNotarySession?.invoke(binding.dealId)
         return outcome.getOrElse { failure ->
             // DMarket's 429 (the notary token's own call): the prover did its part and the notary is not at fault.
             if (failure is RateLimitedException) {

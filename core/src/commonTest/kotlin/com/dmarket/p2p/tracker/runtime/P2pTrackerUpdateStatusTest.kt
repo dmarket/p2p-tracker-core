@@ -24,6 +24,7 @@ import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.SteamOfferSnapshot
 import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
 import com.dmarket.p2p.tracker.port.marketplace.DealRefresh
@@ -687,6 +688,34 @@ class P2pTrackerUpdateStatusTest {
     }
 
     @Test
+    fun two_updates_at_once_take_one_permit_and_a_late_refresh_429_spends_none_of_it() = runTest {
+        val answered = CompletableDeferred<Unit>()
+        var asked = 0
+        val refresh = FakeRefresh {
+            val nth = ++asked
+            answered.await()
+            if (nth ==
+                1
+            ) {
+                DealRefresh(tracked = true, nextAllowedAt = window())
+            } else {
+                throw RateLimitedException(60, "P2P_REFRESH_RATE_LIMITED")
+            }
+        }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh))
+
+        val first = async { tracker.updateStatus(deal, retries = 1) }
+        val second = async { tracker.updateStatus(deal, retries = 1) }
+        runCurrent()
+        answered.complete(Unit)
+
+        assertNull(first.await().failure)
+        assertNull(second.await().failure, "the second runs under the first one's permit")
+        assertNull(tracker.updateStatus(deal, retries = 1).failure, "no session was spent: the permit is whole")
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
     fun kongs_429_takes_the_dmarket_backoff_for_every_deal() = runTest {
         val refresh = FakeRefresh { throw RateLimitedException(5) }
         val setup = Setup(FakeMarketplaceClient(heartbeat()), refresh = refresh)
@@ -806,6 +835,45 @@ class P2pTrackerUpdateStatusTest {
 
         assertFalse(second.failure == UpdateFailure.RATE_LIMITED, "the permit is whole: ${second.failure}")
         assertEquals(2, notary.proven.size)
+        assertEquals(1, refresh.calls.size)
+    }
+
+    @Test
+    fun an_attempt_the_notary_never_took_does_not_count() = runTest {
+        for (failure in listOf(
+            ProofFailure.UpgradeRefused(401),
+            ProofFailure.UpgradeRefused(429),
+            ProofFailure.NotaryUnreachable("dns"),
+            ProofFailure.ProverKilled(KillCause.CONNECT_DEADLINE),
+        )) {
+            val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+            val notary = FakeNotaryProver().apply { proveThrows = HostedProofException(failure) }
+            val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary, refresh = refresh))
+
+            tracker.updateStatus(deal, retries = 0)
+            val second = tracker.updateStatus(deal, retries = 0)
+
+            assertFalse(second.failure == UpdateFailure.RATE_LIMITED, "$failure: the permit is whole")
+            assertEquals(2, notary.proven.size, "$failure")
+        }
+    }
+
+    @Test
+    fun a_proof_the_cycles_deadline_cut_does_not_count() = runTest {
+        val hanging = object : NotaryProver by FakeNotaryProver() {
+            override suspend fun proveTransition(
+                binding: ProvenReadBinding,
+                source: TradeStatusSource,
+                credential: SteamCredential,
+            ): ProofSubmission = awaitCancellation()
+        }
+        val refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = window()) }
+        val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), prover = hanging, refresh = refresh))
+
+        assertEquals(UpdateFailure.TIMEOUT, tracker.updateStatus(deal, retries = 0).failure)
+        val next = tracker.updateStatus(deal, retries = 0)
+
+        assertEquals(UpdateFailure.TIMEOUT, next.failure, "the permit was whole, so the run went: ${next.failure}")
         assertEquals(1, refresh.calls.size)
     }
 
