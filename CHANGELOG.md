@@ -18,7 +18,7 @@ GitHub Release.
 
 - Headless: when the proxy client fails to load, only that Steam call fails; the next one loads it again, and the proxy is no longer reported unreachable for it (DMA-1012).
 - Headless: a proxy that lets Steam reads through but refuses the prover's tunnel no longer has a proof retried every cycle; after one early retry, proofs wait out their backoff (DMA-1012).
-- Headless: the creates for a partner that wait behind one the Steam proxy kept from going out are deferred with `reasons().steamProxyUnreachable` too, and a create waiting on one of them resolves as `not_sent` (DMA-1012).
+- Headless: the creates for a partner that wait behind one the Steam proxy kept from going out are deferred with `reasons().steamProxyUnreachable` too (DMA-1012).
 
 ## [1.5.0-beta] - 2026-11-25
 
