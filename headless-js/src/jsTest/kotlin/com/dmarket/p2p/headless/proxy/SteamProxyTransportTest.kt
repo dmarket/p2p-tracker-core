@@ -1,6 +1,7 @@
 package com.dmarket.p2p.headless.proxy
 
 import com.dmarket.p2p.headless.TestClock
+import com.dmarket.p2p.headless.distributedDir
 import com.dmarket.p2p.headless.node.LoopbackProxy
 import com.dmarket.p2p.headless.node.LoopbackServer
 import com.dmarket.p2p.headless.node.join
@@ -251,7 +252,10 @@ class SteamProxyTransportTest {
 
     // ---- the prover's target leg ---------------------------------------------------------------------
 
-    /** A prover package's `transport/dist/index.js` with the generic `connectTcp(host, port, { connect })` of 1.0.1. */
+    /**
+     * A 1.0.1 prover package's transport: `dist/index.js` with the generic `connectTcp(host, port, { connect })`, and no
+     * `dist/node.js` with `wrapTcpSocket`.
+     */
     private suspend fun transportDir(): String {
         val root = tempDir()
         val dist = join(join(root, "transport"), "dist")
@@ -281,23 +285,47 @@ class SteamProxyTransportTest {
     }
 
     @Test
+    fun the_proof_target_leg_hands_the_tunnel_to_the_shipped_transports_wrap_tcp_socket() = runTest {
+        withContext(Dispatchers.Default) {
+            val proxy = proxy()
+            val target = echo()
+            val errors = mutableListOf<String>()
+            // The package as it ships (1.2.0): its `node.js` has `wrapTcpSocket`, so the generic connector is not used.
+            val connect = proxiedTcpConnector(distributedDir(), SteamProxy.parse(proxy.url)) { errors += it }
+
+            val channel: dynamic = connect("127.0.0.1", target.port).await()!!
+            channel.write(js("new Uint8Array([22, 3, 1])")).unsafeCast<Promise<Any?>>().await()
+            val echoed: dynamic = channel.read().unsafeCast<Promise<dynamic>>().await()
+
+            assertEquals("function", jsTypeOf(channel.abort), "the transport's own Node channel, which the generic one is not")
+            channel.close().unsafeCast<Promise<Any?>>().await()
+            assertEquals(listOf(22, 3, 1), js("Array.from")(echoed).unsafeCast<Array<Int>>().toList())
+            assertEquals(listOf("127.0.0.1:${target.port}"), proxy.connects.map { it.first })
+            assertEquals(emptyList(), errors)
+        }
+    }
+
+    @Test
     fun an_unreachable_proxy_fails_the_proof_leg_as_the_proxys_and_never_dials_steam() = runTest {
         withContext(Dispatchers.Default) {
             val target = echo()
             val closed = LoopbackProxy.closedPort()
-            val record = ProverSessionRecord()
-            val connect = proxiedTcpConnector(transportDir(), SteamProxy.parse("http://trader:s3cret-pass@127.0.0.1:$closed")) {
-                record.proxyError = record.proxyError ?: it
+            // Both handoffs: the shipped package's `wrapTcpSocket`, and 1.0.1's generic `connectTcp`.
+            for (assetsDir in listOf(distributedDir(), transportDir())) {
+                val record = ProverSessionRecord()
+                val connect = proxiedTcpConnector(assetsDir, SteamProxy.parse("http://trader:s3cret-pass@127.0.0.1:$closed")) {
+                    record.proxyError = record.proxyError ?: it
+                }
+
+                val failed = runCatching { recordedTargetChannel("127.0.0.1:${target.port}", record, connect = connect).await() }.isFailure
+
+                assertTrue(failed)
+                assertEquals(0, target.accepted(), "nothing dialled the target around the proxy")
+                assertEquals("could not connect to the proxy: ECONNREFUSED", record.proxyError)
+                val failure = ProofFailures.classify(targetError = record.targetError, proxyError = record.proxyError, message = "io error")
+                assertEquals(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED"), failure)
+                assertNamesNoProxy(failure.toString() + record.targetError, ":$closed")
             }
-
-            val failed = runCatching { recordedTargetChannel("127.0.0.1:${target.port}", record, connect = connect).await() }.isFailure
-
-            assertTrue(failed)
-            assertEquals(0, target.accepted(), "nothing dialled the target around the proxy")
-            assertEquals("could not connect to the proxy: ECONNREFUSED", record.proxyError)
-            val failure = ProofFailures.classify(targetError = record.targetError, proxyError = record.proxyError, message = "io error")
-            assertEquals(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED"), failure)
-            assertNamesNoProxy(failure.toString() + record.targetError, ":$closed")
         }
     }
 

@@ -163,36 +163,52 @@ internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> P
 internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000
 
 /**
- * The target leg through the account's Steam proxy: the transport's generic `connectTcp(host, port, { connect })` from
- * `transport/dist/index.js` under [assetsDir], whose `connect` is a `CONNECT` tunnel through [proxy] ([openSteamTunnel])
- * adapted to the transport's socket, as its own Node connector adapts a direct one. The tunnel's failure goes to
- * [onProxyError] in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials
- * Steam directly instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
+ * The target leg through the account's Steam proxy: a `CONNECT` tunnel through [proxy] ([openSteamTunnel]) handed to
+ * the transport as a socket the SDK owns. From prover package 1.1.0 that is `wrapTcpSocket(socket)` from
+ * `transport/dist/node.js` under [assetsDir], the transport's own handoff (with its close deadline); a package without
+ * it (1.0.1) gets the generic `connectTcp(host, port, { connect })` from `transport/dist/index.js`, the socket adapted
+ * as the transport's Node connector adapts a direct one ([tunnelSocket]). The tunnel's failure goes to [onProxyError]
+ * in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials Steam directly
+ * instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
  */
 internal fun proxiedTcpConnector(
     assetsDir: String,
     proxy: SteamProxy,
     onProxyError: (String) -> Unit,
 ): (host: String, port: Int) -> Promise<Any?> {
-    val url = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "index.js")).href as String
+    val nodeEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val genericEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "index.js")).href as String
     val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
     val dial: dynamic = js(
         """
-        (function (url, open, onProxyError, adapt) {
+        (function (nodeEntry, genericEntry, open, onProxyError, adapt) {
           let loading = null;
+          const tunnel = (host, port) => open(host, port).catch((error) => {
+            onProxyError(error && error.message ? error.message : 'the tunnel did not open');
+            throw error;
+          });
+          const handOff = (wrapTcpSocket) => (host, port) => tunnel(host, port).then((socket) => {
+            try {
+              return wrapTcpSocket(socket);
+            } catch (error) {
+              socket.destroy();
+              throw error;
+            }
+          });
+          const generic = (module) => (host, port) => module.connectTcp(host, port, {
+            connect: (targetHost, targetPort) => tunnel(targetHost, targetPort).then(adapt),
+          });
           return (host, port) => {
-            if (loading === null) loading = import(url);
-            return loading.then((module) => module.connectTcp(host, port, {
-              connect: (targetHost, targetPort) => open(targetHost, targetPort).then(adapt, (error) => {
-                onProxyError(error && error.message ? error.message : 'the tunnel did not open');
-                throw error;
-              }),
-            }));
+            if (loading === null) {
+              loading = import(nodeEntry).then((module) => module.wrapTcpSocket, () => undefined).then((wrapTcpSocket) =>
+                typeof wrapTcpSocket === 'function' ? handOff(wrapTcpSocket) : import(genericEntry).then(generic));
+            }
+            return loading.then((connect) => connect(host, port));
           };
         })
         """,
     )
-    return dial(url, open, onProxyError, tunnelSocket).unsafeCast<(String, Int) -> Promise<Any?>>()
+    return dial(nodeEntry, genericEntry, open, onProxyError, tunnelSocket).unsafeCast<(String, Int) -> Promise<Any?>>()
 }
 
 /**

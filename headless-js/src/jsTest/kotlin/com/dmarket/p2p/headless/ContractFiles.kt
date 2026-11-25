@@ -13,6 +13,9 @@ private fun buildDir(variable: String): String =
 /** A golden file under `src/jsTest/resources`. */
 suspend fun golden(name: String): String = readFile(join(buildDir("HEADLESS_TEST_RESOURCES"), name), "utf8").await()
 
+/** The built package's directory, laid out as it ships. */
+fun distributedDir(): String = buildDir("HEADLESS_DIST_DIR")
+
 /** A file of the built package. */
 suspend fun distributed(name: String): String = readFile(join(buildDir("HEADLESS_DIST_DIR"), name), "utf8").await()
 
