@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.engine
 
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.support.T0
 import kotlin.test.Test
@@ -29,6 +30,7 @@ class ProofMintPolicyTest {
         deadline: Instant? = null,
         networkDeferred: Boolean = false,
         wakeBudget: Boolean = false,
+        role: DealRole = DealRole.UNKNOWN,
     ) = ProofMintPolicy.decide(
         intent,
         now,
@@ -41,6 +43,7 @@ class ProofMintPolicyTest {
         deadline,
         networkDeferred,
         wakeBudget,
+        role,
     )
 
     @Test
@@ -166,7 +169,7 @@ class ProofMintPolicyTest {
         // settled answers, whose verdict reached the backend through the submission that produced it.
         val unprovable = ProofSkipReason.entries.filter { it.unprovable }
         assertEquals(
-            listOf(ProofSkipReason.NO_PROVER, ProofSkipReason.PROVER_PARKED, ProofSkipReason.BUDGET_SPENT),
+            listOf(ProofSkipReason.NO_PROVER, ProofSkipReason.PROVER_PARKED, ProofSkipReason.BUDGET_SPENT, ProofSkipReason.SELLER_PROVES),
             unprovable,
         )
         for (reason in unprovable) {
@@ -267,10 +270,48 @@ class ProofMintPolicyTest {
                 ProofSkipReason.WAKE_BUDGET -> decide(wakeBudget = true)
                 ProofSkipReason.PROVER_PARKED -> decide(parkedUntil = T0 + 30.seconds)
                 ProofSkipReason.BUDGET_SPENT -> decide(deadline = T0)
+                ProofSkipReason.SELLER_PROVES -> decide(role = DealRole.BUYER)
             }
             (verdict as ProofMintVerdict.Skip).retryAfterSeconds != null
         }
         assertEquals(listOf(ProofSkipReason.FRESHNESS_RETRY_PENDING, ProofSkipReason.PROVER_PARKED), withDeadline)
+    }
+
+    // ---- role (DMA-664) ------------------------------------------------------------------------
+
+    @Test
+    fun only_the_seller_proves_a_changed_transition() {
+        // Both sides watch the same trade, so one MPC session per transition means one side proves: the seller.
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES), decide(role = DealRole.BUYER))
+        assertEquals(ProofMintVerdict.Mint, decide(role = DealRole.SELLER))
+        assertEquals(ProofMintVerdict.Mint, decide(role = DealRole.UNKNOWN))
+    }
+
+    @Test
+    fun the_buyer_skip_sends_the_report_once_unproven() {
+        // No verdict will ever come from this device, so the report goes out once and the claim holds it after.
+        assertTrue(ProofSkipReason.SELLER_PROVES.unprovable)
+        assertFalse(ProofSkipReason.SELLER_PROVES.corroborated)
+    }
+
+    @Test
+    fun a_settled_answer_outranks_the_buyer_skip_and_the_buyer_skip_outranks_every_spending_gate() {
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED), decide(refused = setOf(intent), role = DealRole.BUYER))
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED),
+            decide(accepted = mapOf(intent to T0), role = DealRole.BUYER),
+        )
+        assertEquals(
+            ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES),
+            decide(
+                proverAvailable = false,
+                wakeBudget = true,
+                networkDeferred = true,
+                parkedUntil = T0 + 30.seconds,
+                deadline = T0,
+                role = DealRole.BUYER,
+            ),
+        )
     }
 
     // ---- decideFreshness (DMA-280) ------------------------------------------------------------

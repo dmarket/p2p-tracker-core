@@ -3509,6 +3509,7 @@ class TradeTrackerLoop(
                     cycleDeadline = proofDeadline,
                     networkDeferred = proofsDeferred,
                     wakeBudget = proofsOutOfBudget,
+                    role = DealRoleBinding.roleOf(tracking, intent.dealId),
                 )
             }
             if (verdict is ProofMintVerdict.Skip) {

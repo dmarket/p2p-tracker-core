@@ -176,6 +176,12 @@ class P2pTracker(
         val proofUndelivered = mutableSetOf<String>()
         val reportFailed = mutableSetOf<String>()
         val proofRefused = mutableSetOf<String>()
+
+        /**
+         * Deal and axis whose proof is the seller's ([ProofSkipReason.SELLER_PROVES]): this device is the buyer, sends
+         * the code once without a proof, and DMarket may refuse that report. Neither a failure nor a pending proof here.
+         */
+        val sellerProves = mutableSetOf<Pair<String, String>>()
     }
 
     /**
@@ -868,16 +874,21 @@ class P2pTracker(
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {
                 it.copy(lastCode = event.steamStatusCode, proofState = ProofState.NONE)
             }
-            is LifecycleEvent.TradeStatusReportFailed -> probe.reportFailed += event.dealId
+            is LifecycleEvent.TradeStatusReportFailed ->
+                if ((event.dealId to event.source) !in probe.sellerProves) probe.reportFailed += event.dealId
             // The gate's deferral outlasts the withheld report it causes, which is announced after it.
-            is LifecycleEvent.TradeStatusReportDeferred -> deal(event.dealId) {
-                if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING)
+            is LifecycleEvent.TradeStatusReportDeferred -> if ((event.dealId to event.source) !in probe.sellerProves) {
+                deal(event.dealId) { if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofDeferred -> {
                 probe.proofDeferred = true
                 deal(event.dealId) { it.copy(proofState = ProofState.DEFERRED) }
             }
-            is LifecycleEvent.ProofSuppressed -> {
+            // A buyer's skip is announced before the report it lets out unproven, so that report's refusal or deferral can
+            // be told apart. No proof of this device's is pending.
+            is LifecycleEvent.ProofSuppressed -> if (event.reason == ProofSkipReason.SELLER_PROVES.message) {
+                probe.sellerProves += event.dealId to event.source
+            } else {
                 when (event.reason) {
                     ProofSkipReason.WAKE_BUDGET.message -> probe.proofOutOfBudget = true
                     ProofSkipReason.BUDGET_SPENT.message -> probe.proofBudgetSpent = true

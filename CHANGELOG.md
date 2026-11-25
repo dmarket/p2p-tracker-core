@@ -57,6 +57,7 @@ GitHub Release.
 - Android: each Steam offer create and cancel is reported to DMarket as soon as Steam answers, before the next write and before any proof, instead of in one call at the end of the sync (DMA-662).
 - A 429 on `POST /exchange/v1/p2p/ext/notary` emits `RateLimited` instead of `ProofFailed`, and a manual status update reports it as `UpdateFailure.RATE_LIMITED`, not `NOTARY` (DMA-1016).
 - Mobile: a proof that was made but not delivered is `UpdateFailure.DMARKET` on a manual status update and `failed/other` on a wake, not `notary`, and a manual update sends it again even when the deal's permit is spent. `StatusUpdate.retryLeft` is at least 1 while such a proof waits; a 429 on its delivery still answers `RATE_LIMITED` with its `retryAfter` (DMA-1016).
+- On a deal where this device is the buyer (`TrackedDeal.role` `BUYER`), a changed decisive status no longer runs a notary session: the seller's tracker proves it, and the buyer's report goes once without a proof (`ProofSuppressed` with `ProofSkipReason.SELLER_PROVES`). DMarket refusing that report is no `UpdateFailure` and does not fail a wake; a `proveAfter` mark is still proven (DMA-664).
 
 ### Fixed
 

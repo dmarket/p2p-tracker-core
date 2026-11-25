@@ -12,10 +12,13 @@ import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
+import com.dmarket.p2p.tracker.model.WakeOutcome
+import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatRequest
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.marketplace.TrackedDeal
+import com.dmarket.p2p.tracker.model.marketplace.TradeStatusResult
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.marketplace.WatchTarget
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
@@ -67,9 +70,15 @@ class P2pTrackerUpdateStatusTest {
     private val events = RecordingEventObserver()
     private var linked = account
 
-    private fun heartbeat(proofRequired: Boolean = false) = HeartbeatResponse(
+    private fun heartbeat(proofRequired: Boolean = false, role: DealRole = DealRole.UNKNOWN) = HeartbeatResponse(
         activeTracking = listOf(
-            TrackedDeal(dealId = deal, steamOfferId = offer, watch = setOf(WatchTarget.GET_TRADE_OFFER), proofRequired = proofRequired),
+            TrackedDeal(
+                dealId = deal,
+                steamOfferId = offer,
+                watch = setOf(WatchTarget.GET_TRADE_OFFER),
+                proofRequired = proofRequired,
+                role = role,
+            ),
         ),
         ttlSeconds = 86_400,
     )
@@ -440,6 +449,56 @@ class P2pTrackerUpdateStatusTest {
         val tracker = tracker(Setup(FakeMarketplaceClient(heartbeat(proofRequired = true)), notary = notary))
 
         assertEquals(UpdateFailure.NOTARY, tracker.updateStatus(deal).failure)
+    }
+
+    // ---- the buyer's report without a proof (DMA-664) ----------------------------------------------
+
+    /** A buyer's tracker on a proof-required deal whose report DMarket refuses for want of a proof. */
+    private fun buyerRefused() = Setup(
+        FakeMarketplaceClient(heartbeat(proofRequired = true, role = DealRole.BUYER)).apply {
+            tradeStatusResults = { reports ->
+                reports.map { TradeStatusResult(dealId = it.dealId, accepted = false, reason = "P2P_PROOF_REQUIRED", source = it.source) }
+            }
+        },
+    )
+
+    @Test
+    fun a_buyers_report_refused_for_want_of_a_proof_is_no_update_failure() = runTest {
+        // The seller's tracker proves the transition; the buyer's report goes once without a proof, and its refusal
+        // is nothing the buyer can act on.
+        val setup = buyerRefused()
+
+        val update = tracker(setup).updateStatus(deal)
+
+        assertNull(update.failure)
+        assertEquals(ProofState.NONE, update.proofState)
+        assertTrue(setup.notary.proven.isEmpty(), "no notary session on the buyer's side")
+        assertEquals(1, setup.marketplace.tradeStatusReports.size)
+    }
+
+    @Test
+    fun a_buyers_report_refused_for_want_of_a_proof_does_not_fail_the_wake() = runTest {
+        val setup = buyerRefused()
+
+        val outcome = tracker(setup).onPush("""{"v":"1","type":"wake_all","wakeId":"w-1","reason":"frozen"}""")
+
+        assertEquals(WakeOutcome.DONE, outcome)
+        assertEquals(1, setup.marketplace.tradeStatusReports.size)
+    }
+
+    @Test
+    fun a_buyers_later_runs_hold_the_report_without_a_pending_proof() = runTest {
+        // After the one report, the spent claim withholds it; the deal shows no proof of its own pending.
+        val setup = buyerRefused()
+        val tracker = tracker(setup)
+        tracker.updateStatus(deal, retries = 0)
+        clock.advance(10.minutes)
+
+        val update = tracker.updateStatus(deal)
+
+        assertNull(update.failure)
+        assertEquals(ProofState.NONE, update.proofState)
+        assertEquals(1, setup.marketplace.tradeStatusReports.size)
     }
 
     // ---- proof gate ----------------------------------------------------------------------------

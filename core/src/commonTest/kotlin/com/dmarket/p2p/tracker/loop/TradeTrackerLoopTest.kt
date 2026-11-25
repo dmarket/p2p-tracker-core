@@ -1098,6 +1098,72 @@ class TradeTrackerLoopTest {
         )
     }
 
+    @Test
+    fun a_buyer_sends_a_decisive_code_once_without_a_proof_and_spends_no_session() = runTest {
+        val clock = FakeClock()
+        val notary = FakeNotaryProver()
+        val events = RecordingEventObserver()
+        val mp = buyerHeartbeat(tracked(proofRequired = true, role = DealRole.BUYER)).apply { tradeStatusAccepted = false }
+        val l = loop(
+            marketplace = mp,
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            notary = notary,
+            eventObserver = events,
+            clock = clock,
+        )
+
+        repeat(3) {
+            l.runOnce()
+            clock.advance(61.seconds)
+        }
+
+        assertTrue(notary.proven.isEmpty(), "the seller's tracker proves the transition")
+        assertEquals(1, mp.tradeStatusReports.size, "one report without a proof, then the spent claim holds it")
+        assertEquals(
+            ProofSkipReason.SELLER_PROVES.message,
+            events.events.filterIsInstance<LifecycleEvent.ProofSuppressed>().first().reason,
+        )
+        assertEquals(1, events.events.count { it is LifecycleEvent.TradeStatusClaimedUnproven })
+    }
+
+    @Test
+    fun a_transition_both_sides_see_costs_one_session_and_it_is_the_sellers() = runTest {
+        // The exit criterion of DMA-664's proof policy: the same accepted offer, read by both parties' trackers.
+        suspend fun side(role: DealRole): FakeNotaryProver {
+            val notary = FakeNotaryProver()
+            loop(
+                marketplace = buyerHeartbeat(tracked(proofRequired = true, role = role)),
+                reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+                notary = notary,
+            ).runOnce()
+            return notary
+        }
+        val seller = side(DealRole.SELLER)
+        val buyer = side(DealRole.BUYER)
+
+        assertEquals(listOf(DealId("deal-1") to TradeStatusSource.OFFER), seller.proven)
+        assertTrue(buyer.proven.isEmpty())
+    }
+
+    @Test
+    fun a_mark_on_a_proof_required_buyer_deal_is_still_answered() = runTest {
+        // The role gate is on changed transitions only: a freshness mark reads no role.
+        val clock = FakeClock()
+        val progress = InMemoryTrackerProgressStore()
+        progress.recordReported(mapOf(DealId("deal-1") to ReportedStatus(lastOfferCode = 3, lastHistoryCode = 3)))
+        val notary = FakeNotaryProver()
+
+        loop(
+            marketplace = markedHeartbeat(marked(role = DealRole.BUYER, proofRequired = true, proveAfter = clock.mark())),
+            reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to 3)),
+            notary = notary,
+            progress = progress,
+            clock = clock,
+        ).runOnce()
+
+        assertEquals(1, notary.proven.size)
+    }
+
     // ---- awaitDirectiveOutcome (the page's create trigger) -----------------------------------------
     // The page hands over a deal id and nothing else: what it waits on is the create the backend leased.
 
