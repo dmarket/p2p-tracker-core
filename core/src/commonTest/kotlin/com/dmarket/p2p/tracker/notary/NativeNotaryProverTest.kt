@@ -12,6 +12,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -131,6 +132,52 @@ class NativeNotaryProverTest {
         assertEquals(1, engine.cancelled)
         assertEquals(emptyMap(), prover.progress.value)
         assertFalse(prover.cancel(DealId("deal-1")))
+    }
+
+    @Test
+    fun a_cancel_as_the_issuance_starts_finds_the_proof() = runTest(UnconfinedTestDispatcher()) {
+        // The unconfined dispatcher runs the issuance at once, inside the launch of the proof.
+        var found: Boolean? = null
+        lateinit var prover: NativeNotaryProver
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
+                found = prover.cancel(DealId("deal-1"))
+                awaitCancellation()
+            }
+        }
+        prover = prover(engine)
+
+        val failure = failureOf { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+
+        assertEquals(true, found)
+        assertEquals(ProofFailure.Other(PROOF_CANCELLED_REASON), failure)
+    }
+
+    @Test
+    fun two_proofs_of_one_deal_are_tracked_apart() = runTest {
+        val first = CompletableDeferred<Unit>()
+        var calls = 0
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
+                if (++calls == 1) first.await() else awaitCancellation()
+                return NativeIssuanceOutcome(presentation = PRESENTATION, targetStatus = 200)
+            }
+        }
+        val prover = prover(engine)
+        val proofs = List(2) { async { runCatching { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) } } }
+        runCurrent()
+
+        first.complete(Unit)
+        assertTrue(proofs[0].await().isSuccess)
+        assertEquals(setOf(DealId("deal-1")), prover.progress.value.keys)
+        assertTrue(prover.cancel(DealId("deal-1")), "the second proof is still running")
+        val failure = assertIs<HostedProofException>(proofs[1].await().exceptionOrNull()).failure
+        assertEquals(ProofFailure.Other(PROOF_CANCELLED_REASON), failure)
+        assertEquals(emptyMap(), prover.progress.value)
     }
 
     @Test

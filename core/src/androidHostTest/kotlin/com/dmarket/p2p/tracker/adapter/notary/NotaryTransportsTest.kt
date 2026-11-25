@@ -21,6 +21,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -120,6 +121,34 @@ class NotaryTransportsTest {
             OkHttpNotaryTransport.connect(client, "ws://127.0.0.1:$port/", "tlsn.notary.v2", TOKEN, connectTimeoutMs = 5_000)
         }
         assertNull(absent.upgradeStatus)
+    }
+
+    @Test
+    fun a_close_while_the_upgrade_is_pending_ends_the_connect_at_once() {
+        // Accepts the TCP connection and never answers the upgrade.
+        val silent = ServerSocket(0, 1, InetAddress.getLoopbackAddress()).also { servers += it }
+        thread(isDaemon = true) { runCatching { silent.accept().also { servers += it } } }
+        val started = CompletableFuture<OkHttpNotaryTransport>()
+        val connect = CompletableFuture<Result<OkHttpNotaryTransport>>()
+        thread {
+            connect.complete(
+                runCatching {
+                    OkHttpNotaryTransport.connect(
+                        client,
+                        "ws://127.0.0.1:${silent.localPort}/",
+                        "tlsn.notary.v2",
+                        TOKEN,
+                        connectTimeoutMs = 30_000,
+                        onStarted = started::complete,
+                    )
+                },
+            )
+        }
+
+        started.get(5, TimeUnit.SECONDS).close()
+
+        val failure = assertIs<NotaryConnectException>(connect.get(5, TimeUnit.SECONDS).exceptionOrNull())
+        assertNull(failure.upgradeStatus)
     }
 
     @Test

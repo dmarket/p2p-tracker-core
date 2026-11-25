@@ -12,6 +12,7 @@ import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.port.notary.NotaryTokenProvider
 import com.dmarket.p2p.tracker.port.notary.SteamProofCookieSource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
@@ -87,7 +89,9 @@ class NativeNotaryProver(
 
     private val mapper = SteamProofReadMapper(config)
     private val gate = Semaphore(maxConcurrency)
-    private val running = MutableStateFlow<Map<DealId, Running>>(emptyMap())
+
+    /** Keyed by each run's own token: two proofs of one deal keep two entries. */
+    private val running = MutableStateFlow<Set<Running>>(emptySet())
     private val mutableProgress = MutableStateFlow<Map<DealId, ProofProgress>>(emptyMap())
     private val mutableTraffic = MutableStateFlow(ProofTraffic())
 
@@ -97,12 +101,14 @@ class NativeNotaryProver(
     /** Bytes sent and received by every proof since this prover was built. */
     val traffic: StateFlow<ProofTraffic> = mutableTraffic.asStateFlow()
 
-    /** Cancels [dealId]'s running proof; it ends with [PROOF_CANCELLED_REASON]. Whether one was running. */
+    /** Cancels [dealId]'s running proofs; each ends with [PROOF_CANCELLED_REASON]. Whether one was running. */
     fun cancel(dealId: DealId): Boolean {
-        val run = running.value[dealId] ?: return false
-        run.cancelledByUser = true
-        run.issue.cancel()
-        return true
+        val runs = running.value.filter { it.dealId == dealId }
+        runs.forEach {
+            it.cancelledByUser = true
+            it.issue.cancel()
+        }
+        return runs.isNotEmpty()
     }
 
     @OptIn(ExperimentalEncodingApi::class)
@@ -168,28 +174,29 @@ class NativeNotaryProver(
                 }
             }
         }
-        return try {
-            coroutineScope {
-                val issue = async { withTimeoutOrNull(issuance.deadline) { engine.issue(issuance, listener) } }
-                val run = Running(issue)
-                running.update { it + (dealId to run) }
-                try {
-                    issue.await()
-                        ?: NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_TIMEOUT, diagnostic = "${issuance.deadline}")
-                } catch (e: CancellationException) {
-                    // The caller's own cancellation propagates; only a cancel() of this proof is an outcome.
-                    currentCoroutineContext().ensureActive()
-                    if (!run.cancelledByUser) throw e
-                    NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_CANCELLED, diagnostic = PROOF_CANCELLED_REASON)
-                }
+        return coroutineScope {
+            // Registered before it starts, so a cancel() at the start finds it.
+            val issue = async(start = CoroutineStart.LAZY) { withTimeoutOrNull(issuance.deadline) { engine.issue(issuance, listener) } }
+            val run = Running(dealId, issue)
+            running.update { it + run }
+            try {
+                issue.start()
+                issue.await()
+                    ?: NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_TIMEOUT, diagnostic = "${issuance.deadline}")
+            } catch (e: CancellationException) {
+                // The caller's own cancellation propagates; only a cancel() of this proof is an outcome.
+                currentCoroutineContext().ensureActive()
+                if (!run.cancelledByUser) throw e
+                NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_CANCELLED, diagnostic = PROOF_CANCELLED_REASON)
+            } finally {
+                val left = running.updateAndGet { it - run }
+                // Another proof of the same deal still runs: its progress stays.
+                if (left.none { it.dealId == dealId }) mutableProgress.update { it - dealId }
             }
-        } finally {
-            running.update { it - dealId }
-            mutableProgress.update { it - dealId }
         }
     }
 
-    private class Running(val issue: Deferred<NativeIssuanceOutcome?>) {
+    private class Running(val dealId: DealId, val issue: Deferred<NativeIssuanceOutcome?>) {
         @Volatile var cancelledByUser = false
     }
 

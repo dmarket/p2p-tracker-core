@@ -127,6 +127,8 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
         closed = true
         socket.cancel()
         end(Chunk.Failed)
+        // A close during [connect] ends its wait for the `101` now, not at its timeout.
+        opened.countDown()
     }
 
     /** The queue of the transport's send side, in bytes: what [write] waits to drain. */
@@ -155,7 +157,8 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
          * Opens the notary's socket at [url] offering [subprotocol] and `bearer.<token>` (the DMarket token, opaque to
          * the notary), and waits up to [connectTimeoutMs] for the `101`. Throws [NotaryConnectException] when the
          * notary refuses or does not answer. [client]'s read timeout is lifted: a proof's phases can be quiet longer
-         * than an HTTP call.
+         * than an HTTP call. [onStarted] gets the transport before the wait, so a [close] from another thread ends it
+         * (the connect then throws, as for an unanswered upgrade).
          */
         fun connect(
             client: OkHttpClient,
@@ -164,11 +167,13 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
             token: String,
             connectTimeoutMs: Long,
             onBytes: (sent: Long, received: Long) -> Unit = { _, _ -> },
+            onStarted: (OkHttpNotaryTransport) -> Unit = {},
         ): OkHttpNotaryTransport {
             val transport = OkHttpNotaryTransport(onBytes)
             val request = Request.Builder().url(url).header("Sec-WebSocket-Protocol", "$subprotocol, bearer.$token").build()
             val socketClient = client.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build()
             transport.socket = socketClient.newWebSocket(request, transport.listener)
+            onStarted(transport)
             if (!transport.opened.await(connectTimeoutMs, TimeUnit.MILLISECONDS)) {
                 transport.socket.cancel()
                 throw NotaryConnectException(null, "the notary did not answer the upgrade within $connectTimeoutMs ms")

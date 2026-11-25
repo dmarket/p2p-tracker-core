@@ -23,6 +23,9 @@ GitHub Release.
 
 ### Fixed
 
+- Android: cancelling a native proof while it waits for the notary's answer to the WebSocket upgrade ends it at once instead of after the 30 s connect timeout (DMA-540).
+- Mobile: `NativeNotaryProver.cancel(dealId)` finds a proof that is just starting and cancels every running proof of that deal (DMA-540).
+
 - Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
 - Mobile: on a buyer's deal, a status report that did not reach DMarket (a 5xx, a dropped call) is again `UpdateFailure.DMARKET` on a manual status update and `failed` (`other`) on a wake; only DMarket's `P2P_PROOF_REQUIRED` refusal of it is skipped (DMA-664).
 - A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).

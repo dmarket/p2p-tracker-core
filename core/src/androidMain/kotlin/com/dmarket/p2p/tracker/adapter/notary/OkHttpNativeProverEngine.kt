@@ -89,8 +89,15 @@ class OkHttpNativeProverEngine(private val client: OkHttpClient, private val con
                     issuance.notaryToken,
                     connectTimeoutMs,
                     listener::onBytes,
-                )
+                ) { started ->
+                    // Stored before the wait for the `101`, so a cancel() closes it instead of waiting out the timeout.
+                    synchronized(this) {
+                        this.notary = started
+                        if (cancelled) started.close()
+                    }
+                }
             } catch (e: NotaryConnectException) {
+                if (cancelled) return NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_CANCELLED)
                 return NativeIssuanceOutcome(upgradeStatus = e.upgradeStatus, notaryConnected = false, diagnostic = e.message)
             }
             val target = if (issuance.mode == IssuanceMode.MPC) {
@@ -105,7 +112,6 @@ class OkHttpNativeProverEngine(private val client: OkHttpClient, private val con
                 null
             }
             synchronized(this) {
-                this.notary = notary
                 this.target = target
                 if (cancelled) return NativeIssuanceOutcome(status = NativeIssuanceOutcome.STATUS_CANCELLED)
             }
