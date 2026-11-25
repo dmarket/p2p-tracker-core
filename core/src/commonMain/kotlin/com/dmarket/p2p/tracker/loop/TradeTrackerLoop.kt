@@ -89,6 +89,7 @@ import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.HostedProofException
 import com.dmarket.p2p.tracker.notary.KillCause
+import com.dmarket.p2p.tracker.notary.NotarySessionCutException
 import com.dmarket.p2p.tracker.notary.OnlineBudgetLesson
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
@@ -125,7 +126,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
@@ -1335,9 +1335,10 @@ class TradeTrackerLoop(
 
     /**
      * Hears each notary session a proof attempt ran for a deal, once it ends: a proof, a failure after the notary's
-     * `101`, the user's Cancel (on T-14, or the prover's own cancel). Not an attempt the notary never took
+     * `101`, a cut after it (the user's Cancel on T-14 or the cycle's deadline, said by the prover as a
+     * [NotarySessionCutException]), or the prover's own cancel. Not an attempt the notary never took
      * ([ProofFailure.NotStarted], [ProofFailure.UpgradeRefused], [ProofFailure.NotaryUnreachable], no connect by the
-     * deadline, DMarket's 429 on the notary token) nor one the cycle's deadline cut. Set by `P2pTracker`, which counts
+     * deadline, DMarket's 429 on the notary token) nor any other cancellation. Set by `P2pTracker`, which counts
      * them against the manual update's permit (DMA-1016).
      */
     var onNotarySession: ((DealId) -> Unit)? = null
@@ -3919,10 +3920,10 @@ class TradeTrackerLoop(
     /** Whether a prove that ended with [failure] (`null`: a proof) had a notary session; see [onNotarySession]. */
     private fun spentNotarySession(failure: Throwable?): Boolean = when (failure) {
         null -> true
-        // A timeout is a CancellationException too, so it goes first: the cycle's deadline is not the user's Cancel. A
-        // native session it cut after the notary's 101 comes as a NotarySessionCutException instead and is counted below.
-        is TimeoutCancellationException, is RateLimitedException -> false
-        is CancellationException -> true
+        // Cut after the notary's 101, by the user's Cancel or the cycle's deadline: the notary spent the session. Any other
+        // cancellation (the cycle's deadline included) came before it, or says nothing of it: not counted.
+        is NotarySessionCutException -> true
+        is CancellationException, is RateLimitedException -> false
         is HostedProofException -> when (val cause = failure.failure) {
             is ProofFailure.NotStarted, is ProofFailure.UpgradeRefused, is ProofFailure.NotaryUnreachable -> false
             is ProofFailure.ProverKilled -> cause.cause != KillCause.CONNECT_DEADLINE

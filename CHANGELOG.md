@@ -29,8 +29,9 @@ GitHub Release.
 - Android: a native proof keeps every frame the notary sent before it closed the socket, even when the prover had not read them yet (DMA-540).
 - Android: cancelling an MPC native proof while it connects to Steam ends it at once instead of after the connect timeout (DMA-540).
 - Mobile: `updateStatus` no longer spends a Retry on a proof cut by `stop()`, and two updates of the same deal at once no longer run more notary sessions than the permit allows (DMA-1016).
-- Mobile: an update that waited for a running cycle past its permit's `nextAllowedAt` takes a new permit before it runs, or answers `RATE_LIMITED` with a zero `retryAfter` when it already took one itself (DMA-1016).
+- Mobile: an update that waited for a running cycle past its permit's `nextAllowedAt` takes a new permit before it runs, or answers `TIMEOUT` with no session when it already took one itself, never `RATE_LIMITED` for another update's new permit (DMA-1016).
 - Android: a native proof the update's cycle deadline cuts after the notary accepted the connection now spends a Retry, as the notary already spent that session (DMA-1016).
+- Mobile: cancelling `updateStatus` spends a Retry only once the notary accepted the proof's connection; a Cancel before that (waiting for the prover, minting its token, connecting) spends none (DMA-1016).
 - Mobile: a proof that was not delivered no longer keeps `StatusUpdate.retryLeft` at 1 or lets `updateStatus` past a spent permit once its deal leaves tracking or Steam shows another code for it (DMA-1016).
 - Mobile: a create Steam refused frees its deal at once when the cycle is cut right after, instead of after the 2-minute unanswered grace (DMA-664).
 

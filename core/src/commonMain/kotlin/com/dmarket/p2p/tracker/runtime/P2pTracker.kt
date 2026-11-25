@@ -442,10 +442,15 @@ class P2pTracker(
      * Steam, for every deal) it sends nothing and answers [UpdateFailure.RATE_LIMITED] at once.
      *
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
-     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (one the user
-     * cancelled counts, one a stop or logout cut does not): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
+     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal: a session counts
+     * once the notary answered it with `101`, also when the user's Cancel or the cycle's deadline cut it after that
+     * (only a prover that says so, [com.dmarket.p2p.tracker.notary.NotarySessionCutException], gets such a cut counted),
+     * and never when a stop or a logout cut it. While one is left, the next run goes without a refresh, against the
+     * entry the forced heartbeat serves.
      * Two updates at once take one permit: the second waits for the first one's refresh, and its cycle checks the
-     * permit again once it holds the lock, so it runs only while the first one left a session.
+     * permit again once it holds the lock, so it runs only while the first one left a session. An update whose permit's
+     * window closed while it waited for the lock takes a new permit if it ran on another update's, and answers
+     * [UpdateFailure.TIMEOUT] with no session and no second refresh if it took that permit itself.
      * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
      * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
      * Retry spent, and a resend DMarket had already accepted reads as success.
@@ -466,28 +471,39 @@ class P2pTracker(
             ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
         var refreshed = false
+        var lapsed = false
         while (true) {
             val checkedAt = clock.now()
+            // Whether this run goes under a permit, as the check saw it: one that lapses before the cycle lock stops it.
+            var held = false
             permitLock.withLock {
                 val permit = activePermit(dealId, checkedAt)
                 if (permit == null) {
                     takePermit(dealId, checkedAt, allowed)?.let { return it }
                     refreshed = true
+                    // shortcut: a granted window already past by this device's clock runs uncounted, so a clock far ahead
+                    // still runs its update; compare with the server's time if that ever matters.
+                    held = activePermit(dealId, clock.now()) != null
                 } else if (spent(permit, allowed, dealId, s.loop)) {
                     return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - checkedAt)
+                } else {
+                    held = true
                 }
             }
-            val held = activePermit(dealId, clock.now()) != null
             // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session, or the
             // permit's window may have closed while this update waited, which leaves its session nothing to count against.
             val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true) {
                 activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } ?: held
             } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
             if (!run.probe.permitSpent) return finished(dealId, s, run, allowed)
-            val until = activePermit(dealId, clock.now())?.until
-            if (until != null) return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = until - clock.now())
-            // The window closed: one refresh per tap, so an update that took its own permit asks for no second one.
-            if (refreshed) return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = Duration.ZERO)
+            val permit = activePermit(dealId, clock.now())
+            if (permit != null && spent(permit, allowed, dealId, s.loop)) {
+                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - clock.now())
+            }
+            // The window closed: one refresh per tap, so an update that took its own permit asks for no second one, and
+            // one whose second permit closed too goes no further.
+            if (refreshed || lapsed) return statusOf(dealId, UpdateFailure.TIMEOUT, allowed)
+            lapsed = true
         }
     }
 
