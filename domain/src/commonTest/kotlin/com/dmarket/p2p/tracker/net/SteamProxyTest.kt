@@ -72,6 +72,14 @@ class SteamProxyTest {
     }
 
     @Test
+    fun a_character_outside_the_bmp_beside_a_percent_escape_reads_as_itself() {
+        val emoji = "\uD83D\uDE00"
+        val proxy = SteamProxy.parse("http://us${emoji}er:%40$emoji%3A$emoji@203.0.113.7:3128")
+        val expected = "Basic " + Base64.encode("us${emoji}er:@$emoji:$emoji".encodeToByteArray())
+        assertEquals(expected, proxy.authorization())
+    }
+
+    @Test
     fun two_proxies_are_equal_by_value() {
         assertEquals(SteamProxy.parse(url), SteamProxy.parse(url))
         assertEquals(SteamProxy.parse(url).hashCode(), SteamProxy.parse(url).hashCode())

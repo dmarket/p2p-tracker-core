@@ -149,21 +149,29 @@ class SteamProxy private constructor(
         private fun percentDecoded(text: String): String {
             if ('%' !in text) return text
             val bytes = ArrayList<Byte>(text.length)
+
+            // The characters between escapes go to UTF-8 as one run: a surrogate pair split into two `Char`s would
+            // each encode as U+FFFD.
+            fun addRun(from: Int, to: Int) {
+                if (to > from) text.substring(from, to).encodeToByteArray().forEach { bytes += it }
+            }
+            var runStart = 0
             var i = 0
             while (i < text.length) {
-                val c = text[i]
-                if (c == '%') {
+                if (text[i] == '%') {
+                    addRun(runStart, i)
                     val byte = text.substring(i + 1, minOf(i + PERCENT_LENGTH, text.length)).takeIf {
                         it.length == 2 && it.all(::isHexDigit)
                     }?.toIntOrNull(HEX)
                     require(byte != null) { "proxy credentials have a malformed percent escape" }
                     bytes += byte.toByte()
                     i += PERCENT_LENGTH
+                    runStart = i
                 } else {
-                    c.toString().encodeToByteArray().forEach { bytes += it }
                     i++
                 }
             }
+            addRun(runStart, text.length)
             return try {
                 bytes.toByteArray().decodeToString(throwOnInvalidSequence = true)
             } catch (_: CharacterCodingException) {
