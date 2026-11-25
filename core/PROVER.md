@@ -383,17 +383,12 @@ mobile loop prove through it; `AndroidTracker.prover` exposes it.
 Host tests cover the common prover with a fake engine (`NativeNotaryProverTest`), the JSON (`NativeProverJsonTest`)
 and both transports against local servers (`NotaryTransportsTest`). A live proof needs a device and a notary.
 
-### Proofs kept on the device (D2)
+### Proofs on the device (D2)
 
-After an end-of-deal proof reaches `/notary` (sites `offer_declined`, `offer_cancelled`, `trade_completed`,
-`trade_reversed`), the loop keeps its payload (`ProofArchiveStore`, one key of the account store) with the cycle's
-time as the deal's final-status moment: the proof is the read of that status, so its first send is when the device
-saw it (a retried proof starts later by its retry delay). A later final status of the same deal (a reversal after
-completion) moves the expiry. Kept 30 days from that moment, pruned by expiry before each transition proof pass.
-Logout and a Steam account switch erase the account store; an unlink (`linkedAccount()` answers `null`) erases the
-proofs; `clearStoredProofs()` on `P2pTracker`, `MobileTracker` and `AndroidTracker` erases them on demand. The device
-never hands them out: dispute evidence is the backend's. A presentation is a few KB plus the revealed bytes, so 30
-days of deals stay well inside the prefs file. Web and headless keep nothing.
+The device keeps no proof it sent: mobile, web and headless all run with `NoProofArchive`. Version 1.4.0 kept
+end-of-deal proofs for 30 days in one key of the account store; building a loop now removes that key, and
+`clearStoredProofs()` on `P2pTracker`, `MobileTracker` and `AndroidTracker` removes it on demand. Dispute evidence
+is the backend's.
 
 ### Testing on a device
 

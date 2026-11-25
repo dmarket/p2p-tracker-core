@@ -149,8 +149,8 @@ class MobileTracker(
     }
 
     /**
-     * Erases the end-of-deal proofs this device keeps for the current account (D2), whatever the tracker's state.
-     * Logout ([onLogout]), a Steam account switch and an unlink erase them too.
+     * Erases the end-of-deal proofs 1.4.0 kept for the current account (D2), whatever the tracker's state. The device
+     * keeps no new ones; building a loop, logout ([onLogout]), a Steam account switch and an unlink erase them too.
      */
     suspend fun clearStoredProofs() = platform.clearStoredProofs()
 

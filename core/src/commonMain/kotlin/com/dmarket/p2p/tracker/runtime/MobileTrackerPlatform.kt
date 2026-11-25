@@ -174,9 +174,14 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
         accountStore
     }
 
-    /** The loop's persisted stores for [account], over [storageFor]: the same set the headless tracker builds. */
+    /**
+     * The loop's persisted stores for [account], over [storageFor]: the same set the headless tracker builds. Sent
+     * proofs are not kept on the device ([NoProofArchive], owner's decision 2026-11-23); the archive key that 1.4.0
+     * wrote into the account store is removed here, on every loop's build.
+     */
     suspend fun stores(account: SteamId, tunables: TrackerConfig = TrackerConfig.defaults()): MobileTrackerStores {
         val storage = storageFor(account)
+        if (storage.get(PersistedProofArchiveStore.KEY) != null) storage.remove(PersistedProofArchiveStore.KEY)
         return MobileTrackerStores(
             loopState = PersistedLoopStateStore(storage),
             progress = PersistedTrackerProgressStore(storage),
@@ -185,11 +190,10 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
             offerGuard = PersistedOfferGuardStore(storage),
             throttle = PersistedSteamWriteThrottleStore(limits = tunables.steamWrites, storage = storage),
             notaryThrottle = PersistedNotaryProofThrottleStore(limits = tunables.notary.breaker, storage = storage),
-            proofArchive = PersistedProofArchiveStore(storage),
         )
     }
 
-    /** Erases the end-of-deal proofs the current account keeps (D2); the rest of its state stays. */
+    /** Erases the end-of-deal proofs 1.4.0 kept for the current account (D2); the rest of its state stays. */
     suspend fun clearStoredProofs() = mutex.withLock { accountStore.remove(PersistedProofArchiveStore.KEY) }
 
     /**
@@ -253,6 +257,6 @@ class MobileTrackerStores(
     val offerGuard: OfferGuardStore,
     val throttle: SteamWriteThrottleStore,
     val notaryThrottle: NotaryProofThrottleStore,
-    /** The end-of-deal proofs this device sent, kept 30 days from the deal's final status (D2). */
+    /** Where the end-of-deal proofs this device sent go; [MobileTrackerPlatform.stores] keeps none. */
     val proofArchive: ProofArchiveStore = NoProofArchive,
 )

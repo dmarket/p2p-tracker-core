@@ -8,6 +8,7 @@ import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
+import com.dmarket.p2p.tracker.loop.NoProofArchive
 import com.dmarket.p2p.tracker.loop.PersistedProofArchiveStore
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.DirectiveId
@@ -168,8 +169,22 @@ class MobileTrackerTest {
         stores.progress.recordHandledDirectives(setOf(DirectiveId("directive-1")))
     }
 
-    private suspend fun keepAProof(account: SteamId) =
-        platform.stores(account).proofArchive.keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+    /** A proof as 1.4.0 kept it, straight into the account store. */
+    private suspend fun keepAProof() =
+        PersistedProofArchiveStore(platform.account).keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+
+    @Test
+    fun noProofIsKeptAndTheArchiveAnEarlierVersionWroteGoesWithTheNextLoop() = runTest {
+        val stores = platform.stores(alice)
+        assertSame(NoProofArchive, stores.proofArchive)
+        stores.proofArchive.keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+        assertFalse(proofsKept())
+
+        keepAProof()
+        assertTrue(proofsKept())
+        platform.stores(alice)
+        assertFalse(proofsKept())
+    }
 
     private fun proofsKept() = platform.account.entries.keys.any { it == PersistedProofArchiveStore.KEY }
 
@@ -177,25 +192,25 @@ class MobileTrackerTest {
     fun storedProofsGoOnLogoutOnASteamAccountSwitchOnAnUnlinkAndOnRequest() = runTest {
         val tracker = tracker()
         tracker.start()
-        keepAProof(alice)
+        keepAProof()
         assertTrue(proofsKept())
 
         tracker.clearStoredProofs()
         assertFalse(proofsKept())
 
-        keepAProof(alice)
+        keepAProof()
         linked = bob
         tracker.start()
         assertFalse(proofsKept(), "a Steam account switch")
 
-        keepAProof(bob)
+        keepAProof()
         linked = null
         assertFalse(tracker.start())
         assertFalse(proofsKept(), "an unlink")
 
         linked = alice
         tracker.start()
-        keepAProof(alice)
+        keepAProof()
         tracker.onLogout()
         assertFalse(proofsKept(), "a logout")
     }
