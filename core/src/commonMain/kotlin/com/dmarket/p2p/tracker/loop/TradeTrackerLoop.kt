@@ -2299,7 +2299,8 @@ class TradeTrackerLoop(
         val read = bind.sentOffers {
             // One read covers every create of the cycle, so it reaches back to the earliest cutoff among them.
             val cutoff = (bind.creates + directive).minOf { bindCutoff(it, lease) }
-            runCatching { steamReader.sentOffers(credential, cutoff) }.onFailure {
+            // A stopped cycle is no failed read: let it through to withDealClaim, which releases the claim on disk.
+            runCatchingUnlessCancelled { steamReader.sentOffers(credential, cutoff) }.onFailure {
                 // Once per cycle, into the throttle before anything awaits, as a refused POST is: chains re-gate on
                 // every step.
                 recordBindReadFailure(partner, it)

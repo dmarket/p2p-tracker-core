@@ -14,6 +14,10 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
+
 ## [1.4.0-beta] - 2026-11-25
 
 ### Added
