@@ -152,7 +152,9 @@ class SteamProxy private constructor(
             while (i < text.length) {
                 val c = text[i]
                 if (c == '%') {
-                    val byte = text.substring(i + 1, minOf(i + PERCENT_LENGTH, text.length)).takeIf { it.length == 2 }?.toIntOrNull(HEX)
+                    val byte = text.substring(i + 1, minOf(i + PERCENT_LENGTH, text.length)).takeIf {
+                        it.length == 2 && it.all(::isHexDigit)
+                    }?.toIntOrNull(HEX)
                     require(byte != null) { "proxy credentials have a malformed percent escape" }
                     bytes += byte.toByte()
                     i += PERCENT_LENGTH
@@ -161,8 +163,14 @@ class SteamProxy private constructor(
                     i++
                 }
             }
-            return bytes.toByteArray().decodeToString()
+            return try {
+                bytes.toByteArray().decodeToString(throwOnInvalidSequence = true)
+            } catch (_: CharacterCodingException) {
+                throw IllegalArgumentException("proxy credentials have a malformed percent escape")
+            }
         }
+
+        private fun isHexDigit(c: Char): Boolean = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
 
         private const val SPACE = 0x20
         private const val DELETE = 0x7f
