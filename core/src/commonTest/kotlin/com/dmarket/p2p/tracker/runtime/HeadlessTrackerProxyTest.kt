@@ -44,6 +44,7 @@ class HeadlessTrackerProxyTest {
     private val dmarket = mutableListOf<HttpRequestData>()
     private val steamSent = mutableListOf<Pair<HttpRequestData, SteamProxy?>>()
     private var down = false
+    private var downDetail = "could not connect to the proxy: ECONNREFUSED"
     private val proxy = SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128")
     private val otherProxy = SteamProxy.parse("http://trader:other-pass@203.0.113.8:3128")
 
@@ -67,12 +68,8 @@ class HeadlessTrackerProxyTest {
     private fun steamEngine(route: SteamRoute): HttpClientEngine = MockEngine { request ->
         val through = route.proxy
         if (through != null && down) {
-            route.unreachable(through, "could not connect to the proxy: ECONNREFUSED")
-            throw SteamProxyUnreachableException(
-                request.method.value,
-                request.url.toString(),
-                "could not connect to the proxy: ECONNREFUSED",
-            )
+            route.unreachable(through, downDetail)
+            throw SteamProxyUnreachableException(request.method.value, request.url.toString(), downDetail)
         }
         through?.let(route::tunnelled)
         steamSent += request to through
@@ -241,6 +238,33 @@ class HeadlessTrackerProxyTest {
         tracker.cycle()
         assertEquals(1, events<LifecycleEvent.SteamProxyRecovered>().size)
         assertTrue(steamSent.all { (_, through) -> through == otherProxy })
+    }
+
+    @Test
+    fun another_unreachable_proxy_is_told_as_its_own_outage_once_and_the_same_one_again_is_not() = runTest {
+        down = true
+        val tracker = tracker()
+        tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
+        tracker.pushSteamToken(token, SteamProxyUpdate.Use(proxy))
+        tracker.cycle()
+
+        // The clock stands still: the second outage starts at the same instant as the first.
+        downDetail = "the proxy answered CONNECT with HTTP 407"
+        tracker.pushSteamToken(token, SteamProxyUpdate.Use(otherProxy))
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        assertEquals(
+            listOf("could not connect to the proxy: ECONNREFUSED", "the proxy answered CONNECT with HTTP 407"),
+            events<LifecycleEvent.SteamProxyUnreachable>().map { it.detail },
+        )
+        assertTrue(events<LifecycleEvent.SteamProxyRecovered>().isEmpty(), "neither proxy got through")
+
+        tracker.pushSteamToken(token, SteamProxyUpdate.Use(SteamProxy.parse("http://trader:other-pass@203.0.113.8:3128")))
+        tracker.loop.forceHeartbeatNow()
+        tracker.cycle()
+        tracker.cycle()
+        assertEquals(2, events<LifecycleEvent.SteamProxyUnreachable>().size, "the same proxy named again is the same outage")
+        assertTrue(events<LifecycleEvent.SteamProxyRecovered>().isEmpty())
     }
 
     @Test

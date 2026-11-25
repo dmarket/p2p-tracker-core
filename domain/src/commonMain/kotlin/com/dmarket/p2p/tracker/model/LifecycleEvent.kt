@@ -486,7 +486,8 @@ sealed interface LifecycleEvent {
     /**
      * The Steam proxy this account's traffic goes through could not be reached (no connection, no answer, or a
      * `CONNECT` it refused), so nothing reaches Steam: nothing falls back to a direct connection, no create is sent
-     * and none is reported failed. Emitted once when the problem starts; [SteamProxyRecovered] ends it.
+     * and none is reported failed. Emitted once when the problem starts, and once more for another proxy pushed in
+     * its place that cannot be reached either; [SteamProxyRecovered] ends it.
      *
      * [dealIds] are the deals the tracker was tracking then, every one of them held back; [detail] says what failed
      * in fixed words and an error code (`ECONNREFUSED`, `HTTP 407`), never the proxy's address or credentials.

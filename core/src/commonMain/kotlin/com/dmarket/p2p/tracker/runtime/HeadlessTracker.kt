@@ -53,6 +53,7 @@ import com.dmarket.p2p.tracker.model.marketplace.dealDeadlines
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
@@ -228,8 +229,8 @@ class HeadlessTracker(
     /** Where the Steam traffic goes: the proxy pushed with the token, read by every Steam connection, and its health. */
     internal val steamRoute = SteamRoute(clock) { steam.proxy }
 
-    /** What the last [reportSteamRoute] told the host: an unreachable proxy, or not. */
-    private var reportedProxyDown = false
+    /** The proxy the last [reportSteamRoute] told the host was unreachable; `null` after none, or after its return. */
+    private var reportedDownProxy: SteamProxy? = null
 
     private val steamSessionId = newSteamSessionId()
     private val authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor)
@@ -289,13 +290,15 @@ class HeadlessTracker(
 
     /**
      * Tells the host when the Steam proxy became unreachable ([LifecycleEvent.SteamProxyUnreachable], with the deals
-     * held back) and when that ended ([LifecycleEvent.SteamProxyRecovered]); once each, not every cycle.
+     * held back) and when that ended ([LifecycleEvent.SteamProxyRecovered]); once each per proxy, not every cycle. A
+     * proxy pushed in place of an unreachable one that is unreachable too is told as its own outage, with its own
+     * detail, and no recovery in between.
      */
     private suspend fun reportSteamRoute() {
-        val down = steamRoute.isUnreachable
-        if (down == reportedProxyDown) return
-        reportedProxyDown = down
-        val event = if (down) {
+        val down = steamRoute.proxy?.takeIf { steamRoute.isUnreachable }
+        if (down == reportedDownProxy) return
+        reportedDownProxy = down
+        val event = if (down != null) {
             LifecycleEvent.SteamProxyUnreachable(loop.trackedDealIds.map { it.value }, steamRoute.detail ?: "no detail")
         } else {
             LifecycleEvent.SteamProxyRecovered
