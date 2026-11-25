@@ -24,7 +24,8 @@ import kotlin.js.Promise
  * `undici` is imported on the first call through a proxy, never when the package loads: importing it installs its own
  * `Agent` as Node's global dispatcher when none is set yet, which would move every `fetch` of the host's process — its
  * own, DMarket's — onto this package's `undici`. Whatever global dispatcher the import installs is put back
- * ([undiciModule]).
+ * ([undiciModule]). An import that failed, or an `Agent` that could not be made, is not kept: the next request
+ * tries again, and the proxy is not reported unreachable for it, since nothing was asked of the proxy.
  *
  * One `Agent` per transport, so per tracker: two trackers never share a connection, a pool or a proxy. When the host
  * pushes another proxy, or none, the old `Agent` is closed (its requests in flight let finish) before the next request
@@ -33,7 +34,7 @@ import kotlin.js.Promise
  *
  * Every request is `cache: "no-store"` and `credentials: "include"`, the Steam engine's options on every platform.
  */
-internal class SteamHttpTransport(private val route: SteamRoute) {
+internal class SteamHttpTransport(private val route: SteamRoute, private val loadUndici: () -> Promise<dynamic> = ::undiciModule) {
     val engine: HttpClientEngine = Js.create {
         configureRequest {
             credentials = "include"
@@ -71,15 +72,19 @@ internal class SteamHttpTransport(private val route: SteamRoute) {
                 options.dispatcher = tunnelling.agent
                 tunnelling.undici.fetch(input, options).unsafeCast<Promise<Response>>()
             },
-            // `undici` did not load or the `Agent` could not be made: nothing was sent, and nothing goes direct.
+            // `undici` did not load or the `Agent` could not be made: nothing was sent, and nothing goes direct. The
+            // proxy was not asked, so the route hears nothing; the next request loads again.
             { _: Throwable ->
-                route.unreachable(proxy, CLIENT_NOT_LOADED)
+                if (agent === loaded) {
+                    agent = null
+                    agentProxy = null
+                }
                 Promise.reject(notSent(CLIENT_NOT_LOADED))
             },
         ).unsafeCast<Promise<Response>>()
     }
 
-    private fun tunnellingAgentFor(proxy: SteamProxy): Promise<dynamic> = undiciModule().then { undici: dynamic ->
+    private fun tunnellingAgentFor(proxy: SteamProxy): Promise<dynamic> = loadUndici().then { undici: dynamic ->
         val pair: dynamic = js("({})")
         pair.undici = undici
         pair.agent = tunnellingAgent(
@@ -119,19 +124,22 @@ private fun notSent(detail: String): Throwable = js(
  * The `undici` module, imported once, on first use. Its import installs an `Agent` of its own as Node's global
  * dispatcher (under both of `undici`'s global symbols) when none is set yet; such an `Agent` is put back to what was
  * there before, so Node's own `fetch` sets up its own dispatcher as it would have. A dispatcher Node set meanwhile is
- * left alone.
+ * left alone. A failed import is not kept: the next call imports again.
  */
-internal fun undiciModule(): Promise<dynamic> = loadUndici().unsafeCast<Promise<dynamic>>()
+internal fun undiciModule(): Promise<dynamic> = importUndiciOnce()
 
-private val loadUndici: dynamic = js(
+private val importUndiciOnce: () -> Promise<dynamic> = undiciLoader { js("import('undici')").unsafeCast<Promise<dynamic>>() }
+
+/** [undiciModule] over [importModule], which a test can make fail. */
+internal fun undiciLoader(importModule: () -> Promise<dynamic>): () -> Promise<dynamic> = js(
     """
-    (function () {
+    (function (importModule) {
       let loading = null;
       return function () {
         if (loading === null) {
           const keys = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
           const before = keys.map((key) => globalThis[key]);
-          loading = import('undici').then((module) => {
+          const attempt = importModule().then((module) => {
             const undici = module.default && module.default.Agent ? module.default : module;
             keys.forEach((key, i) => {
               const now = globalThis[key];
@@ -139,12 +147,16 @@ private val loadUndici: dynamic = js(
             });
             return undici;
           });
+          loading = attempt;
+          attempt.catch(() => {
+            if (loading === attempt) loading = null;
+          });
         }
         return loading;
       };
-    })()
+    })
     """,
-)
+)(importModule).unsafeCast<() -> Promise<dynamic>>()
 
 /** The Steam engine of [SteamHttpTransport], for a caller that never stops it. */
 internal fun steamHttpEngine(route: SteamRoute): HttpClientEngine = SteamHttpTransport(route).engine

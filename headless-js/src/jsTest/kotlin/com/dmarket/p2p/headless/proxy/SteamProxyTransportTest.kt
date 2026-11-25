@@ -250,6 +250,50 @@ class SteamProxyTransportTest {
         }
     }
 
+    @Test
+    fun a_failed_undici_import_is_tried_again_on_the_next_call() = runTest {
+        withContext(Dispatchers.Default) {
+            var imports = 0
+            val load = undiciLoader {
+                imports++
+                if (imports == 1) Promise.reject(Error("Cannot find package 'undici'")) else undiciModule()
+            }
+
+            assertTrue(runCatching { load().unsafeCast<Promise<Any?>>().await() }.isFailure)
+            val undici: dynamic = load().unsafeCast<Promise<Any?>>().await()
+            load().unsafeCast<Promise<Any?>>().await()
+
+            assertEquals("function", jsTypeOf(undici.Agent))
+            assertEquals(2, imports, "a failed import is not kept, a loaded one is")
+        }
+    }
+
+    @Test
+    fun a_proxy_client_that_did_not_load_fails_one_call_and_the_next_goes_through_the_proxy() = runTest {
+        withContext(Dispatchers.Default) {
+            val proxy = proxy()
+            val steam = steamServer()
+            val route = route { SteamProxy.parse(proxy.url) }
+            var loads = 0
+            val transport = SteamHttpTransport(route) {
+                loads++
+                if (loads == 1) Promise.reject(Error("Cannot find package 'undici'")) else undiciModule()
+            }
+            val client = createSteamHttpClient(transport.engine, describeTransportCauses = true).also { clients += it }
+
+            val failure = assertFailsWith<SteamProxyUnreachableException> { client.get("${steam.base}/1") }
+            assertEquals("the proxy client could not be loaded", failure.detail)
+            assertFalse(route.isUnreachable, "the proxy was never asked")
+            assertEquals(0, steam.seen.size)
+
+            assertEquals("""{"response":{}}""", client.get("${steam.base}/2").bodyAsText())
+            assertEquals(2, loads)
+            assertEquals(listOf("/2"), steam.seen.map { it.url })
+            assertEquals(1, proxy.connects.size)
+            transport.close()
+        }
+    }
+
     // ---- the prover's target leg ---------------------------------------------------------------------
 
     /**

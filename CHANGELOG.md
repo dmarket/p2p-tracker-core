@@ -14,6 +14,10 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Headless: when the proxy client fails to load, only that Steam call fails; the next one loads it again, and the proxy is no longer reported unreachable for it (DMA-1012).
+
 ## [1.5.0-beta] - 2026-11-25
 
 ### Added
