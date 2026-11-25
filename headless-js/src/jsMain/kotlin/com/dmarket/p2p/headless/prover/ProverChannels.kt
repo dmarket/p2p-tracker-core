@@ -138,13 +138,17 @@ internal fun recordedTargetChannel(
     return open(connect, host, port, dialTimeoutMs, onError).unsafeCast<Promise<Any?>>()
 }
 
+/** The `file:` URL of [file] in the transport's `dist` under [assetsDir]. */
+private fun transportEntry(assetsDir: String, file: String): String =
+    nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", file)).href as String
+
 /**
  * The transport's Node connector, `connectTcp(host, port)` from `transport/dist/node.js` under [assetsDir]: the
  * module behind `client-wasm-transport`'s `/node` export, imported on the first dial. It imports `node:` built-ins, so
  * only a Node host loads it; the browser path never reaches this file.
  */
 internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> Promise<Any?> {
-    val url = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val url = transportEntry(assetsDir, "node.js")
     val dial: dynamic = js(
         """
         (function (url) {
@@ -176,8 +180,8 @@ internal fun proxiedTcpConnector(
     proxy: SteamProxy,
     onProxyError: (String) -> Unit,
 ): (host: String, port: Int) -> Promise<Any?> {
-    val nodeEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
-    val genericEntry = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "index.js")).href as String
+    val nodeEntry = transportEntry(assetsDir, "node.js")
+    val genericEntry = transportEntry(assetsDir, "index.js")
     val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
     val dial: dynamic = js(
         """

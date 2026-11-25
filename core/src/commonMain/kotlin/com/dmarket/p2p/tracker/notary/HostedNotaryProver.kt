@@ -73,10 +73,10 @@ class HostedNotaryProver(
             } catch (e: Throwable) {
                 HostedProofOutcome.Failed(ProofFailure.Other(e.message ?: e::class.simpleName ?: "the proof host failed"))
             }
-            if (proxy != null) {
+            if (route != null && proxy != null) {
                 when (val failure = (outcome as? HostedProofOutcome.Failed)?.failure) {
-                    is ProofFailure.ProxyUnreachable -> route?.unreachable(proxy, failure.detail)
-                    null -> route?.tunnelled(proxy)
+                    is ProofFailure.ProxyUnreachable -> route.unreachable(proxy, failure.detail)
+                    null -> route.tunnelled(proxy)
                     else -> Unit
                 }
             }
