@@ -25,9 +25,17 @@ class LoopbackProxy private constructor(
     }
 
     companion object {
-        suspend fun start(user: String = "trader", password: String = "s3cret-pass", refuseWith: Int? = null): LoopbackProxy {
+        suspend fun start(
+            user: String = "trader",
+            password: String = "s3cret-pass",
+            refuseWith: Int? = null,
+            establishedWith: Int = 200,
+        ): LoopbackProxy {
             val connects = mutableListOf<Pair<String, String?>>()
-            val server = create(nodeHttp, nodeNet, refuseWith, { target: String, auth: String? -> connects += target to auth })
+            val server = create(nodeHttp, nodeNet, refuseWith, establishedWith, { target: String, auth: String? ->
+                connects +=
+                    target to auth
+            })
             suspendCancellableCoroutine { continuation -> server.listen(0, "127.0.0.1") { continuation.resume(Unit) } }
             return LoopbackProxy(server, connects, user, password)
         }
@@ -43,7 +51,7 @@ class LoopbackProxy private constructor(
 
         private val create: dynamic = js(
             """
-            (function (http, net, refuseWith, onConnect) {
+            (function (http, net, refuseWith, establishedWith, onConnect) {
               const server = http.createServer((req, res) => { res.statusCode = 405; res.end(); });
               server.on('connect', (req, socket, head) => {
                 onConnect(req.url, req.headers['proxy-authorization'] || null);
@@ -54,7 +62,7 @@ class LoopbackProxy private constructor(
                 }
                 const colon = req.url.lastIndexOf(':');
                 const upstream = net.connect(Number(req.url.slice(colon + 1)), req.url.slice(0, colon).replace(/^\[|\]$/g, ''), () => {
-                  socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+                  socket.write('HTTP/1.1 ' + establishedWith + ' Connection Established\r\n\r\n');
                   if (head.length) upstream.write(head);
                   upstream.pipe(socket);
                   socket.pipe(upstream);

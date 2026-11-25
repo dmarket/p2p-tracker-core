@@ -7,7 +7,7 @@ import kotlin.js.Promise
 
 /**
  * Opens a raw TCP tunnel to `host:port` through [proxy]: a connection to the proxy, `CONNECT host:port`, and its
- * `200`. Resolves the Node socket, paused, past the proxy's answer and ready for TLS; rejects with an error coded
+ * `2xx`. Resolves the Node socket, paused, past the proxy's answer and ready for TLS; rejects with an error coded
  * [STEAM_PROXY_UNREACHABLE_CODE] when the tunnel cannot be opened — no connection to the proxy, no answer within
  * [timeoutMs], or a `CONNECT` it refused. The only way either Steam transport reaches Steam while a proxy is set:
  * nothing here, or above it, ever falls back to a direct connection.
@@ -73,7 +73,7 @@ private val tunnel: dynamic = js(
           const match = /^HTTP\/1\.[01] (\d{3})/.exec(head.subarray(0, end).toString('latin1'));
           if (match === null) return fail('the proxy answered CONNECT with no HTTP status');
           const status = Number(match[1]);
-          if (status !== 200) return fail('the proxy answered CONNECT with HTTP ' + status);
+          if (status < 200 || status >= 300) return fail('the proxy answered CONNECT with HTTP ' + status);
           // Before the client has spoken TLS nothing may come through the tunnel; bytes here are not Steam's.
           if (head.length > end + 4) return fail('the proxy sent data before the tunnel was used');
           finish();

@@ -87,6 +87,21 @@ class ProverBackoffTest {
     }
 
     @Test
+    fun a_key_push_leaves_a_proxys_wait_and_its_recovery_lift_alone() {
+        val backoff = ProverBackoff()
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), T0)
+        backoff.keyChanged()
+        assertNotNull(backoff.blocked(T0 + 1.seconds), "a key does not clear the wait for a dead proxy")
+        backoff.proxyRecovered()
+        assertNull(backoff.blocked(T0 + 1.seconds))
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), T0 + 2.seconds)
+        backoff.keyChanged()
+        backoff.proxyRecovered()
+        assertNotNull(backoff.blocked(T0 + 3.seconds), "the lift stays spent after a key push; the doubled wait holds")
+        assertNull(backoff.blocked(T0 + 62.seconds))
+    }
+
+    @Test
     fun another_proxy_or_the_same_one_back_ends_a_proxys_wait_and_leaves_the_notarys_alone() {
         val now = Instant.fromEpochSeconds(1_781_611_200)
         for (lift in listOf(ProverBackoff::proxyChanged, ProverBackoff::proxyRecovered)) {

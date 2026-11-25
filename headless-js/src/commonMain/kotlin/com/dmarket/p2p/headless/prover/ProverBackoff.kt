@@ -67,9 +67,9 @@ class ProverBackoff {
         notBefore = null
     }
 
-    /** A new key may answer the notary's 401: let the next proof try it. An update block stays. */
+    /** A new key may answer the notary's 401: let the next proof try it. An update block and a proxy's wait stay. */
     fun keyChanged() {
-        if (notBefore != Instant.DISTANT_FUTURE) succeeded()
+        if (notBefore != Instant.DISTANT_FUTURE && !proxyWait) succeeded()
     }
 
     companion object {

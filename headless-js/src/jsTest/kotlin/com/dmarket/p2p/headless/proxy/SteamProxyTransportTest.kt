@@ -107,6 +107,29 @@ class SteamProxyTransportTest {
     }
 
     @Test
+    fun any_2xx_answer_to_connect_opens_the_tunnel() = runTest {
+        withContext(Dispatchers.Default) {
+            val target = echo()
+            for (status in listOf(200, 204)) {
+                val proxy = LoopbackProxy.start(establishedWith = status).also { proxies += it }
+                val socket: dynamic = openSteamTunnel(
+                    SteamProxy.parse(proxy.url),
+                    "127.0.0.1",
+                    target.port,
+                ).unsafeCast<Promise<Any?>>().await()
+                sockets.add(socket)
+                val echoed = Promise<String> { resolve, _ ->
+                    socket.setEncoding("utf8")
+                    socket.once("data") { data: String -> resolve(data) }
+                    socket.resume()
+                    socket.write("ping")
+                }.await()
+                assertEquals("ping", echoed, "$status")
+            }
+        }
+    }
+
+    @Test
     fun a_tunnel_that_cannot_open_fails_coded_and_in_its_own_words() = runTest {
         withContext(Dispatchers.Default) {
             val closed = LoopbackProxy.closedPort()
