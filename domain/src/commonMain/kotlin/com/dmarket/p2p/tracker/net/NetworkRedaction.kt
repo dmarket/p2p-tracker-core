@@ -146,10 +146,16 @@ object NetworkRedaction {
     }
 
     /**
-     * The user info of a URL, up to its last `@` before the path: `scheme://` is kept, everything to that `@` goes.
-     * Greedy on purpose, as `SteamProxy.parse` splits on the last `@` and so accepts a raw `@` in the password.
+     * The user info of a URL: `scheme://` is kept, everything to the `@` goes. Two forms, the first that matches:
+     * - up to the last `@` that a `host:port` follows: a proxy's (`SteamProxy.parse` always has the port), whose
+     *   password may hold any of `@`, `"`, `,`, `'`, `<`, `>`, as `parse` splits on the last `@` and takes them;
+     * - else up to an `@` with none of `"`, `,`, `'`, `<`, `>` before it, any host after it. So a URL closing a
+     *   compact JSON or HTML value does not take the text up to the next field's `@` (`"…","contact":"x@y.com"`).
      */
-    private val URL_USER_INFO: Regex = Regex("([A-Za-z][A-Za-z0-9+.-]*://)[^\\s/?#]+@")
+    private val URL_USER_INFO: Regex = Regex(
+        "([A-Za-z][A-Za-z0-9+.-]*://)" +
+            "(?:[^\\s/?#]+(?=@(?:[A-Za-z0-9][A-Za-z0-9.-]*|\\[[0-9A-Fa-f:.]+\\]):[0-9]{1,5}(?![0-9]))|[^\\s/?#\"',<>]+)@",
+    )
 
     /** Steam Community HTML token attribute (constant — compiled once, not per body). */
     private val LOYALTY_TOKEN_ATTR: Regex = Regex("(data-loyalty_webapi_token=)(\\S+)", IGNORE_CASE)
