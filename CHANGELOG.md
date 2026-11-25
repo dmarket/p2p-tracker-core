@@ -14,6 +14,8 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.4.0-beta] - 2026-11-25
+
 ### Added
 
 - Android: `NativeProverBridge` exposes the native TLSN prover (issuance, progress, cancellation, the proven response, saved material and presentation), and `NativeProverStream` runs a prover stream over a host `NativeProverTransport`. Call issuance off the main thread; failures throw `NativeProverException` with a `NativeProverStatus` (DMA-540).
@@ -654,7 +656,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...HEAD
+[1.4.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...v1.4.0-beta
 [1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
 [1.1.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.0.3-beta...v1.1.0-beta
