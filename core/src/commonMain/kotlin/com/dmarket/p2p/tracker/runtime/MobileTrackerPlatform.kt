@@ -132,8 +132,9 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
 
     /**
      * The sealed vault's Steam cookies, in [sealedStore] next to the device id: the backing of [steamCookieStore] when
-     * there is no [webCookies], and after the import that follows a Steam sign-in the only source of Steam cookies. Read from the sealed store once per process and kept in memory, which
-     * every write, import and clear updates under the same lock; each call settles the install first, like [vault].
+     * there is no [webCookies], and after the import that follows a Steam sign-in the only source of Steam cookies.
+     * Read from the sealed store once per process and kept in memory, which every write, import and clear updates under
+     * the same lock; each call settles the install first, like [vault].
      */
     val steamCookies: SteamCookieVault = object : SteamCookieVault {
         override suspend fun readSteamCookies(): List<SteamCookie> = inInstall {
