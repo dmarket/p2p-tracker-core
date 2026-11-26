@@ -180,6 +180,13 @@ enum class KillCause(val wireName: String) {
     /** It exited, or lost its channel to the host, without an answer. */
     @SerialName("exited")
     EXITED("exited without an answer"),
+
+    /**
+     * The host cut it: it was proving without a Steam proxy when the account's first one was pushed, and its Steam leg
+     * would have gone direct after that. Not the prover's fault: the proof runs again through the proxy.
+     */
+    @SerialName("proxy_pinned")
+    PROXY_PINNED("cut when a Steam proxy was first pushed"),
 }
 
 /** A hosted proof failed; [failure] says how. The message is [ProofFailure.summary], which carries no credential. */

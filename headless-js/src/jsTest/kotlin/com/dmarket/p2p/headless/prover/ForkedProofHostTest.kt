@@ -221,7 +221,10 @@ class ForkedProofHostTest {
             direct.steamProxyChanged()
 
             val cut = withTimeout(5_000) { running.await() }
-            assertEquals(ProofFailure.ProverKilled(KillCause.EXITED, PROOF_CUT_FOR_PROXY), assertIs<HostedProofOutcome.Failed>(cut).failure)
+            assertEquals(
+                ProofFailure.ProverKilled(KillCause.PROXY_PINNED, PROOF_CUT_FOR_PROXY),
+                assertIs<HostedProofOutcome.Failed>(cut).failure,
+            )
 
             val tunnelled = host("hang-after-connect", deadline = 1_500)
             val proxied = HostedProofRequest(proof.request, token, SESSION_ID, SteamProxy.parse(PROXY))

@@ -142,7 +142,8 @@ class ForkedProofHost(
     /**
      * Another proxy, or none, may answer: the next proof need not wait for the old failure's backoff. A proof still
      * running without a proxy — started before the account's first one — is cut: its Steam leg would go direct after
-     * the account was pinned to a proxy. It fails as killed ([PROOF_CUT_FOR_PROXY]) and runs again through the proxy.
+     * the account was pinned to a proxy. It fails as killed ([KillCause.PROXY_PINNED]), which the loop's notary breaker
+     * does not count, and runs again through the proxy.
      */
     override fun steamProxyChanged() {
         backoff.proxyChanged()
@@ -190,7 +191,14 @@ class ForkedProofHost(
             }
             when (event) {
                 is ChildEvent.Exited ->
-                    return if (child.cutForProxy) killed(KillCause.EXITED, PROOF_CUT_FOR_PROXY) else killed(event.cause(), event.detail())
+                    return if (child.cutForProxy) {
+                        killed(
+                            KillCause.PROXY_PINNED,
+                            PROOF_CUT_FOR_PROXY,
+                        )
+                    } else {
+                        killed(event.cause(), event.detail())
+                    }
                 is ChildEvent.Message -> {
                     val message = runCatching { ProverIpc.fromChild(event.text) }.getOrNull()?.takeIf { it.id == id } ?: continue
                     when (message) {

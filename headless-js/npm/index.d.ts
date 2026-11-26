@@ -144,7 +144,8 @@ export interface SteamTokenPushOptions {
 }
 
 /** Why a prover process ended before its proof did. */
-export type KillCause = "out_of_memory" | "connect_deadline" | "session_deadline" | "exited";
+/** `proxy_pinned`: cut because the account's first Steam proxy was pushed mid-proof; the proof runs again through it. */
+export type KillCause = "out_of_memory" | "connect_deadline" | "session_deadline" | "exited" | "proxy_pinned";
 
 /** Why a proof produced nothing. Every text in it, `summary` included, is redacted. */
 export type ProofFailure =

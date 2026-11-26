@@ -53,6 +53,7 @@ import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
@@ -3805,6 +3806,23 @@ class TradeTrackerLoopTest {
         threeProofLoop(notary, clock, events = events).runOnce()
 
         assertEquals(3, notary.proven.size, "proxy failures must not park the deals behind them")
+        assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
+    }
+
+    @Test
+    fun proofs_cut_because_the_first_steam_proxy_was_pushed_do_not_arm_the_breaker() = runTest {
+        // Headless: a proof running without a proxy when the account's first one is pushed is killed so its Steam leg
+        // never goes direct. Not the prover's fault, and it must run again at once through the proxy.
+        val clock = FakeClock()
+        val notary = FakeNotaryProver().apply {
+            proveThrows = HostedProofException(ProofFailure.ProverKilled(KillCause.PROXY_PINNED, "cut for the proxy"))
+            onProve = { clock.advance(2.seconds) }
+        }
+        val events = RecordingEventObserver()
+
+        threeProofLoop(notary, clock, events = events).runOnce()
+
+        assertEquals(3, notary.proven.size, "proxy cuts must not park the deals behind them")
         assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
     }
 
