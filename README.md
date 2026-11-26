@@ -665,9 +665,8 @@ trackerState(tracker).steamProxyRequired;  // true once a proxy was held, or wit
 - **The first proxy:** a direct Steam call or proof still in flight when it is pushed is cut (the call aborted, the
   prover process killed and the proof run again), so nothing started direct goes on direct after it.
 - **Proofs:** the prover's Steam leg is the tunnel, handed to the transport (`wrapTcpSocket`), or wrapped in the
-  transport's own `TcpIoChannel`; only a prover package with neither leaves the dial to its generic `connectTcp`, which
-  must then provably read and write the tunnel it was given, or the dial is refused. `prover.mode: "proxy"` (the notary
-  dials Steam) is refused with a proxy.
+  transport's own `TcpIoChannel`; a prover package with neither is refused before it dials. `prover.mode: "proxy"` (the
+  notary dials Steam) is refused with a proxy.
 
 Map the three proxy codes (`STEAM_PROXY_INVALID`, `STEAM_PROXY_LOCKED`, `STEAM_PROXY_REQUIRED`) to a 400: the caller
 asked for something refused. Steam logins and Steam Guard confirmations made outside the tracker need the same proxy.

@@ -10,7 +10,7 @@ import com.dmarket.p2p.headless.node.nodeFs
 import com.dmarket.p2p.headless.node.nodeNet
 import com.dmarket.p2p.headless.node.tempDir
 import com.dmarket.p2p.headless.prover.ChildResult
-import com.dmarket.p2p.headless.prover.NOT_THE_TUNNEL
+import com.dmarket.p2p.headless.prover.NO_TUNNEL_HANDOFF
 import com.dmarket.p2p.headless.prover.NodeWasmProver
 import com.dmarket.p2p.headless.prover.ProverSessionRecord
 import com.dmarket.p2p.headless.prover.ProverSettings
@@ -50,8 +50,8 @@ import kotlin.test.assertTrue
 /**
  * A route that requires the Steam proxy (the host's `requireSteamProxy`, or a proxy held once), at its two Steam legs:
  * the HTTP engine and the proof's target leg. Node's global `fetch` (the engine's direct path) and the transport's
- * direct connector are both spied on, and neither may be reached; nor may Steam, around the proxy. On the generic
- * `connectTcp` path the tunnel is verified, not trusted.
+ * direct connector are both spied on, and neither may be reached; nor may Steam, around the proxy. A prover package
+ * that cannot take the tunnel is refused before it dials.
  */
 class StickySteamProxyTest {
     private val proxies = mutableListOf<LoopbackProxy>()
@@ -84,7 +84,6 @@ class StickySteamProxyTest {
         val global: dynamic = js("globalThis")
         global.__directDials = undefined
         global.__genericDials = undefined
-        global.__ownClosed = undefined
         global.__channels = undefined
     }
 
@@ -176,7 +175,7 @@ class StickySteamProxyTest {
      * `dist/index.js` with [generic] as the generic one. Each counts its calls on `globalThis`, so a dial through either
      * shows.
      */
-    private suspend fun noHandOffDir(generic: String = GENERIC_HONEST): String {
+    private suspend fun noHandOffDir(generic: String = GENERIC_CONNECT_ONLY): String {
         val root = tempDir()
         val dist = join(join(root, "transport"), "dist")
         nodeFs.promises.mkdir(dist, js("({recursive: true})")).unsafeCast<Promise<Any?>>().await()
@@ -250,83 +249,24 @@ class StickySteamProxyTest {
     }
 
     @Test
-    fun a_generic_connect_tcp_that_reads_and_writes_the_tunnel_it_was_given_carries_the_steam_leg() = runTest {
-        withContext(Dispatchers.Default) {
-            val proxy = LoopbackProxy.start("trader", "s3cret-pass").also { proxies += it }
-            val accepted = mutableListOf<Unit>()
-            val target = echoPort(accepted)
-            val errors = mutableListOf<String>()
-            val connect = proxiedTcpConnector(noHandOffDir(), SteamProxy.parse(proxy.url)) { errors += it }
-
-            val channel: dynamic = connect("127.0.0.1", target).await()!!
-
-            assertEquals(listOf(22, 3, 1), echoed(channel), "the verified tunnel carries the bytes")
-            assertEquals(1, dials("__genericDials"))
-            assertEquals(0, dials("__directDials"))
-            assertEquals(listOf("127.0.0.1:$target"), proxy.connects.map { it.first })
-            assertEquals(emptyList(), errors)
-        }
-    }
-
-    @Test
-    fun a_generic_connect_tcp_that_ignores_the_tunnel_is_refused_and_its_own_connection_closed() = runTest {
+    fun a_package_with_neither_wrap_tcp_socket_nor_tcp_io_channel_is_refused_before_anything_is_dialled() = runTest {
         withContext(Dispatchers.Default) {
             val proxy = LoopbackProxy.start("trader", "s3cret-pass").also { proxies += it }
             val record = ProverSessionRecord()
-            val connect = proxiedTcpConnector(noHandOffDir(GENERIC_OWN_SOCKET), SteamProxy.parse(proxy.url)) {
+            val connect = proxiedTcpConnector(noHandOffDir(), SteamProxy.parse(proxy.url)) {
                 record.proxyError = record.proxyError ?: it
             }
 
             val failed = runCatching { recordedTargetChannel("steamcommunity.com:443", record, connect = connect).await() }.isFailure
 
-            assertTrue(failed, "a socket the SDK did not open is never handed to the prover")
-            assertEquals(1, dials("__genericDials"))
-            assertEquals(1, dials("__ownClosed"), "the transport's own connection was closed before a byte was written")
-            assertTrue(proxy.connects.isEmpty(), "the tunnel was never asked for")
+            assertTrue(failed)
+            assertEquals(0, dials("__genericDials"), "its connectTcp, which would dial on its own, was never called")
+            assertEquals(0, dials("__directDials"))
+            assertTrue(proxy.connects.isEmpty(), "no tunnel was opened either")
             assertEquals(null, record.proxyError, "the proxy is not blamed")
-            assertEquals(NOT_THE_TUNNEL, record.targetError)
+            assertEquals(NO_TUNNEL_HANDOFF, record.targetError)
             val failure = ProofFailures.classify(targetError = record.targetError, proxyError = record.proxyError, message = "io error")
-            assertEquals(ProofFailure.SteamFailed(detail = NOT_THE_TUNNEL), failure)
-        }
-    }
-
-    @Test
-    fun a_generic_connect_tcp_that_opens_the_tunnel_but_does_not_hold_it_is_refused_and_the_tunnel_closed() = runTest {
-        withContext(Dispatchers.Default) {
-            val proxy = LoopbackProxy.start("trader", "s3cret-pass").also { proxies += it }
-            val accepted = mutableListOf<Unit>()
-            val target = echoPort(accepted)
-            val record = ProverSessionRecord()
-            val connect = proxiedTcpConnector(noHandOffDir(GENERIC_OPENS_BUT_SWAPS), SteamProxy.parse(proxy.url)) {
-                record.proxyError = record.proxyError ?: it
-            }
-
-            val failed = runCatching { recordedTargetChannel("127.0.0.1:$target", record, connect = connect).await() }.isFailure
-
-            assertTrue(failed)
-            assertEquals(listOf("127.0.0.1:$target"), proxy.connects.map { it.first }, "the tunnel was opened")
-            assertEquals(1, dials("__ownClosed"), "the channel it handed back instead was closed")
-            assertEquals(null, record.proxyError)
-            assertEquals(NOT_THE_TUNNEL, record.targetError)
-        }
-    }
-
-    @Test
-    fun a_generic_connect_tcp_that_takes_no_options_is_refused_before_anything_is_dialled() = runTest {
-        withContext(Dispatchers.Default) {
-            val proxy = LoopbackProxy.start("trader", "s3cret-pass").also { proxies += it }
-            val record = ProverSessionRecord()
-            val connect = proxiedTcpConnector(noHandOffDir(GENERIC_NO_OPTIONS), SteamProxy.parse(proxy.url)) {
-                record.proxyError = record.proxyError ?: it
-            }
-
-            val failed = runCatching { recordedTargetChannel("steamcommunity.com:443", record, connect = connect).await() }.isFailure
-
-            assertTrue(failed)
-            assertEquals(0, dials("__genericDials"), "it could not take the tunnel, so it was never called")
-            assertEquals(0, dials("__directDials"))
-            assertTrue(proxy.connects.isEmpty())
-            assertEquals(NOT_THE_TUNNEL, record.targetError)
+            assertEquals(ProofFailure.SteamFailed(detail = NO_TUNNEL_HANDOFF), failure)
         }
     }
 
@@ -355,8 +295,8 @@ class StickySteamProxyTest {
             }
         """
 
-        /** The shape of the transport's own generic `connectTcp`: the socket from `connect`, held by reader and writer. */
-        const val GENERIC_HONEST = """
+        /** A generic entry with only `connectTcp`, no `TcpIoChannel`: it must never be called. */
+        const val GENERIC_CONNECT_ONLY = """
             export async function connectTcp(host, port, opts) {
               globalThis.__genericDials = (globalThis.__genericDials || 0) + 1;
               const socket = await opts.connect(host, port);
@@ -389,39 +329,6 @@ class StickySteamProxyTest {
             export async function connectTcp(host, port, opts) {
               globalThis.__genericDials = (globalThis.__genericDials || 0) + 1;
               throw new Error('the generic connectTcp was called for ' + host + ':' + port);
-            }
-        """
-
-        /** A transport that dials on its own and never calls `connect`; its "connection" is a stand-in. */
-        const val GENERIC_OWN_SOCKET = """
-            export async function connectTcp(host, port, opts) {
-              globalThis.__genericDials = (globalThis.__genericDials || 0) + 1;
-              return {
-                async read() { return null; },
-                async write() {},
-                async close() { globalThis.__ownClosed = (globalThis.__ownClosed || 0) + 1; },
-              };
-            }
-        """
-
-        /** One that opens the tunnel, then hands back a channel of its own instead of holding it. */
-        const val GENERIC_OPENS_BUT_SWAPS = """
-            export async function connectTcp(host, port, opts) {
-              globalThis.__genericDials = (globalThis.__genericDials || 0) + 1;
-              await opts.connect(host, port);
-              return {
-                async read() { return null; },
-                async write() {},
-                async close() { globalThis.__ownClosed = (globalThis.__ownClosed || 0) + 1; },
-              };
-            }
-        """
-
-        /** One whose `connectTcp` takes no options, so it could only dial on its own. */
-        const val GENERIC_NO_OPTIONS = """
-            export async function connectTcp(host, port) {
-              globalThis.__genericDials = (globalThis.__genericDials || 0) + 1;
-              throw new Error('dialled ' + host + ':' + port + ' on its own');
             }
         """
     }

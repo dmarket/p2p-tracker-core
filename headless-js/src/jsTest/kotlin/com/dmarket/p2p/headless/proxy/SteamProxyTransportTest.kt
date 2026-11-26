@@ -342,8 +342,9 @@ class SteamProxyTransportTest {
     // ---- the prover's target leg ---------------------------------------------------------------------
 
     /**
-     * A 1.0.1 prover package's transport: `dist/index.js` with the generic `connectTcp(host, port, { connect })`, and no
-     * `dist/node.js` with `wrapTcpSocket`.
+     * A 1.0.1 prover package's transport: `dist/index.js` with the generic `connectTcp(host, port, { connect })` and its
+     * `TcpIoChannel`, and no `dist/node.js` with `wrapTcpSocket`. The channel is built on the tunnel; `connectTcp`,
+     * which would dial on its own, is never called (it throws here).
      */
     private suspend fun transportDir(): String {
         val root = tempDir()
@@ -399,7 +400,7 @@ class SteamProxyTransportTest {
         withContext(Dispatchers.Default) {
             val target = echo()
             val closed = LoopbackProxy.closedPort()
-            // Both handoffs: the shipped package's `wrapTcpSocket`, and 1.0.1's generic `connectTcp`.
+            // Both handoffs: the shipped package's `wrapTcpSocket`, and 1.0.1's `TcpIoChannel`.
             for (assetsDir in listOf(distributedDir(), transportDir())) {
                 val record = ProverSessionRecord()
                 val connect = proxiedTcpConnector(assetsDir, SteamProxy.parse("http://trader:s3cret-pass@127.0.0.1:$closed")) {
@@ -420,15 +421,21 @@ class SteamProxyTransportTest {
 
     private companion object {
         const val GENERIC_CONNECT_TCP = """
+            export class TcpIoChannel {
+              #socket;
+              #reader;
+              #writer;
+              constructor(socket) {
+                this.#socket = socket;
+                this.#reader = socket.readable.getReader();
+                this.#writer = socket.writable.getWriter();
+              }
+              async read() { const { value, done } = await this.#reader.read(); return done ? null : value; }
+              write(data) { return this.#writer.write(new Uint8Array(data)); }
+              async close() { try { await this.#writer.close(); } finally { await this.#socket.close(); } }
+            }
             export async function connectTcp(host, port, opts) {
-              const socket = await opts.connect(host, port);
-              const reader = socket.readable.getReader();
-              const writer = socket.writable.getWriter();
-              return {
-                async read() { const { value, done } = await reader.read(); return done ? null : value; },
-                write(data) { return writer.write(new Uint8Array(data)); },
-                async close() { try { await writer.close(); } finally { await socket.close(); } },
-              };
+              throw new Error('the generic connectTcp was called for ' + host + ':' + port);
             }
         """
     }
