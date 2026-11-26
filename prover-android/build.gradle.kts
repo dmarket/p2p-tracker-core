@@ -1,7 +1,7 @@
 // The native TLSN prover for Android: the C ABI shipped in the pinned @dmarket/steam-provenance npm package
 // (native/android/), checked against the package's BUILD.json and packaged byte for byte. A plain Android
 // library rather than part of :core's androidMain because the Kotlin Multiplatform Android library plugin
-// (AGP 9.3.1) has no externalNativeBuild and no ndkVersion. :core's androidMain depends on it, so the app
+// (AGP 9.5.2) has no externalNativeBuild and no ndkVersion. :core's androidMain depends on it, so the app
 // gets it transitively; the jvm and js targets never see it, and building them needs no NDK.
 plugins {
     id("dmarket.android.library")
