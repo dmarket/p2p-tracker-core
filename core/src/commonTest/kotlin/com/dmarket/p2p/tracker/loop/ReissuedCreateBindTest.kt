@@ -156,7 +156,12 @@ class ReissuedCreateBindTest {
            "partnerSteamId":"$partner","assetIds":["a1","a2"],"tradeToken":"tok","contextId":2$extra}"""
 
     private fun loop(fence: Boolean = true, claims: DealWriteClaimStore = PersistedDealWriteClaimStore()) = TradeTrackerLoop(
-        config = LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background, reportEachWrite = true),
+        // Without the fence it is the extension's loop: no lease clock, reports batched at the end of the cycle.
+        config = if (fence) {
+            LoopConfig("1.0.0", RuntimeSurface.AndroidNative, TrackerMode.Background, reportEachWrite = true)
+        } else {
+            LoopConfig("1.0.0", RuntimeSurface.WebChrome, TrackerMode.Foreground)
+        },
         marketplace = KtorMarketplaceClient(
             createHttpClient(engine),
             "https://gateway.dmarket.com",
@@ -319,13 +324,67 @@ class ReissuedCreateBindTest {
     }
 
     @Test
-    fun without_a_lease_clock_the_create_goes_as_before() = runTest {
+    fun without_a_lease_clock_a_create_binds_to_the_offer_already_there_without_creating() = runTest {
         directive = create()
         sentOffers = listOf("9:$partnerAccountId:a1,a2")
 
         loop(fence = false).runOnce()
 
-        assertEquals(listOf("create", "report"), log)
+        assertEquals(listOf("read", "report"), log)
+        assertEquals(listOf("bound-0/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun without_a_lease_clock_and_no_offer_there_the_create_reads_then_creates() = runTest {
+        directive = create()
+
+        loop(fence = false).runOnce()
+
+        assertEquals(listOf("read", "create", "report"), log)
+        assertEquals(listOf("new-offer/needs_confirmation"), reported)
+    }
+
+    @Test
+    fun without_a_lease_clock_a_failed_read_creates_and_reports_nothing_and_the_next_serve_reads_again() = runTest {
+        directive = create()
+        readFailures = 1
+        val loop = loop(fence = false)
+
+        loop.runOnce()
+        assertEquals(listOf("read"), log)
+        assertTrue(
+            observer.events.any { it is LifecycleEvent.DirectiveDropped && it.reason == BIND_READ_FAILED_DROP_REASON },
+            "${observer.events}",
+        )
+
+        wall.advance(1.minutes)
+        loop.forceHeartbeatNow()
+        loop.runOnce()
+        assertEquals(listOf("read", "read", "create", "report"), log)
+    }
+
+    @Test
+    fun without_a_lease_clock_a_create_relayed_by_create_trade_reads_first_and_binds() = runTest {
+        createTrade = create()
+        sentOffers = listOf("9:$partnerAccountId:a1,a2")
+
+        val result = withContext(Dispatchers.Default) {
+            loop(fence = false).awaitDirectiveOutcome(DealId("deal-1"), 1.minutes, this)
+        }
+
+        assertEquals(CreateOfferResult.NeedsConfirmation(OfferId("bound-0")), result)
+        assertEquals(listOf("read", "report"), log)
+    }
+
+    @Test
+    fun without_a_lease_clock_the_read_counts_back_from_now() = runTest {
+        directive = create(""","leaseDuration":"300s"""")
+
+        loop(fence = false).runOnce()
+
+        // Now, less one lease TTL, less the 125 min margin.
+        val cutoff = wall.now() - 5.minutes - 125.minutes
+        assertEquals(cutoff.epochSeconds.toString(), reads.single()[endpoints.paramTimeHistoricalCutoff])
     }
 
     @Test
@@ -431,8 +490,8 @@ class ReissuedCreateBindTest {
         assertEquals("1", query[endpoints.paramActiveOnly])
         assertEquals("0", query[endpoints.paramGetReceivedOffers])
         assertEquals("0", query[endpoints.paramGetDescriptions])
-        // This lease's start, less one lease TTL, less the 10 min margin.
-        val cutoff = wall.now() - 5.minutes - 10.minutes
+        // This lease's start, less one lease TTL, less the 125 min margin.
+        val cutoff = wall.now() - 5.minutes - 125.minutes
         assertEquals(cutoff.epochSeconds.toString(), query[endpoints.paramTimeHistoricalCutoff])
     }
 }

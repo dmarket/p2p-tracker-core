@@ -62,9 +62,9 @@ interface SteamReadClient {
 
     /**
      * The offers this account sent that are still active, plus those whose state changed since [historicalCutoff] when
-     * it is set (`GetTradeOffers`, sent only, `active_only=1`, `time_historical_cutoff`), for a mobile create that first
-     * looks for the offer an earlier lease made. Throws on a failed read. A client that does not implement it answers
-     * with every sent offer ([sentOffers]), a superset.
+     * it is set (`GetTradeOffers`, sent only, `active_only=1`, `time_historical_cutoff`), for a create that first looks
+     * for the offer an earlier lease made. Throws on a failed read. A client that does not implement it answers with
+     * every sent offer ([sentOffers]), a superset; one that implements neither throws, and the loop then creates nothing.
      */
     suspend fun sentOffers(credential: SteamCredential, historicalCutoff: Instant?): List<SteamSentOffer> = sentOffers(credential)
 

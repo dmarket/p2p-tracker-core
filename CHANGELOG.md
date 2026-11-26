@@ -27,6 +27,7 @@ GitHub Release.
 
 ### Changed
 
+- Every `create_offer` now reads the account's sent offers first on the extension and in the headless package too, and reports an offer to the same partner with exactly the directive's assets instead of sending a second one; while that read fails, the create waits for the next serve (DMA-1022). A host that builds its own loop with `TradeTrackerCore.createLoop` must pass a `SteamReadClient` that implements `sentOffers`, or no create is sent; `SteamWriteConfig.bindLookbackMarginMs` now defaults to 125 min.
 - Mobile: on the buyer's phone `P2pTracker.updateStatus` now proves the deal's accepted, declined, cancelled, completed or reversed trade itself instead of leaving it to the seller, under the same proof gate and update permit (DMA-664).
 - Mobile: `P2pTracker.updateStatus` takes `afterSteamReturn`; with it the buyer's update after Accept in Steam proves even while the update permit is spent, once per permit window, and a refusal of that proof (the deal moved on) is no update failure and does not hold the report (DMA-664).
 - Mobile: the tracker no longer keeps sent end-of-deal proofs on the device, and removes the ones 1.4.0 stored when it next starts (DMA-540).

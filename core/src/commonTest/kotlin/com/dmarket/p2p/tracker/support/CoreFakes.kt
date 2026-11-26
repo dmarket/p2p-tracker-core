@@ -274,6 +274,16 @@ class FakeSteamReadClient(initialOffers: Map<OfferId, Int> = emptyMap(), initial
         return sentOffers
     }
 
+    /** The read before a create (active offers since a cutoff), counted and failed apart from the settling read above. */
+    var bindReadCalls = 0
+    var bindReadThrows = false
+
+    override suspend fun sentOffers(credential: SteamCredential, historicalCutoff: Instant?): List<SteamSentOffer> {
+        bindReadCalls++
+        if (bindReadThrows) error("simulated bind read failure")
+        return sentOffers
+    }
+
     /** What `GetTradeOffers` lists as received; only [offers] answers with them. */
     var receivedOffers: List<SteamSentOffer> = emptyList()
 

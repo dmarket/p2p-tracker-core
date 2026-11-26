@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCanceller
 import com.dmarket.p2p.tracker.adapter.steam.NoOpSteamOfferCreator
 import com.dmarket.p2p.tracker.client.HttpStatusException
 import com.dmarket.p2p.tracker.client.HttpTransportException
+import com.dmarket.p2p.tracker.client.SteamProxyUnreachableException
 import com.dmarket.p2p.tracker.client.marketplace.RateLimitedException
 import com.dmarket.p2p.tracker.client.steam.SteamRateLimitedException
 import com.dmarket.p2p.tracker.credential.steam.SteamCredentialProvider
@@ -86,6 +87,7 @@ import com.dmarket.p2p.tracker.model.steam.SteamSentOffer
 import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
 import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.HostedProofException
@@ -2309,23 +2311,24 @@ class TradeTrackerLoop(
     /**
      * The `time_historical_cutoff` of a create's bind read: where the lease before this one may have started (this
      * lease's start, counted back on the lease clock and turned into Steam's time by the wall clock, less one lease TTL),
-     * less [com.dmarket.p2p.tracker.config.SteamWriteConfig.bindLookbackMargin].
+     * less [com.dmarket.p2p.tracker.config.SteamWriteConfig.bindLookbackMargin]. Without a [leaseClock] no lease start is
+     * known, and the read counts back from now.
      */
-    private suspend fun bindCutoff(directive: Directive, lease: ElapsedClock): Instant = leaseLock.withLock {
+    private suspend fun bindCutoff(directive: Directive): Instant = leaseLock.withLock {
         val window = leases[directive.directiveId]
-        val sinceLeased = window?.let { lease.elapsed() - it.leasedAt } ?: Duration.ZERO
+        val sinceLeased = leaseClock?.let { lease -> window?.let { lease.elapsed() - it.leasedAt } } ?: Duration.ZERO
         val ttl = window?.ttl ?: directive.leaseTtl ?: config.leaseTtl
         clock.now() - sinceLeased - ttl - config.tunables.steamWrites.bindLookbackMargin
     }
 
     /**
-     * Before a mobile create writes, the offer an earlier lease of it made, maybe on another device that never reported
-     * it (the backend serves the same `create_offer` again and does not say so): a sent offer to [partner] giving exactly
-     * the directive's assets, in a state [CreateOfferMatch.BINDABLE_STATES] names, read with `active_only=1` from
-     * [bindCutoff], and not another deal's ([offersOfOtherDeals]). Its result is reported as the create's own, and
-     * nothing is created. [Result.success] of `null`: no
-     * such offer, or no read to make (no [leaseClock]: web and headless run as before). A failed read is a
+     * Before every create writes, on every host, the offer an earlier lease of it made, maybe on another device that
+     * never reported it (the backend serves the same `create_offer` again and does not say so): a sent offer to [partner]
+     * giving exactly the directive's assets, in a state [CreateOfferMatch.BINDABLE_STATES] names, read with
+     * `active_only=1` from [bindCutoff], and not another deal's ([offersOfOtherDeals]). Its result is reported as the
+     * create's own, and nothing is created. [Result.success] of `null`: no such offer. A failed read is a
      * [Result.failure]: the caller creates nothing this cycle, and the read runs again when the directive is served again.
+     * A Steam read client that does not list sent offers fails every read, so a host without one creates nothing.
      * The read is the cycle's one ([CreateBindScope.sentOffers]), made by the first create that gets here.
      */
     private suspend fun boundOffer(
@@ -2335,10 +2338,9 @@ class TradeTrackerLoop(
         tracking: List<TrackedDeal>,
         bind: CreateBindScope,
     ): Result<CreateOfferResult?> {
-        val lease = leaseClock ?: return Result.success(null)
         val read = bind.sentOffers {
             // One read covers every create of the cycle, so it reaches back to the earliest cutoff among them.
-            val cutoff = (bind.creates + directive).minOf { bindCutoff(it, lease) }
+            val cutoff = (bind.creates + directive).minOf { bindCutoff(it) }
             // A stopped cycle is no failed read: let it through to withDealClaim, which releases the claim on disk.
             runCatchingUnlessCancelled { steamReader.sentOffers(credential, cutoff) }.onFailure {
                 // Once per cycle, into the throttle before anything awaits, as a refused POST is: chains re-gate on
@@ -3094,6 +3096,13 @@ class TradeTrackerLoop(
             directive.dealId?.let { offerGuard?.addLease(CreateLease(it, partner, directive.assetIds.toSet(), clock.now())) }
             // An unread offer list is no proof there is no offer: creating now could make the deal's second one.
             val bound = boundOffer(directive, partner, credential, activeTracking, bind).getOrElse {
+                // The proxy kept the read from Steam: the create is not sent, exactly as when it keeps the POST.
+                if (it is SteamProxyUnreachableException) {
+                    val notSent = CreateOfferResult.NotSent(STEAM_PROXY_UNREACHABLE_REASON)
+                    emitDeferred(directive, notSent.reason, retryAfterSeconds = null)
+                    resolveCreateWaiter(directive, notSent)
+                    return@withDealClaim WriteAttempt(stopChain = true, reason = notSent.reason, notSent = notSent) to ClaimEnd.Released
+                }
                 emitDropped(directive, BIND_READ_FAILED_DROP_REASON)
                 resolveCreateWaiter(directive, CreateOfferResult.Failed(BIND_READ_FAILED_DROP_REASON))
                 return@withDealClaim WriteAttempt(stopChain = true, reason = BIND_READ_FAILED_DROP_REASON) to ClaimEnd.Released

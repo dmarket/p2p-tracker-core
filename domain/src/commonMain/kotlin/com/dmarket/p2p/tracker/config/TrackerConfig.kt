@@ -1292,14 +1292,16 @@ data class SteamWriteConfig(
      */
     val requestRateLimitMarkers: List<String> = listOf("http 429"),
     /**
-     * Mobile only (a device with a lease clock): before every `create_offer` the tracker reads the account's sent
-     * offers, the active ones plus those changed since a cutoff, and reports an offer to the same partner with exactly
-     * the directive's assets instead of creating a second one. The cutoff is where this lease started, less its TTL
-     * (the lease before it) and less this margin. The default 10 min is 5 min for Steam's clock against the device's
-     * and 5 min between the earlier lease running out and the backend serving the create again. It matters for an
-     * accepted offer only: a live one (active, awaiting confirmation, in escrow) is listed whatever the cutoff.
+     * Every host: before every `create_offer` the tracker reads the account's sent offers, the active ones plus those
+     * changed since a cutoff, and reports an offer to the same partner with exactly the directive's assets instead of
+     * creating a second one. The cutoff is where this lease started (on a host without a lease clock: now), less its TTL
+     * (the lease before it) and less this margin. The default 125 min is the backend's 2 h create deadline, within which
+     * a create is served again to another device, plus 5 min for Steam's clock against the device's (a create re-served
+     * to a frozen deal after that deadline is not covered).
+     * It matters for an accepted offer only: a live one (active, awaiting confirmation, in escrow) is listed whatever
+     * the cutoff.
      */
-    val bindLookbackMarginMs: Int = 600_000,
+    val bindLookbackMarginMs: Int = 7_500_000,
 ) {
     init {
         require(maxCreatesPerPartnerPerCycle >= 1) {
