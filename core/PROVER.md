@@ -276,7 +276,7 @@ package's `gitHead`.
 ### Where it ships
 
 The module `:prover-android` (Maven `com.dmarket.p2p:trade-tracker-prover-android`, same `GROUP` and
-`VERSION_NAME`) is a plain `com.android.library`: the Kotlin Multiplatform Android library plugin of AGP 9.3.1 has
+`VERSION_NAME`) is a plain `com.android.library`: the Kotlin Multiplatform Android library plugin of AGP 9.5.2 has
 no `externalNativeBuild` and no `ndkVersion`. `:core`'s `androidMain` depends on it, so the app gets it through
 `trade-tracker-core`; the jvm and js targets never see it. Its AAR carries, per ABI,
 `jni/<abi>/libprovenance_client_cffi.so` (the package's bytes, unstripped) and `jni/<abi>/libprovenance_jni.so`

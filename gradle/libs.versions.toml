@@ -8,7 +8,7 @@ turbine = "1.2.1"
 ktor = "3.6.1"
 
 # Same AGP as the Android app that consumes the AAR (its androidGradlePlugin). KGP 2.4.10 declares AGP
-# support up to 9.1.0; 9.3.1 is outside that table, and the build and tests pass on it.
+# support up to 9.1.0; 9.5.2 is outside that table, and the build and tests pass on it.
 androidGradlePlugin = "9.5.2"
 androidxWork = "2.12.0"
 vanniktechMavenPublish = "0.37.0"
