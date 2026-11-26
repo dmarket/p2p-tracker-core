@@ -13,7 +13,7 @@ import com.dmarket.p2p.tracker.client.steam.HeaderSessionSteamOfferCreator
 import com.dmarket.p2p.tracker.client.steam.KtorSteamInventoryReader
 import com.dmarket.p2p.tracker.client.steam.KtorSteamReadClient
 import com.dmarket.p2p.tracker.client.steam.KtorSteamWebSessionGateway
-import com.dmarket.p2p.tracker.client.steam.VaultCookieJar
+import com.dmarket.p2p.tracker.client.steam.WebCookieJar
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
@@ -71,8 +71,9 @@ private object NoWakeScheduler : Scheduler {
  * [P2pTracker] over them. A platform gives only its adapters ([platform]); the app gives the rest of the host
  * contract.
  *
- * The Steam session lives in the core's vault ([MobileTrackerPlatform.steamCookies]): imported once after a Steam
- * sign-in ([importSteamSession]), sent from there in an explicit `Cookie` header, refreshed from
+ * The Steam session lives in the core's cookie store ([MobileTrackerPlatform.steamCookieStore]): the sealed vault by
+ * default, imported once after a Steam sign-in ([importSteamSession]), or the platform's WebView store when the host
+ * chose it ([MobileTrackerPlatform.webCookies]). It is sent from there in an explicit `Cookie` header, refreshed from
  * `steamRefresh_steam` and written back. The loop runs the directives the backend leases; the offer writes
  * (`create_offer` / `cancel_offer`) go out on that session ([HeaderSessionSteamOfferCreator] /
  * [HeaderSessionSteamOfferCanceller] over the vault) only with [steamWrites] on.
@@ -135,6 +136,21 @@ class MobileTracker(
     }
 
     /**
+     * The host deletes the Steam session the core uses, the same on Android and iOS: before a Steam sign-in that must
+     * replace it (the session is gone or another account's), never while it is the linked account's and alive. Deletes
+     * every Steam host's cookies in the WebView store, or the sealed vault's, and the Steam credential scraped from them
+     * ([MobileTrackerPlatform.clearSteamSession]); the account's state and the device id stay.
+     *
+     * With a tracker built it goes through [P2pTracker.clearSteamSession] (under a running loop's cycle) and returns the
+     * session's state; otherwise `null`. Throws when the store could not be cleared.
+     */
+    suspend fun clearSteamSession(): SteamWebSessionState? {
+        built?.let { return it.clearSteamSession() }
+        platform.clearSteamSession()
+        return null
+    }
+
+    /**
      * The host's logout, the same on Android and iOS. **Contract:** the host calls it when its user logs out of DMarket,
      * whatever the tracker's state: not built yet, built and stopped, or running. [importSteamSession] writes the vault
      * before any tracker exists, so only this point is sure to erase what it wrote.
@@ -166,8 +182,8 @@ class MobileTracker(
         eventObserver: EventObserver,
     ): P2pTracker {
         val timeoutMs = config.http.requestTimeoutMs.toLong()
-        // Cookies from the core's vault only, in an explicit header; Set-Cookie goes back to it (DMA-662).
-        val cookies = VaultCookieJar(platform.steamCookies, platform.clock)
+        // Cookies from the core's store only, in an explicit header; Set-Cookie goes back to it (DMA-662).
+        val cookies = WebCookieJar(platform.steamCookieStore)
         val steamHttp = createSteamHttpClient(platform.steamEngine(), timeoutMs, networkObserver, cookies = cookies)
         // One refresher for the process: every loop's provider and the ON_START check run it under their locks.
         val sessionGateway = KtorSteamWebSessionGateway(steamHttp, cookies)
@@ -256,6 +272,7 @@ class MobileTracker(
             clearAccountState = platform::clearAccountState,
             eraseProofs = platform::clearStoredProofs,
             importSteamCookies = platform::importSteamSession,
+            clearSteamCookies = platform::clearSteamSession,
             // The core's DMarket client acks, registers and takes the update permit; a host client without those routes gets none.
             acknowledger = marketplace as? WakeAcknowledger ?: NoOpWakeAcknowledger,
             deviceRegistry = (marketplace as? DeviceRegistryClient)?.let {

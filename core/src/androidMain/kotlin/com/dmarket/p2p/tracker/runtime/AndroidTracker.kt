@@ -65,6 +65,10 @@ object AndroidTracker {
      *   background cycle, and the heartbeat's `backgroundProveAllowed`; defaults to [cellularProofs].
      * @param nativeProofs whether decisive transitions are proven with the native TLSN prover (notary over [hostOkHttp]'s
      *   WebSocket, Steam over TCP); off by default, which keeps the no-op prover. See [prover].
+     * @param steamSessionInWebView whether the core's Steam session is the one in the WebView's `CookieManager` (read and
+     *   refreshed there, so the app's WebViews and the core share it) instead of the core's sealed vault. Off by default.
+     *   On, [importSteamSession] copies nothing, [clearSteamSession] and [onLogout] delete every Steam host's cookies in
+     *   the WebView, and the app must not clear the WebView's Steam cookies itself while the session is alive.
      */
     fun install(
         context: Context,
@@ -77,8 +81,9 @@ object AndroidTracker {
         reportUnsentCreates: Boolean = true,
         backgroundProofs: () -> Boolean = cellularProofs,
         nativeProofs: Boolean = false,
+        steamSessionInWebView: Boolean = false,
     ) = install(
-        AndroidTrackerPlatform(context, tokens),
+        AndroidTrackerPlatform(context, tokens, steamSessionInWebView = steamSessionInWebView),
         linkedAccount,
         cellularProofs,
         hostOkHttp,
@@ -131,12 +136,25 @@ object AndroidTracker {
      * start: the WebView keeps the `steamLoginSecure` the core has since refreshed in its vault.
      *
      * After [install] the vault is always written. Returns the session's state when a loop runs, else `null` (the first
-     * cycle after the start reads it); before [install], `null` and nothing is read or written.
+     * cycle after the start reads it); before [install], `null` and nothing is read or written. With
+     * `steamSessionInWebView` the session already is the WebView's: nothing is copied, the import only drops the
+     * previous session's scraped token and judges the new session.
      */
     suspend fun importSteamSession(): SteamWebSessionState? = importSteamSession { WebViewSteamCookies().read() }
 
-    /** [importSteamSession] over [read]; the WebView is read only once [install] ran. */
-    internal suspend fun importSteamSession(read: () -> List<SteamCookie>): SteamWebSessionState? = installation?.importSteamSession(read())
+    /** [importSteamSession] over [read]; the WebView is read only once [install] ran, and never for a WebView session. */
+    internal suspend fun importSteamSession(read: () -> List<SteamCookie>): SteamWebSessionState? {
+        val mobile = installation ?: return null
+        return mobile.importSteamSession(if (mobile.platform.webCookies != null) emptyList() else read())
+    }
+
+    /**
+     * Deletes the core's Steam session before a Steam sign-in that must replace it ([MobileTracker.clearSteamSession],
+     * whose contract this follows): with `steamSessionInWebView`, every Steam host's cookies in the WebView. Returns the
+     * session's state when a loop runs, else `null`; before [install] it does nothing. Throws when the store could not
+     * be cleared.
+     */
+    suspend fun clearSteamSession(): SteamWebSessionState? = installation?.clearSteamSession()
 
     /**
      * The user logged out of DMarket: erases the account's state, the Steam credential and the Steam session's cookies,

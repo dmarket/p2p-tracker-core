@@ -22,6 +22,14 @@ kotlin {
         generateTypeScriptDefinitions()
     }
 
+    // Instrumented tests on a device or emulator (`connectedAndroidDeviceTest`): what only a real WebView can answer,
+    // the CookieManager semantics behind the mobile Steam session. Not part of `check`.
+    android {
+        withDeviceTest {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
+    }
+
     sourceSets {
         commonMain.dependencies {
             api(project(":domain"))
@@ -43,8 +51,15 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.androidx.work.runtime.ktx)
+            implementation(libs.androidx.webkit)
             // The native TLSN prover (the steam-provenance C ABI + our JNI layer), published as its own AAR.
             implementation(project(":prover-android"))
+        }
+        getByName("androidDeviceTest").dependencies {
+            implementation(libs.junit)
+            implementation(libs.androidx.test.runner)
+            implementation(libs.androidx.test.ext.junit)
+            implementation(libs.kotlinx.coroutines.core)
         }
         jsMain.dependencies {
             implementation(libs.ktor.client.js)

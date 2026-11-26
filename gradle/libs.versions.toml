@@ -11,6 +11,8 @@ ktor = "3.6.1"
 # support up to 9.1.0; 9.5.2 is outside that table, and the build and tests pass on it.
 androidGradlePlugin = "9.5.2"
 androidxWork = "2.12.0"
+# Same as the Android app: the WebView cookie store behind the mobile Steam session (getCookieInfo).
+androidxWebkit = "1.14.0"
 vanniktechMavenPublish = "0.37.0"
 junit = "4.13.2"
 androidxTestRunner = "1.7.0"
@@ -29,6 +31,7 @@ ktor-client-okhttp = { module = "io.ktor:ktor-client-okhttp", version.ref = "kto
 ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }
 ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
 androidx-work-runtime-ktx = { module = "androidx.work:work-runtime-ktx", version.ref = "androidxWork" }
+androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "androidxWebkit" }
 junit = { module = "junit:junit", version.ref = "junit" }
 androidx-test-runner = { module = "androidx.test:runner", version.ref = "androidxTestRunner" }
 androidx-test-ext-junit = { module = "androidx.test.ext:junit", version.ref = "androidxTestExtJunit" }

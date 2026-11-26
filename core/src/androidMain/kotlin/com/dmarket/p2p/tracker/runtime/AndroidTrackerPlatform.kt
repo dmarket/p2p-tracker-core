@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.dmarket.p2p.tracker.adapter.AndroidCredentialVault
 import com.dmarket.p2p.tracker.adapter.ConnectivityNetworkConditions
+import com.dmarket.p2p.tracker.adapter.CookieManagerSteamCookieStore
 import com.dmarket.p2p.tracker.adapter.KeystoreAesGcmCipher
 import com.dmarket.p2p.tracker.adapter.KeystoreInstallMarker
 import com.dmarket.p2p.tracker.adapter.SealedKeyValueStore
@@ -18,6 +19,7 @@ import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.host.SteamCookieStore
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +40,8 @@ import kotlinx.coroutines.Dispatchers
  * @param tokens the host's DMarket token layer (on the DMarket app, `TokenManager.getTokenData(forceRefresh)`).
  * @param httpEngine the HTTP engine for DMarket and Steam; `null` takes the platform's (OkHttp).
  * @param network what the network costs; reading it needs `ACCESS_NETWORK_STATE`.
+ * @param webCookies the WebView store the Steam session lives in, or `null` for the core's sealed vault (the default);
+ *   see [MobileTrackerPlatform.webCookies].
  */
 class AndroidTrackerPlatform internal constructor(
     prefs: (String) -> SharedPreferences,
@@ -47,12 +51,18 @@ class AndroidTrackerPlatform internal constructor(
     val httpEngine: HttpClientEngine? = null,
     io: CoroutineDispatcher = Dispatchers.IO,
     override val network: NetworkConditions = NetworkConditions.Unmetered,
+    override val webCookies: SteamCookieStore? = null,
 ) : MobileTrackerPlatform(tokens) {
+    /**
+     * @param steamSessionInWebView whether the Steam session lives in the WebView's `CookieManager`
+     *   ([CookieManagerSteamCookieStore]) instead of the core's sealed vault; off by default.
+     */
     constructor(
         context: Context,
         tokens: MarketplaceTokenSupplier,
         clock: Clock = SystemClock(),
         httpEngine: HttpClientEngine? = null,
+        steamSessionInWebView: Boolean = false,
     ) : this(
         prefs = { name -> context.applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE) },
         cipher = KeystoreAesGcmCipher(),
@@ -60,6 +70,7 @@ class AndroidTrackerPlatform internal constructor(
         clock = clock,
         httpEngine = httpEngine,
         network = ConnectivityNetworkConditions(context),
+        webCookies = if (steamSessionInWebView) CookieManagerSteamCookieStore() else null,
     )
 
     private val install = SharedPreferencesKeyValueStore(prefs(INSTALL_FILE), io)

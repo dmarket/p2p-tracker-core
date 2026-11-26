@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
+import com.dmarket.p2p.tracker.adapter.host.VaultSteamCookieStore
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.config.SteamWriteConfig
 import com.dmarket.p2p.tracker.model.AssetId
@@ -35,11 +36,11 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.time.Instant
 
-/** The mobile writers: the session is the core's vault, sent by the client's [VaultCookieJar]. */
+/** The mobile writers: the session is the core's vault, sent by the client's [WebCookieJar]. */
 class VaultSessionSteamWritersTest {
     private val clock = FakeClock()
     private val vault = SealedSteamCookieVault(InMemoryDeviceKeyValueStore())
-    private val jar = VaultCookieJar(vault, clock)
+    private val jar = WebCookieJar(VaultSteamCookieStore(vault, clock))
     private val seen = mutableListOf<HttpRequestData>()
     private var answer: MockRequestHandleScope.() -> HttpResponseData = { respond("", HttpStatusCode.InternalServerError) }
     private val http = createSteamHttpClient(

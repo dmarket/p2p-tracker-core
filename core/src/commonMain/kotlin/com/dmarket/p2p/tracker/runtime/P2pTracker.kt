@@ -100,6 +100,8 @@ import kotlin.time.TimeSource
  *   the device keeps no new ones. Also run when [linkedAccount] answers `null` (the user unlinked Steam).
  * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
+ * @param clearSteamCookies deletes the Steam session the core uses and the token scraped from it
+ *   ([MobileTrackerPlatform.clearSteamSession]); `null` when the host keeps the session itself.
  * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
  * @param deviceRegistry the push device registry behind [registerDevice] / [unregisterDevice]; `null` refuses both.
  * @param backgroundProofs the user's "background checks on mobile data" option, read on each cycle: the opt-in for a
@@ -124,6 +126,7 @@ class P2pTracker(
     private val clearAccountState: suspend () -> Unit = {},
     private val eraseProofs: suspend () -> Unit = {},
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
+    private val clearSteamCookies: (suspend () -> Unit)? = null,
     private val deviceRegistry: DeviceRegistry? = null,
     private val backgroundProofs: () -> Boolean = cellularProofs,
     private val dealRefresh: DealRefreshClient? = null,
@@ -304,6 +307,24 @@ class P2pTracker(
             import(cookies)
             s.loop.judgeImportedSteamSession()
             s.loop.forceHeartbeatNow()
+            publishSteamSession(s)
+        }
+    }
+
+    /**
+     * Deletes the Steam session the core uses ([MobileTrackerPlatform.clearSteamSession]). A host calls
+     * [MobileTracker.clearSteamSession], which comes here once the tracker is built; see the contract there. With a loop
+     * running it waits for the loop's cycle and returns the session's state (gone); otherwise `null`.
+     */
+    suspend fun clearSteamSession(): SteamWebSessionState? {
+        val clear = clearSteamCookies ?: return null
+        val s = session?.takeIf { it.job.isActive }
+        if (s == null) {
+            clear()
+            return null
+        }
+        return s.cycleLock.withLock {
+            clear()
             publishSteamSession(s)
         }
     }
