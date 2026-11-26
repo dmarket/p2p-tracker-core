@@ -174,6 +174,8 @@ class ForkedProofHost(
         var connected: TimeMark? = null
         // The child's lines are scrubbed of this proof's proxy too, whatever printed it.
         proof.steamProxy?.let { child.proxies += it }
+        // No suspension between the proxy read (in the caller) and here, so a first proxy pushed meanwhile cannot slip
+        // past steamProxyChanged(). Should fork() or this path ever suspend, guard it with a proxy-change generation.
         child.provingDirect = proof.steamProxy == null
         // Past the checks above a required proxy is held and the mode is MPC: the child refuses to dial Steam without it.
         val proofSettings = if (proxyRequired && !settings.requireSteamProxy) settings.copy(requireSteamProxy = true) else settings

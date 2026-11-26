@@ -65,10 +65,11 @@ export interface HeadlessTrackerOptions {
      * `true` to fail closed without a Steam proxy from the start: for a host that knows this account uses one, as
      * after a restart (the proxy is held in memory only; the host remembers the fact and sets this). No token is held
      * without a proxy: a push that would leave none held (none named and none held, or `proxy: null`) rejects with an
-     * `Error` coded `steamProxyRequiredCode()` and changes nothing. A Steam call or a proof that finds none held sends
-     * nothing and never goes direct: a write is deferred (`reasons().steamProxyUnreachable`), a proof is not started
-     * (`reasons().steamProxyMissing`). The host hears `SteamProxyMissing` (ended by `SteamProxyRecovered`), and the
-     * state says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile. Needs `prover.mode` `mpc`.
+     * `Error` coded `steamProxyRequiredCode()` and changes nothing. With no token held the tracker sends no heartbeat
+     * and makes no Steam call and no proof, so nothing reaches Steam, directly or otherwise. (The Steam transport and the
+     * prover refuse to go direct as well, a backstop a host does not see in practice.) The host hears `SteamProxyMissing`
+     * (ended by `SteamProxyRecovered`), and the state says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile.
+     * Needs `prover.mode` `mpc`.
      *
      * `false` by default: the proxy is optional, but the tracker pins itself to one the first time it holds one
      * (`proxy: null` then rejects coded `steamProxyLockedCode()`), for as long as it runs.
@@ -143,8 +144,10 @@ export interface SteamTokenPushOptions {
     proxy?: string | null;
 }
 
-/** Why a prover process ended before its proof did. */
-/** `proxy_pinned`: cut because the account's first Steam proxy was pushed mid-proof; the proof runs again through it. */
+/**
+ * Why a prover process ended before its proof did. `proxy_pinned`: cut because the account's first Steam proxy was
+ * pushed mid-proof; the proof runs again through it.
+ */
 export type KillCause = "out_of_memory" | "connect_deadline" | "session_deadline" | "exited" | "proxy_pinned";
 
 /** Why a proof produced nothing. Every text in it, `summary` included, is redacted. */

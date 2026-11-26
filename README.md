@@ -663,7 +663,9 @@ trackerState(tracker).steamProxyRequired;  // true once a proxy was held, or wit
   the state says `steamProxy: "none"`, `steamProxyRequired: true`. Going back to direct is the operator's explicit act:
   drop that marker or switch and restart.
 - **The first proxy:** a direct Steam call or proof still in flight when it is pushed is cut (the call aborted, the
-  prover process killed and the proof run again), so nothing started direct goes on direct after it.
+  prover process killed and the proof run again), so nothing started direct goes on direct after it. The price: a
+  create aborted before it left the machine is not found among the sent offers, so after the unanswered-create grace
+  it is reported `failed` rather than retried.
 - **Proofs:** the prover's Steam leg is the tunnel, handed to the transport (`wrapTcpSocket`), or wrapped in the
   transport's own `TcpIoChannel`; a prover package with neither is refused before it dials. `prover.mode: "proxy"` (the
   notary dials Steam) is refused with a proxy.

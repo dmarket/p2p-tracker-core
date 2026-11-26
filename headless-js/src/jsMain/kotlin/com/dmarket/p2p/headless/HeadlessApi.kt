@@ -71,9 +71,9 @@ fun headlessVersion(): String = TradeTrackerCore.VERSION
  * - `requireSteamProxy`: `true` to fail closed without a Steam proxy from the start — for a host that knows this
  *   account uses one, as after a restart (the proxy is never stored; the host remembers the fact). No token is held
  *   without a proxy: a [pushSteamToken] that would leave none held (none named and none held, or `proxy: null`)
- *   rejects coded `steamProxyRequiredCode()` and changes nothing. A Steam call or a proof that finds none held sends
- *   nothing and never goes direct: a write is deferred (`reasons().steamProxyUnreachable`), a proof is not started
- *   (`reasons().steamProxyMissing`). The host hears `SteamProxyMissing` (ended by `SteamProxyRecovered`);
+ *   rejects coded `steamProxyRequiredCode()` and changes nothing. With no token held there is no heartbeat, no Steam
+ *   call and no proof, so nothing reaches Steam (the transport and the prover refuse to go direct too, as a backstop
+ *   a host does not see in practice). The host hears `SteamProxyMissing` (ended by `SteamProxyRecovered`);
  *   `trackerState()` says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile. Needs `prover.mode` `mpc`.
  *   `false` by default; without it the tracker pins itself to a proxy the first time it holds one.
  *

@@ -200,10 +200,10 @@ data class HeadlessTrackerState(
  * @param random the draws behind the 429 backoff's jitter and the loop's own.
  * @param requireSteamProxy fail closed without a Steam proxy from the start, for a host that knows this account uses
  *   one (it pinned it before a restart): no token is held without one ([pushSteamToken] refuses a push that would
- *   leave none, `Clear` included), and a Steam call or a proof that finds none held sends nothing — never directly.
- *   A write held back for it is deferred, as for an unreachable proxy; the host hears
- *   [LifecycleEvent.SteamProxyMissing]. Without it the tracker pins itself on the first proxy it holds, from when on
- *   the same holds. Needs [HeadlessPlatform.steamHttpEngine], which must honour [SteamRoute.proxyRequired].
+ *   leave none, `Clear` included), so there is no heartbeat, no Steam call and no proof until one is; the host hears
+ *   [LifecycleEvent.SteamProxyMissing]. The Steam transport and the prover refuse to go direct as well, a backstop
+ *   behind that. Without it the tracker pins itself on the first proxy it holds, from when on the same holds. Needs
+ *   [HeadlessPlatform.steamHttpEngine], which must honour [SteamRoute.proxyRequired].
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,
