@@ -17,7 +17,7 @@ GitHub Release.
 ### Changed
 
 - Mobile: on the buyer's phone `P2pTracker.updateStatus` now proves the deal's accepted, declined, cancelled, completed or reversed trade itself instead of leaving it to the seller, under the same proof gate and update permit (DMA-664).
-- Mobile: `P2pTracker.updateStatus` takes `afterSteamReturn`; with it the buyer's update after Accept in Steam proves even while the update permit is spent, and DMarket's refusal of that proof no longer holds the report (DMA-664).
+- Mobile: `P2pTracker.updateStatus` takes `afterSteamReturn`; with it the buyer's update after Accept in Steam proves even while the update permit is spent, once per permit window, and a refusal of that proof (the deal moved on) is no update failure and does not hold the report (DMA-664).
 
 ### Fixed
 

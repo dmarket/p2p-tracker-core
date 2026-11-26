@@ -1343,8 +1343,8 @@ class TradeTrackerLoop(
 
     /**
      * The buyer's proof of [buyerProofsFor] runs without the deal's update permit (`P2pTracker.updateStatus` after the
-     * return from Steam). DMarket may refuse it for that alone, so its `verified: false` latches nothing: the event is
-     * emitted, the report goes once without a proof, and the next cycle that may prove it proves again.
+     * return from Steam). Its refusal is a late proof (the deal moved on: `verified: false`, a 404): the event is
+     * emitted and the transition latched like any refusal, but its report goes once without a proof instead of waiting.
      */
     var buyerProofWithoutPermit: Boolean = false
 
@@ -3648,10 +3648,9 @@ class TradeTrackerLoop(
                 // Remember the verdict so a report the backend refuses anyway does not buy another MPC
                 // session on the next wake. Persisted, because an MV3 worker respawns between most cycles.
                 recordAcceptedProof(intent)
-            } else if (buyerProofWithoutPermit && role == DealRole.BUYER && intent.dealId == buyerProofsFor) {
-                // Made without the permit: the refusal may be about that alone, so no latch; the report goes unproven.
-                proofUnprovable += intent
             } else {
+                // A late proof of the buyer's return from Steam: latched like any refusal, but its report is not held.
+                if (buyerProofWithoutPermit && role == DealRole.BUYER && intent.dealId == buyerProofsFor) proofUnprovable += intent
                 proofRejected += intent
                 // A fresh proof for this transition was just refused, so any earlier acceptance of it is no
                 // longer the backend's position — drop it rather than let a respawn (which clears the
