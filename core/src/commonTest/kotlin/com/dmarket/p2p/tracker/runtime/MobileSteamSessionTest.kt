@@ -206,6 +206,24 @@ class MobileSteamSessionTest {
     }
 
     @Test
+    fun aColdWakeOnAnUnreadableWebViewStoreWithNoCredentialIsNoGoneSession() = runTest {
+        val web = FakeBrowserCookieStore(clock)
+        web.signIn("steamcommunity.com", "steamLoginSecure", loginSecure(alice, 20.hours))
+        web.failReads = true
+        platform.web = web
+        val tracker = tracker()
+
+        tracker.onPush(push)
+        tracker.checkSteamSession()
+
+        assertNull(platform.vault.readSteamCredential())
+        assertTrue(tracker.state.value.steamSession != SteamWebSessionState.GONE, "${tracker.state.value.steamSession}")
+        assertTrue(tracker.state.value.block != TrackerBlock.STEAM_SESSION_MISSING, "${tracker.state.value.block}")
+        assertTrue(marketplace.heartbeatsSent.none { it.steamSession == SteamWebSessionState.GONE })
+        assertTrue(web.slots.isNotEmpty(), "nothing is cleared")
+    }
+
+    @Test
     fun anotherAccountsSessionSendsNoSteamRequestAtAll() = runTest {
         // A watched deal that needs a proof: every Steam read and the proof would run for it on alice's session.
         marketplace.heartbeatResponse = HeartbeatResponse(
