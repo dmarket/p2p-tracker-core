@@ -44,6 +44,9 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
     /** Set by [close] and by the socket's end: no more frames are queued or waited for. */
     @Volatile private var closed = false
 
+    /** Set by the notary's close before its [Chunk.End] is queued: [read] ends on an empty queue when it is set. */
+    @Volatile private var ended = false
+
     @Volatile private var upgradeStatus: Int? = null
 
     /** The notary's close code after the `101`, with [closeReason]; `null` while it has not closed. */
@@ -76,12 +79,12 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
             closeCode = code
             closeReason = reason.ifEmpty { null }
             webSocket.close(NORMAL_CLOSE, null)
-            end(Chunk.End)
+            endOfStream()
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             closed = true
-            end(Chunk.End)
+            endOfStream()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
@@ -94,12 +97,14 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
 
     override fun read(buffer: ByteArray): Int {
         while (offset == current.size) {
-            when (val chunk = incoming.take()) {
+            // The flag is read before the wait: an End that did not fit the full queue is the flag alone.
+            val chunk = incoming.poll() ?: if (ended) return -1 else incoming.take()
+            when (chunk) {
                 is Chunk.Data -> {
                     current = chunk.bytes
                     offset = 0
                 }
-                Chunk.End -> return -1.also { end(Chunk.End) }
+                Chunk.End -> return -1
                 Chunk.Failed -> throw IOException("the notary socket failed", failure).also { end(Chunk.Failed) }
             }
         }
@@ -127,12 +132,20 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
         closed = true
         socket.cancel()
         end(Chunk.Failed)
+        // A close during [connect] ends its wait for the `101` now, not at its timeout.
+        opened.countDown()
     }
 
     /** The queue of the transport's send side, in bytes: what [write] waits to drain. */
     internal fun queueSize(): Long = socket.queueSize()
 
-    /** Ends [read] with [chunk] even when the queue is full: a stale frame is worth nothing once the socket ended. */
+    /** The notary closed: every frame queued before stays readable, then [read] answers EOF. */
+    private fun endOfStream() {
+        ended = true
+        incoming.offer(Chunk.End)
+    }
+
+    /** Ends [read] with [chunk] even when the queue is full: a stale frame is worth nothing once the socket failed. */
     private fun end(chunk: Chunk) {
         while (!incoming.offer(chunk)) incoming.poll()
     }
@@ -155,7 +168,8 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
          * Opens the notary's socket at [url] offering [subprotocol] and `bearer.<token>` (the DMarket token, opaque to
          * the notary), and waits up to [connectTimeoutMs] for the `101`. Throws [NotaryConnectException] when the
          * notary refuses or does not answer. [client]'s read timeout is lifted: a proof's phases can be quiet longer
-         * than an HTTP call.
+         * than an HTTP call. [onStarted] gets the transport before the wait, so a [close] from another thread ends it
+         * (the connect then throws, as for an unanswered upgrade).
          */
         fun connect(
             client: OkHttpClient,
@@ -164,11 +178,13 @@ internal class OkHttpNotaryTransport private constructor(private val onBytes: (s
             token: String,
             connectTimeoutMs: Long,
             onBytes: (sent: Long, received: Long) -> Unit = { _, _ -> },
+            onStarted: (OkHttpNotaryTransport) -> Unit = {},
         ): OkHttpNotaryTransport {
             val transport = OkHttpNotaryTransport(onBytes)
             val request = Request.Builder().url(url).header("Sec-WebSocket-Protocol", "$subprotocol, bearer.$token").build()
             val socketClient = client.newBuilder().readTimeout(0, TimeUnit.MILLISECONDS).callTimeout(0, TimeUnit.MILLISECONDS).build()
             transport.socket = socketClient.newWebSocket(request, transport.listener)
+            onStarted(transport)
             if (!transport.opened.await(connectTimeoutMs, TimeUnit.MILLISECONDS)) {
                 transport.socket.cancel()
                 throw NotaryConnectException(null, "the notary did not answer the upgrade within $connectTimeoutMs ms")

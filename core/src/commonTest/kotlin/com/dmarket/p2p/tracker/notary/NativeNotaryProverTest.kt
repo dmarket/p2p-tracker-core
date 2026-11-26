@@ -12,6 +12,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -49,11 +50,14 @@ class NativeNotaryProverTest {
         var forever = false
         var cancelled = 0
 
+        /** Whether the prover reports a stage, which it does only once the notary answered the upgrade. */
+        var staged = true
+
         override fun unavailableReason(): String? = unavailable
 
         override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
             issued += issuance
-            listener.onStage(2, "MPC_SETUP", 0.5f)
+            if (staged) listener.onStage(2, "MPC_SETUP", 0.5f)
             listener.onBytes(sent = 1_000, received = 100)
             try {
                 if (forever) awaitCancellation()
@@ -134,6 +138,52 @@ class NativeNotaryProverTest {
     }
 
     @Test
+    fun a_cancel_as_the_issuance_starts_finds_the_proof() = runTest(UnconfinedTestDispatcher()) {
+        // The unconfined dispatcher runs the issuance at once, inside the launch of the proof.
+        var found: Boolean? = null
+        lateinit var prover: NativeNotaryProver
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
+                found = prover.cancel(DealId("deal-1"))
+                awaitCancellation()
+            }
+        }
+        prover = prover(engine)
+
+        val failure = failureOf { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+
+        assertEquals(true, found)
+        assertEquals(ProofFailure.Other(PROOF_CANCELLED_REASON), failure)
+    }
+
+    @Test
+    fun two_proofs_of_one_deal_are_tracked_apart() = runTest {
+        val first = CompletableDeferred<Unit>()
+        var calls = 0
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener): NativeIssuanceOutcome {
+                if (++calls == 1) first.await() else awaitCancellation()
+                return NativeIssuanceOutcome(presentation = PRESENTATION, targetStatus = 200)
+            }
+        }
+        val prover = prover(engine)
+        val proofs = List(2) { async { runCatching { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) } } }
+        runCurrent()
+
+        first.complete(Unit)
+        assertTrue(proofs[0].await().isSuccess)
+        assertEquals(setOf(DealId("deal-1")), prover.progress.value.keys)
+        assertTrue(prover.cancel(DealId("deal-1")), "the second proof is still running")
+        val failure = assertIs<HostedProofException>(proofs[1].await().exceptionOrNull()).failure
+        assertEquals(ProofFailure.Other(PROOF_CANCELLED_REASON), failure)
+        assertEquals(emptyMap(), prover.progress.value)
+    }
+
+    @Test
     fun the_callers_cancellation_cancels_the_issuance_and_propagates() = runTest {
         val engine = FakeEngine().apply { forever = true }
         val proof = async { prover(engine).proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
@@ -143,6 +193,54 @@ class NativeNotaryProverTest {
 
         assertTrue(proof.isCancelled)
         assertEquals(1, engine.cancelled)
+    }
+
+    @Test
+    fun the_callers_cancellation_after_the_101_is_a_cut_session_and_before_it_a_plain_cancellation() = runTest {
+        for (staged in listOf(false, true)) {
+            val engine = FakeEngine().apply {
+                forever = true
+                this.staged = staged
+            }
+            var thrown: Throwable? = null
+            val proof = async {
+                try {
+                    prover(engine).proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+                } catch (e: CancellationException) {
+                    thrown = e
+                    throw e
+                }
+            }
+            runCurrent()
+            proof.cancel()
+            runCurrent()
+
+            assertTrue(proof.isCancelled, "staged=$staged")
+            assertEquals(staged, thrown is NotarySessionCutException, "staged=$staged: $thrown")
+        }
+    }
+
+    @Test
+    fun a_proof_queued_for_the_permit_goes_with_its_callers_scope_and_never_issues() = runTest {
+        // Cancel on the app's screen cancels the caller's coroutine; cancel(dealId) sees only an issuing proof.
+        val engine = FakeEngine().apply { hold = CompletableDeferred() }
+        val prover = prover(engine, NotaryConfig(maxConcurrency = 1))
+        val other = ProvenReadBinding(dealId = DealId("deal-2"), steamOfferId = OfferId("556"), tradeId = TradeId("778"))
+        val holding = async { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+        val queued = async { prover.proveRead(other, ProvenReadKind.TRADE_OFFER, credential()) }
+        runCurrent()
+        assertEquals(1, engine.issued.size)
+        assertFalse(prover.cancel(DealId("deal-2")), "a queued proof is not running")
+
+        queued.cancel()
+        runCurrent()
+        engine.hold!!.complete(Unit)
+        holding.await()
+
+        assertTrue(queued.isCancelled)
+        assertEquals(1, engine.issued.size, "the cancelled proof never issued")
+        prover.proveRead(other, ProvenReadKind.TRADE_OFFER, credential())
+        assertEquals(2, engine.issued.size, "its place in the queue did not keep the permit")
     }
 
     @Test

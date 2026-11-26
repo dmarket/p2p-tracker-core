@@ -10,12 +10,19 @@ import com.dmarket.p2p.headless.prover.ProofOutcomeJson
 import com.dmarket.p2p.headless.prover.ProverLimits
 import com.dmarket.p2p.headless.prover.ProverSettings
 import com.dmarket.p2p.headless.prover.checkProverAssets
+import com.dmarket.p2p.headless.prover.heardSteamPush
+import com.dmarket.p2p.headless.prover.hearingSteamProxyRecovery
 import com.dmarket.p2p.headless.prover.runProverChild
+import com.dmarket.p2p.headless.proxy.SteamHttpTransport
 import com.dmarket.p2p.tracker.adapter.host.NoOpEventObserver
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyRefusal
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyUpdate
+import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.runtime.HeadlessPlatform
@@ -61,6 +68,14 @@ fun headlessVersion(): String = TradeTrackerCore.VERSION
  *   for a proof made, else a plain object keyed by `type`, with every text in it, `summary` included, redacted.
  * - `onProverLine(stream, line)`: a prover process's output (`stdout`, `stderr`) and the host's own lines about the
  *   processes (`host`, a JSON object with `msg` and `level`), each line redacted.
+ * - `requireSteamProxy`: `true` to fail closed without a Steam proxy from the start — for a host that knows this
+ *   account uses one, as after a restart (the proxy is never stored; the host remembers the fact). No token is held
+ *   without a proxy: a [pushSteamToken] that would leave none held (none named and none held, or `proxy: null`)
+ *   rejects coded `steamProxyRequiredCode()` and changes nothing. With no token held there is no heartbeat, no Steam
+ *   call and no proof, so nothing reaches Steam (the transport and the prover refuse to go direct too, as a backstop
+ *   a host does not see in practice). The host hears `SteamProxyMissing` (ended by `SteamProxyRecovered`);
+ *   `trackerState()` says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile. Needs `prover.mode` `mpc`.
+ *   `false` by default; without it the tracker pins itself to a proxy the first time it holds one.
  *
  * Throws on an unknown option or a value of the wrong type, naming the option and never the value. With `prover`,
  * throws "prover files not found" when the child script or the prover's files are missing.
@@ -89,8 +104,8 @@ fun start(handle: Any) {
 fun cycle(handle: Any): Promise<Unit> = call(handle) { tracker.cycle() }
 
 /**
- * Stops the tracker: every cycle and wake it has in flight is cancelled, and every prover process, idle or proving,
- * is killed at once. Every later call with the handle is refused.
+ * Stops the tracker: every cycle and wake it has in flight is cancelled, every prover process, idle or proving, is
+ * killed at once, and so is every tunnel through its Steam proxy. Every later call with the handle is refused.
  */
 @Suppress("NON_EXPORTABLE_TYPE")
 @JsExport
@@ -99,6 +114,7 @@ fun stop(handle: Any): Promise<Unit> {
     if (!entry.stopped) {
         entry.stopped = true
         entry.proofHost?.close()
+        entry.steamTransport?.close()
         entry.scope.cancel()
     }
     return Promise.resolve(Unit)
@@ -125,13 +141,67 @@ fun pushTradingApiKey(handle: Any, publicKey: String, secretKey: String): Promis
 /**
  * Pushes a Steam access token. Resolves to a plain object keyed by `type`: `held`, `wrongAccount` or `invalid`. No
  * result and no error carries the token.
+ *
+ * `options` (optional) is a plain object of `proxy`, the HTTP proxy this account's Steam traffic goes through,
+ * `http://user:pass@host:port` (`CONNECT`; no SOCKS), held with the token:
+ * - absent (or `undefined`): a renewal — the proxy held before stays, so a push that names none never moves the
+ *   account back to this host's address;
+ * - a URL: the proxy from now on;
+ * - `null`: no proxy from now on, Steam reached directly — only while no proxy has ever been held.
+ * A token that is not held changes neither. Every Steam call and every proof's Steam leg tunnels through the held
+ * proxy; one that cannot fails with a cause of its own and is never sent directly. The proxy is write-only: no
+ * result, state, event or error carries it. A `proxy` that is not such a URL is refused (the promise rejects with an
+ * error coded [STEAM_PROXY_INVALID_CODE]), naming the rule broken and never the value.
+ *
+ * **Sticky once set.** From the first push held with a proxy the tracker is pinned to one: `proxy: null` rejects coded
+ * `steamProxyLockedCode()` and changes nothing; another proxy may replace it. With `requireSteamProxy` a push that would
+ * leave none held rejects coded `steamProxyRequiredCode()`. Both mean the caller asked for something refused: a 400.
  */
 @Suppress("NON_EXPORTABLE_TYPE")
 @JsExport
-fun pushSteamToken(handle: Any, accessToken: String): Promise<dynamic> {
+fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefined): Promise<dynamic> {
     if (jsTypeOf(accessToken) != "string") return refused(IllegalArgumentException("accessToken must be a string"))
-    return call(handle) { tracker.pushSteamToken(accessToken).toJs() }
+    val proxy = try {
+        steamProxyOption(options)
+    } catch (e: IllegalArgumentException) {
+        return refused(e)
+    }
+    return call(handle) {
+        val push = tracker.pushSteamToken(accessToken, proxy)
+        if (push is SteamPushResult.ProxyRefused) throw push.refusal.rejection()
+        // Another proxy, or none, may answer where the old one did not: the next proof need not wait it out.
+        proofHost?.heardSteamPush(push)
+        push.toJs()
+    }
 }
+
+/**
+ * What [pushSteamToken]'s options do with the held proxy: keep it (no `proxy`, or `undefined`), drop it (`null`), or
+ * replace it (a URL, parsed). Refusals name the rule, never the value; those of the proxy's value are coded
+ * [STEAM_PROXY_INVALID_CODE], the options' own shape is the caller's to get right and is not.
+ */
+private fun steamProxyOption(options: dynamic): SteamProxyUpdate {
+    if (options === undefined || options === null) return SteamProxyUpdate.Keep
+    require(jsTypeOf(options) == "object") { "options must be an object" }
+    HeadlessOptions.refuseUnknown(options, setOf("proxy"), prefix = "")
+    val proxy: dynamic = options.proxy
+    return when {
+        proxy === undefined -> SteamProxyUpdate.Keep
+        proxy === null -> SteamProxyUpdate.Clear
+        jsTypeOf(proxy) == "string" -> try {
+            SteamProxyUpdate.Use(SteamProxy.parse(proxy.unsafeCast<String>()))
+        } catch (e: IllegalArgumentException) {
+            throw e.proxyInvalid()
+        }
+        else -> throw IllegalArgumentException("proxy must be a string or null").proxyInvalid()
+    }
+}
+
+/** The push's refusal as the error it rejects with: fixed words, coded [SteamProxyRefusal.code]. */
+private fun SteamProxyRefusal.rejection(): IllegalStateException = IllegalStateException(message).also { it.asDynamic().code = code }
+
+/** This refusal, coded [STEAM_PROXY_INVALID_CODE] as a JS error's `code`. */
+private fun IllegalArgumentException.proxyInvalid(): IllegalArgumentException = also { it.asDynamic().code = STEAM_PROXY_INVALID_CODE }
 
 /** What the tracker holds right now, as a plain object without either secret. */
 @JsExport
@@ -149,21 +219,42 @@ internal fun createHeadlessTrackerForTest(
     httpEngine: HttpClientEngine,
     background: CoroutineScope? = null,
     proverPackageRoot: String? = null,
-): Any = create(HeadlessOptions.parse(options), httpEngine, background, proverPackageRoot)
+    realSteam: Boolean = false,
+): Any = create(HeadlessOptions.parse(options), httpEngine, background, proverPackageRoot, realSteam)
 
-private fun create(options: HeadlessOptions, httpEngine: HttpClientEngine?, background: CoroutineScope?, proverPackageRoot: String?): Any {
+/**
+ * [realSteam]: the Steam calls go out on the production Steam transport ([SteamHttpTransport]) rather than [httpEngine], so a
+ * test can watch them reach a proxy while DMarket stays on its mock. Always so without an [httpEngine].
+ */
+private fun create(
+    options: HeadlessOptions,
+    httpEngine: HttpClientEngine?,
+    background: CoroutineScope?,
+    proverPackageRoot: String?,
+    realSteam: Boolean = false,
+): Any {
     val clock = options.clock() ?: SystemClock()
     // Checked before anything else is built: a broken install fails here, not on the first proof.
     val proofHost = options.prover?.let { proofHost(options, it, ProverFiles.locate(proverPackageRoot, it.assetsDir), clock) }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val accounts = AccountDirectories(options.dataDir)
+    // Built by the tracker below, once, for its Steam calls alone; kept to be closed with the tracker.
+    var steamTransport: SteamHttpTransport? = null
     // Request signing and the HTTP engine stay the platform's own: a host supplies neither.
     val platform = HeadlessPlatform(
         storageFor = { accounts.storeFor(it.value) },
         clock = clock,
-        eventObserver = options.eventObserver() ?: NoOpEventObserver,
+        eventObserver = (options.eventObserver() ?: NoOpEventObserver).let { observer ->
+            proofHost?.hearingSteamProxyRecovery(observer) ?: observer
+        },
         httpEngine = httpEngine,
         proving = proofHost?.let { HeadlessProving(it, options.prover.maxConcurrency) },
+        // Steam's calls alone: DMarket's stay on the platform's engine, and never go through the account's proxy.
+        steamHttpEngine = if (httpEngine == null || realSteam) {
+            { route -> SteamHttpTransport(route).also { steamTransport = it }.engine }
+        } else {
+            null
+        },
     )
     val tracker = HeadlessTracker(
         platform = platform,
@@ -171,9 +262,10 @@ private fun create(options: HeadlessOptions, httpEngine: HttpClientEngine?, back
         baseUrl = options.baseUrl,
         tunables = TrackerConfig.defaults().let { it.copy(notary = it.notary.copy(notaryUrl = options.notaryUrl)) },
         steamWrites = options.steamWrites,
+        requireSteamProxy = options.requireSteamProxy,
     )
     val handle: Any = js("Object.freeze(Object.create(null))")
-    trackers.set(handle, TrackerEntry(tracker, scope, proofHost))
+    trackers.set(handle, TrackerEntry(tracker, scope, proofHost, steamTransport))
     return handle
 }
 
@@ -194,6 +286,7 @@ private fun proofHost(options: HeadlessOptions, prover: ProverOptions, files: Pr
             assetsDir = files.assetsDir,
             mode = prover.mode,
             transport = prover.transport,
+            requireSteamProxy = options.requireSteamProxy,
         ),
         clock = clock,
         limits = ProverLimits(prover.connectDeadline, prover.sessionDeadline, prover.proofsPerChild),
@@ -214,7 +307,12 @@ private fun proofOutcome(dealId: String, failure: ProofFailure?): dynamic {
 }
 
 /** What a handle stands for. Reachable only through [trackers], never from the handle. */
-private class TrackerEntry(val tracker: HeadlessTracker, val scope: CoroutineScope, val proofHost: NodeProofHost?) {
+private class TrackerEntry(
+    val tracker: HeadlessTracker,
+    val scope: CoroutineScope,
+    val proofHost: NodeProofHost?,
+    val steamTransport: SteamHttpTransport?,
+) {
     var started = false
     var stopped = false
 }

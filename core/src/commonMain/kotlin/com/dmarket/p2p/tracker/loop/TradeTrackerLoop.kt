@@ -61,6 +61,7 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.UnansweredCreate
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
+import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
@@ -88,6 +89,8 @@ import com.dmarket.p2p.tracker.model.steam.isIndividualSteamId64
 import com.dmarket.p2p.tracker.net.redactedRemoteText
 import com.dmarket.p2p.tracker.net.redactedSummary
 import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.KillCause
+import com.dmarket.p2p.tracker.notary.NotarySessionCutException
 import com.dmarket.p2p.tracker.notary.OnlineBudgetLesson
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadBinding
@@ -354,6 +357,8 @@ private data class WriteAttempt(
     val countedOutOfBand: Boolean = false,
     /** A settled cancel's offer code, read off Steam, for `/trade-events` — see [LoopConfig.reportNotActionable]. */
     val offerReport: TradeStatusReport? = null,
+    /** Set when the transport could not send this create: the rest of its chain is held back for the same reason. */
+    val notSent: CreateOfferResult.NotSent? = null,
 ) {
     /**
      * Whether this attempt counts towards the cycle's executed-directive tally: a real Steam write always does,
@@ -516,9 +521,9 @@ class TradeTrackerLoop(
      */
     private val leaseClock: ElapsedClock? = null,
     /**
-     * Where an end-of-deal proof goes after it was sent ([ProofArchiveStore.endsDeal]): mobile keeps it 30 days from
-     * the deal's final status. Pruned by expiry before each transition proof pass. [NoProofArchive] (web, headless)
-     * keeps nothing.
+     * Where an end-of-deal proof goes after it was sent ([ProofArchiveStore.endsDeal]), pruned by expiry before each
+     * transition proof pass. Every host (mobile, web, headless) passes [NoProofArchive]: the device keeps no sent
+     * proof.
      */
     private val proofArchive: ProofArchiveStore = NoProofArchive,
 ) {
@@ -1103,6 +1108,8 @@ class TradeTrackerLoop(
         is CreateOfferResult.Throttled -> outcome(DirectiveStatus.FAILED, error = THROTTLED_WRITE_ERROR)
         // Unreachable: a paused create is dropped before any write.
         CreateOfferResult.CreatesPaused -> outcome(DirectiveStatus.FAILED, error = CREATES_PAUSED_DROP_REASON)
+        // Unreachable: a create that was not sent is deferred in runCreate, before an outcome is made.
+        is CreateOfferResult.NotSent -> outcome(DirectiveStatus.FAILED, error = result.reason)
     }
 
     private suspend fun emitExecuted(outcome: DirectiveOutcome) = emit(
@@ -1129,24 +1136,23 @@ class TradeTrackerLoop(
      *  [SteamWriteConfig.reportThrottledWrites] once agreed.
      */
     private suspend fun emitDeferredCreate(directive: Directive, reason: String, retryAfterSeconds: Int?) {
-        emitDeferred(directive.directiveId, directive.dealId, reason, retryAfterSeconds)
+        emitDeferred(directive, reason, retryAfterSeconds)
         resolveCreateWaiter(directive, directive.partnerSteamId?.let { throttledCreate(it) } ?: CreateOfferResult.Failed(reason))
         if (!config.tunables.steamWrites.reportThrottledWrites || !config.reportUnsentCreates) return
         reportOutcome(directive.outcome(DirectiveStatus.FAILED, error = "$THROTTLED_WRITE_ERROR: $reason"))
     }
 
     /**
-     * The bare "this create was not attempted" event. Split from [emitDeferredCreate] because the host fast
-     * path has no leased [Directive] to report an outcome for — it synthesises one and answers its caller with
-     * [CreateOfferResult.Throttled] instead — so it needs the event without the reporting side effect.
+     * The bare "this write was not attempted" event, of [Directive.action]'s kind: [emitDeferredCreate] without its
+     * waiter and its optional report, for a write (a create or a cancel the proxy kept from going out) that has neither.
      */
-    private suspend fun emitDeferred(directiveId: DirectiveId, dealId: DealId?, reason: String, retryAfterSeconds: Int?) {
+    private suspend fun emitDeferred(directive: Directive, reason: String, retryAfterSeconds: Int?) {
         emit(
             LifecycleEvent.SteamWriteDeferred(
-                kind = DirectiveAction.CREATE_OFFER.wireName,
-                directiveId = directiveId.value,
+                kind = directive.action.wireName,
+                directiveId = directive.directiveId.value,
                 reason = reason,
-                dealId = dealId?.value,
+                dealId = directive.dealId?.value,
                 retryAfterSeconds = retryAfterSeconds,
             ),
         )
@@ -1171,6 +1177,13 @@ class TradeTrackerLoop(
 
     /** In-memory cache of when the next heartbeat is due, mirrored to [loopState] for respawn survival. */
     private var nextHeartbeatAt: Instant? = null
+
+    /**
+     * After a heartbeat that failed (a 429, a 5xx, the network), a changed Steam session state makes no heartbeat due
+     * before this: one heartbeat floor, or the 429's `Retry-After` when longer. In memory; a heartbeat that gets
+     * through clears it.
+     */
+    private var steamSessionResendAt: Instant? = null
 
     /** When the last cycle started: a heartbeat that came due after it has not been tried yet. */
     private var cycleStartedAt: Instant? = null
@@ -1322,9 +1335,26 @@ class TradeTrackerLoop(
     var proofsOutOfBudget: Boolean = false
 
     /**
-     * Hears each notary session a proof attempt ran for a deal, once it ends: a delivered proof, a failed one, a
-     * cancelled one (Cancel on T-14). Not an attempt that never opened one ([ProofFailure.NotStarted]). Set by
-     * `P2pTracker`, which counts them against the manual update's permit (DMA-1016).
+     * The deal whose buyer started this cycle by their own action (`P2pTracker.updateStatus`), or `null`: on it a buyer
+     * proves its transitions at once ([ProofMintPolicy.decide]'s `buyerMayProve`), elsewhere the seller's tracker does.
+     * Set by `P2pTracker` before each cycle.
+     */
+    var buyerProofsFor: DealId? = null
+
+    /**
+     * The buyer's proof of [buyerProofsFor] runs without the deal's update permit (`P2pTracker.updateStatus` after the
+     * return from Steam). Its refusal is a late proof (the deal moved on: `verified: false`, a 404): the event is
+     * emitted and the transition latched like any refusal, but its report goes once without a proof instead of waiting.
+     */
+    var buyerProofWithoutPermit: Boolean = false
+
+    /**
+     * Hears each notary session a proof attempt ran for a deal, once it ends: a proof, a failure after the notary's
+     * `101`, a cut after it (the user's Cancel on T-14 or the cycle's deadline, said by the prover as a
+     * [NotarySessionCutException]), or the prover's own cancel. Not an attempt the notary never took
+     * ([ProofFailure.NotStarted], [ProofFailure.UpgradeRefused], [ProofFailure.NotaryUnreachable], no connect by the
+     * deadline, DMarket's 429 on the notary token) nor any other cancellation. Set by `P2pTracker`, which counts
+     * them against the manual update's permit (DMA-1016).
      */
     var onNotarySession: ((DealId) -> Unit)? = null
 
@@ -1614,7 +1644,7 @@ class TradeTrackerLoop(
         val cached = lastActiveTracking
         // A changed Steam session state is news for DMarket, but not while a refused DMarket credential is backed off.
         val heartbeatDue = (nextHeartbeatAt?.let { clock.now() >= it } ?: true) ||
-            (consecutiveAuthFailures == 0 && steamSessionChangedSinceSent())
+            (consecutiveAuthFailures == 0 && steamSessionResendAt.let { it == null || clock.now() >= it } && steamSessionChangedSinceSent())
         val action = CyclePolicy.decide(heartbeatDue, hasTrackingList = cached != null)
         if (action == CycleAction.IDLE) return@withLock TickOutcome.EMPTY
         // Backing off a refused credential: until the retry is due the cycle does nothing, so the watch pass on a
@@ -1928,6 +1958,7 @@ class TradeTrackerLoop(
             // — because the successful heartbeat that clears it never comes. A deterministic 4xx surfaces
             // immediately; a transient 5xx must fail SERVER_ERROR_THRESHOLD cycles first.
             val before = blockingState
+            holdSteamSessionResend()
             marketplaceConnectionMissingSticky = false
             marketplaceReLoginAnnounced = false
             consecutiveServerErrors += 1
@@ -1944,6 +1975,7 @@ class TradeTrackerLoop(
             }
             return null
         } catch (e: RateLimitedException) {
+            holdSteamSessionResend(e.retryAfterSeconds)
             emitIfRateLimited(e)
             return null
         } catch (_: CancellationException) {
@@ -1951,6 +1983,7 @@ class TradeTrackerLoop(
             // behavior for a cancelled cycle), so a Tracker.stop mid-heartbeat can't flash an error.
             return null
         } catch (_: Throwable) {
+            holdSteamSessionResend()
             countConnectionFailure()
             return null
         }
@@ -1976,8 +2009,15 @@ class TradeTrackerLoop(
         }
     }
 
+    /** See [steamSessionResendAt]. */
+    private fun holdSteamSessionResend(retryAfterSeconds: Long? = null) {
+        val wait = maxOf(cadence.heartbeatFloor(config.surface, mode), (retryAfterSeconds ?: 0).seconds)
+        steamSessionResendAt = clock.now() + wait
+    }
+
     /** The heartbeat round-tripped, so the DMarket connection is live: the error states clear. */
     private suspend fun heartbeatReturned() {
+        steamSessionResendAt = null
         // The episode is over, so the next logout announces itself again.
         marketplaceConnectionMissingSticky = false
         marketplaceReLoginAnnounced = false
@@ -2299,7 +2339,8 @@ class TradeTrackerLoop(
         val read = bind.sentOffers {
             // One read covers every create of the cycle, so it reaches back to the earliest cutoff among them.
             val cutoff = (bind.creates + directive).minOf { bindCutoff(it, lease) }
-            runCatching { steamReader.sentOffers(credential, cutoff) }.onFailure {
+            // A stopped cycle is no failed read: let it through to withDealClaim, which releases the claim on disk.
+            runCatchingUnlessCancelled { steamReader.sentOffers(credential, cutoff) }.onFailure {
                 // Once per cycle, into the throttle before anything awaits, as a refused POST is: chains re-gate on
                 // every step.
                 recordBindReadFailure(partner, it)
@@ -2916,7 +2957,7 @@ class TradeTrackerLoop(
             attempts += attempt
             if (attempt.stopChain) {
                 // This create did run (and failed), so the abandoned tail starts after it.
-                abandonChain(chain, directive, attempt.reason ?: "create failed", index + 1, null)
+                abandonChain(chain, directive, attempt.reason ?: "create failed", index + 1, null, attempt.notSent)
                 return attempts
             }
         }
@@ -2928,8 +2969,19 @@ class TradeTrackerLoop(
      * directive it stopped at and how many creates were dropped, then a per-directive deferral for each one so
      * none of them vanishes from the log silently. A chain that stopped on its own last directive has an empty
      * tail and says nothing — there is nothing left to abandon.
+     *
+     * A chain stopped by a create the transport could not send ([notSent]: the Steam proxy is unreachable) holds its
+     * tail back for that reason, as that create was: each one deferred with the proxy reason, its waiter answered
+     * [notSent], and never reported.
      */
-    private suspend fun abandonChain(chain: CreateChain, at: Directive, reason: String, tailFrom: Int, retryAfterSeconds: Int?) {
+    private suspend fun abandonChain(
+        chain: CreateChain,
+        at: Directive,
+        reason: String,
+        tailFrom: Int,
+        retryAfterSeconds: Int?,
+        notSent: CreateOfferResult.NotSent? = null,
+    ) {
         val tail = chain.directives.drop(tailFrom)
         if (tail.isEmpty()) return
         emit(
@@ -2940,7 +2992,14 @@ class TradeTrackerLoop(
                 skipped = tail.size,
             ),
         )
-        tail.forEach { emitDeferredCreate(it, PARTNER_PARKED_MID_CHAIN, retryAfterSeconds) }
+        tail.forEach {
+            if (notSent != null) {
+                emitDeferred(it, notSent.reason, retryAfterSeconds = null)
+                resolveCreateWaiter(it, notSent)
+            } else {
+                emitDeferredCreate(it, PARTNER_PARKED_MID_CHAIN, retryAfterSeconds)
+            }
+        }
     }
 
     /**
@@ -3059,11 +3118,22 @@ class TradeTrackerLoop(
             val result = bound ?: runCatchingUnlessCancelled {
                 offerCreator.createOffer(credential, TradeDraft(partner, directive.assetIds, directive.tradeToken))
             }.getOrElse { CreateOfferResult.Failed(it.redactedSummary()) }.diagnosed()
+            // Steam refused it, or it never left: nothing was written, so a cancel from here on releases the claim. A
+            // created offer keeps it held, or the release would let the deal be created twice.
+            val refused = result is CreateOfferResult.Failed && result.cause != SteamCreateFailureCause.TRANSPORT
+            if (refused || result is CreateOfferResult.NotSent) posted = null
             // Feed the surface's verdict back FIRST, before anything that awaits: the sibling chains are running
             // concurrently and re-gate on every step, so the sooner a refusal lands in the throttle the fewer
             // doomed creates they attempt. A bound offer is no write, so it says nothing about the surface.
             if (bound == null) recordCreateResult(partner, result)
             resolveCreateWaiter(directive, result)
+            // Never sent (the account's Steam proxy could not be reached): deferred like a create the token is too
+            // short for, so it is never reported failed, and the claim goes with nothing written. The chain stops:
+            // the next create for this partner would go the same way.
+            if (result is CreateOfferResult.NotSent) {
+                emitDeferred(directive, result.reason, retryAfterSeconds = null)
+                return@withDealClaim WriteAttempt(stopChain = true, reason = result.reason, notSent = result) to ClaimEnd.Released
+            }
             // No answer from Steam: held, not reported, and the chain stops as on any failed create.
             holdIfUnanswered(result, directive)?.let {
                 val error = (result as CreateOfferResult.Failed).error
@@ -3158,6 +3228,13 @@ class TradeTrackerLoop(
             // carries no diagnosis (observed on the open beta: cancel asks failing with nothing to read).
             val result = runCatchingUnlessCancelled { offerCanceller.cancelOffer(credential, offerId) }
                 .getOrElse { CancelOfferResult.Refused(it.redactedSummary()) }
+            // Never sent (the account's Steam proxy could not be reached): the offer is as it was, so there is nothing
+            // to read and nothing to report. Deferred like a create not sent, its claim released; the backend re-leases
+            // it once the lease lapses.
+            if (result is CancelOfferResult.NotSent) {
+                emitDeferred(directive, result.reason, retryAfterSeconds = null)
+                return@withDealClaim WriteAttempt.SKIPPED to ClaimEnd.Released
+            }
             val write = result.write()
             // One read of the offer for any cancel that did not plainly land ([LoopConfig.checkFailedCancels]): its
             // state is what tells a live offer from one already gone, and an unanswered write from a landed one.
@@ -3224,7 +3301,8 @@ class TradeTrackerLoop(
         CancelOfferResult.Cancelled -> null
         CancelOfferResult.NotLive -> CancelWrite.NOT_LIVE
         is CancelOfferResult.Unanswered -> CancelWrite.UNANSWERED
-        is CancelOfferResult.Refused -> CancelWrite.REFUSED
+        // Not sent, so not landed; deferred before it is ever read this way.
+        is CancelOfferResult.Refused, is CancelOfferResult.NotSent -> CancelWrite.REFUSED
     }
 
     /** The text a cancel that did not land reports; `null` for one that did. */
@@ -3233,6 +3311,7 @@ class TradeTrackerLoop(
         CancelOfferResult.NotLive -> CANCEL_NOT_LIVE_ERROR
         is CancelOfferResult.Unanswered -> error
         is CancelOfferResult.Refused -> error
+        is CancelOfferResult.NotSent -> reason
     }
 
     /**
@@ -3293,6 +3372,9 @@ class TradeTrackerLoop(
 
     /** Watch the tracked deals, report changed raw codes, and submit decisive proofs. Returns (reports, proofs). */
     private suspend fun watchAndReport(tracking: List<TrackedDeal>, credential: SteamCredential): Pair<Int, Int> {
+        // Bytes for a deal no longer tracked are never sent again: they would keep its manual update past the permit.
+        val trackedIds = tracking.mapTo(HashSet()) { it.dealId }
+        dropUndeliveredProofs { _, dealId -> dealId !in trackedIds }
         if (tracking.isEmpty()) return 0 to 0
         var proofsSubmitted = 0
         // Whether this pass has already spent a proof. The deadline bounds the CHAIN, so it cannot refuse the
@@ -3413,6 +3495,12 @@ class TradeTrackerLoop(
         val observed = observeTracked(tracking, credential, seededBaseline, attributionRetriable, uncorrelated)
         observedCodes.keys.retainAll(tracking.mapTo(HashSet()) { it.dealId })
         observed.forEach { (id, trade) -> (trade.historyStatus ?: trade.offerState)?.let { observedCodes[id] = it } }
+        // Steam now shows another code on the axis: that transition is past and its bytes go. An axis not read keeps them.
+        dropUndeliveredProofs { slot, _ ->
+            slot is ProofIntent &&
+                observed[slot.dealId]?.let { if (slot.source == TradeStatusSource.HISTORY) it.historyStatus else it.offerState }
+                    ?.let { it != slot.steamStatusCode } == true
+        }
         // Keep the expedited window open while any watched deal is still in a transient (state-9) offer
         // state. Must run before the empty-plan return: a persisting state 9 is deduped to no report, but
         // we still want to keep fast-polling for the imminent confirmation.
@@ -3494,6 +3582,7 @@ class TradeTrackerLoop(
             // notary session, so none of the gates that ration one applies. They exist only while no verdict came, so
             // neither the refusal latch nor an acceptance can stand against them.
             val resend = undeliveredProof(intent, now)
+            val role = DealRoleBinding.roleOf(tracking, intent.dealId)
             val verdict = if (resend != null) {
                 null
             } else {
@@ -3509,7 +3598,8 @@ class TradeTrackerLoop(
                     cycleDeadline = proofDeadline,
                     networkDeferred = proofsDeferred,
                     wakeBudget = proofsOutOfBudget,
-                    role = DealRoleBinding.roleOf(tracking, intent.dealId),
+                    role = role,
+                    buyerMayProve = intent.dealId == buyerProofsFor,
                 )
             }
             if (verdict is ProofMintVerdict.Skip) {
@@ -3559,6 +3649,8 @@ class TradeTrackerLoop(
                 // session on the next wake. Persisted, because an MV3 worker respawns between most cycles.
                 recordAcceptedProof(intent)
             } else {
+                // A late proof of the buyer's return from Steam: latched like any refusal, but its report is not held.
+                if (buyerProofWithoutPermit && role == DealRole.BUYER && intent.dealId == buyerProofsFor) proofUnprovable += intent
                 proofRejected += intent
                 // A fresh proof for this transition was just refused, so any earlier acceptance of it is no
                 // longer the backend's position — drop it rather than let a respawn (which clears the
@@ -3844,6 +3936,22 @@ class TradeTrackerLoop(
         return result
     }
 
+    /** Whether a prove that ended with [failure] (`null`: a proof) had a notary session; see [onNotarySession]. */
+    private fun spentNotarySession(failure: Throwable?): Boolean = when (failure) {
+        null -> true
+        // Cut after the notary's 101, by the user's Cancel or the cycle's deadline: the notary spent the session. Any other
+        // cancellation (the cycle's deadline included) came before it, or says nothing of it: not counted.
+        is NotarySessionCutException -> true
+        is CancellationException, is RateLimitedException -> false
+        is HostedProofException -> when (val cause = failure.failure) {
+            is ProofFailure.NotStarted, is ProofFailure.UpgradeRefused, is ProofFailure.NotaryUnreachable -> false
+            is ProofFailure.ProverKilled -> cause.cause != KillCause.CONNECT_DEADLINE
+            else -> true
+        }
+        // The prover's own words, with nothing to say whether the notary was reached: counted, as before.
+        else -> true
+    }
+
     /**
      * One notary session for [binding]: the proof, or `null` when it failed, in which case the attempt has already had its
      * say. See [mintAndSubmit] for why the failure handling lives here and nowhere else.
@@ -3858,8 +3966,7 @@ class TradeTrackerLoop(
         attemptStartedAt: Instant,
     ): ProofSubmission? {
         val outcome = runCatching { notary.proveTransition(binding, source, credential) }
-        val notStarted = (outcome.exceptionOrNull() as? HostedProofException)?.failure is ProofFailure.NotStarted
-        if (!notStarted) onNotarySession?.invoke(binding.dealId)
+        if (spentNotarySession(outcome.exceptionOrNull())) onNotarySession?.invoke(binding.dealId)
         return outcome.getOrElse { failure ->
             // DMarket's 429 (the notary token's own call): the prover did its part and the notary is not at fault.
             if (failure is RateLimitedException) {
@@ -3876,8 +3983,15 @@ class TradeTrackerLoop(
             // prover's health. The case this is for is a stale proving context right after a host reload,
             // which failed two proofs in 7 ms and 15 ms and parked nine healthy deals for it. The clock is
             // re-read rather than reusing `now`: `now` predates the attempt, and the fold must measure it.
+            //
+            // A Steam proxy that could not be reached is excluded too: the proof never got past the proxy, so it
+            // says nothing about the prover, and a park it armed would outlast the proxy's recovery. So is a proof the
+            // host cut because the account's first proxy was pushed mid-proof (headless): it must run again at once.
             val spentEnough = clock.now() - attemptStartedAt >= config.tunables.notary.breaker.countedFailureMinMs.milliseconds
-            if (failure !is CancellationException && spentEnough) {
+            val hosted = (failure as? HostedProofException)?.failure
+            val proxyDown = hosted is ProofFailure.ProxyUnreachable
+            val proxyCut = hosted is ProofFailure.ProverKilled && hosted.cause == KillCause.PROXY_PINNED
+            if (failure !is CancellationException && spentEnough && !proxyDown && !proxyCut) {
                 notaryThrottle.onResult(generated = false, now = clock.now())
             }
             // A refusal that names the online budget it needed is the one failure on this path that teaches
@@ -3915,6 +4029,12 @@ class TradeTrackerLoop(
         val live = undeliveredProofs.filterValues { now - it.provedFrom < PROOF_RESEND_WINDOW }
         if (live.size != undeliveredProofs.size) undeliveredProofs = live
         return live[slot]
+    }
+
+    /** Drops the kept bytes whose slot and deal are [stale]. */
+    private fun dropUndeliveredProofs(stale: (slot: Any, dealId: DealId) -> Boolean) {
+        val kept = undeliveredProofs.filter { (slot, proof) -> !stale(slot, proof.proof.dealId) }
+        if (kept.size != undeliveredProofs.size) undeliveredProofs = kept
     }
 
     /**

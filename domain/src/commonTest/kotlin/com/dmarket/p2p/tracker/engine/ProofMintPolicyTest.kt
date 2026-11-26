@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.engine
 
 import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.marketplace.DealRole
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.support.T0
 import kotlin.test.Test
@@ -31,8 +32,10 @@ class ProofMintPolicyTest {
         networkDeferred: Boolean = false,
         wakeBudget: Boolean = false,
         role: DealRole = DealRole.UNKNOWN,
+        buyerMayProve: Boolean = false,
+        of: ProofIntent = intent,
     ) = ProofMintPolicy.decide(
-        intent,
+        of,
         now,
         refused,
         accepted,
@@ -44,6 +47,7 @@ class ProofMintPolicyTest {
         networkDeferred,
         wakeBudget,
         role,
+        buyerMayProve,
     )
 
     @Test
@@ -280,8 +284,8 @@ class ProofMintPolicyTest {
     // ---- role (DMA-664) ------------------------------------------------------------------------
 
     @Test
-    fun only_the_seller_proves_a_changed_transition() {
-        // Both sides watch the same trade, so one MPC session per transition means one side proves: the seller.
+    fun outside_the_buyers_own_action_only_the_seller_proves_a_changed_transition() {
+        // Both sides watch the same trade, so a poll or a wake leaves the transition to the seller.
         assertEquals(ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES), decide(role = DealRole.BUYER))
         assertEquals(ProofMintVerdict.Mint, decide(role = DealRole.SELLER))
         assertEquals(ProofMintVerdict.Mint, decide(role = DealRole.UNKNOWN))
@@ -312,6 +316,59 @@ class ProofMintPolicyTest {
                 role = DealRole.BUYER,
             ),
         )
+    }
+
+    // ---- the buyer's own action (DMA-664, owner's decision 2026-11-26) ---------------------------
+
+    private val offerAccepted = ProofIntent(DealId("d1"), TradeStatusSource.OFFER, 3)
+    private val tradeCompleted = ProofIntent(DealId("d1"), TradeStatusSource.HISTORY, 3)
+
+    @Test
+    fun a_cycle_the_buyer_started_mints_the_buyers_sites() {
+        for (of in listOf(offerAccepted, tradeCompleted)) {
+            assertEquals(ProofMintVerdict.Mint, decide(role = DealRole.BUYER, buyerMayProve = true, of = of), "$of")
+        }
+        val buyerSites = ProofSite.entries.filter { site ->
+            val code = site.codes.firstOrNull() ?: return@filter false
+            decide(role = DealRole.BUYER, buyerMayProve = true, of = ProofIntent(DealId("d1"), site.source!!, code)) ==
+                ProofMintVerdict.Mint
+        }
+        assertEquals(ProofMintPolicy.BUYER_SITES, buyerSites.toSet())
+    }
+
+    @Test
+    fun offer_confirmed_stays_the_sellers_in_a_cycle_the_buyer_started() {
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES), decide(role = DealRole.BUYER, buyerMayProve = true))
+    }
+
+    @Test
+    fun a_poll_or_wake_leaves_the_buyers_sites_to_the_seller() {
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES), decide(role = DealRole.BUYER, of = offerAccepted))
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES), decide(role = DealRole.BUYER, of = tradeCompleted))
+    }
+
+    @Test
+    fun the_buyer_does_not_mint_what_is_already_answered() {
+        val buyer = { refused: Set<ProofIntent>, accepted: Map<ProofIntent, Instant> ->
+            decide(refused = refused, accepted = accepted, role = DealRole.BUYER, buyerMayProve = true, of = offerAccepted)
+        }
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED), buyer(emptySet(), mapOf(offerAccepted to T0)))
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED), buyer(setOf(offerAccepted), emptyMap()))
+    }
+
+    @Test
+    fun the_buyers_proof_meets_the_sellers_spending_gates() {
+        fun buyer(networkDeferred: Boolean = false, wakeBudget: Boolean = false, proverAvailable: Boolean = true) = decide(
+            networkDeferred = networkDeferred,
+            wakeBudget = wakeBudget,
+            proverAvailable = proverAvailable,
+            role = DealRole.BUYER,
+            buyerMayProve = true,
+            of = offerAccepted,
+        )
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.NETWORK_DEFERRED), buyer(networkDeferred = true))
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.WAKE_BUDGET), buyer(wakeBudget = true))
+        assertEquals(ProofMintVerdict.Skip(ProofSkipReason.NO_PROVER), buyer(proverAvailable = false))
     }
 
     // ---- decideFreshness (DMA-280) ------------------------------------------------------------

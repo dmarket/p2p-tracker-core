@@ -96,10 +96,12 @@ import kotlin.time.TimeSource
  * @param random the draws behind the 429 backoff's jitter.
  * @param clearAccountState what [onLogout] erases: the account's state, the Steam credential and the Steam session's
  *   cookies, never the device id.
- * @param eraseProofs erases the end-of-deal proofs the device keeps ([clearStoredProofs]); also run when
- *   [linkedAccount] answers `null` (the user unlinked Steam).
+ * @param eraseProofs removes the end-of-deal proofs version 1.4.0 kept in the account's storage ([clearStoredProofs]);
+ *   the device keeps no new ones. Also run when [linkedAccount] answers `null` (the user unlinked Steam).
  * @param importSteamCookies puts a Steam sign-in's cookies in the core's vault and drops the token scraped from the
  *   previous session ([MobileTrackerPlatform.importSteamSession]); `null` when the host keeps the session itself.
+ * @param clearSteamCookies deletes the Steam session the core uses and the token scraped from it
+ *   ([MobileTrackerPlatform.clearSteamSession]); `null` when the host keeps the session itself.
  * @param acknowledger the wake ack (`POST …/wake-ack`); the DMarket client on mobile.
  * @param deviceRegistry the push device registry behind [registerDevice] / [unregisterDevice]; `null` refuses both.
  * @param backgroundProofs the user's "background checks on mobile data" option, read on each cycle: the opt-in for a
@@ -124,6 +126,7 @@ class P2pTracker(
     private val clearAccountState: suspend () -> Unit = {},
     private val eraseProofs: suspend () -> Unit = {},
     private val importSteamCookies: (suspend (List<SteamCookie>) -> Unit)? = null,
+    private val clearSteamCookies: (suspend () -> Unit)? = null,
     private val deviceRegistry: DeviceRegistry? = null,
     private val backgroundProofs: () -> Boolean = cellularProofs,
     private val dealRefresh: DealRefreshClient? = null,
@@ -151,6 +154,15 @@ class P2pTracker(
 
     private class CycleProbe {
         var countsSessions = false
+
+        /**
+         * The deal whose buyer proves without a permit this cycle (the return from Steam): DMarket's refusal of that
+         * late proof is no [UpdateFailure.PROOF_REFUSED].
+         */
+        var withoutPermitFor: DealId? = null
+
+        /** The update's permit was spent by the time its cycle got the lock: the cycle sent nothing. */
+        var permitSpent = false
         var heartbeat = false
         var retryAfter: Duration? = null
         var steamRateLimited = false
@@ -179,7 +191,8 @@ class P2pTracker(
 
         /**
          * Deal and axis whose proof is the seller's ([ProofSkipReason.SELLER_PROVES]): this device is the buyer, sends
-         * the code once without a proof, and DMarket may refuse that report. Neither a failure nor a pending proof here.
+         * the code once without a proof, and DMarket may refuse that report for want of one ([PROOF_REQUIRED]). That
+         * refusal is neither a failure nor a pending proof here; a report that did not get through is still a failure.
          */
         val sellerProves = mutableSetOf<Pair<String, String>>()
     }
@@ -189,9 +202,12 @@ class P2pTracker(
      * (or a refresh 429's `Retry-After`, then [EXHAUSTED]) and counts the notary sessions run under it. In memory only:
      * after the process dies the next refresh answers 429 and the wait shows.
      */
-    private data class Permit(val until: Instant, val sessions: Int)
+    private data class Permit(val until: Instant, val sessions: Int, val bypassed: Boolean = false)
 
     private val permits = MutableStateFlow<Map<DealId, Permit>>(emptyMap())
+
+    /** One permit check at a time: a second update waits for the first one's refresh and runs under its permit. */
+    private val permitLock = Mutex()
 
     /**
      * One surface's 429s, whichever cycle or deal ran into them: until when the server's own `Retry-After` asks to wait,
@@ -265,7 +281,10 @@ class P2pTracker(
         clearAccountState()
     }
 
-    /** Erases the end-of-deal proofs this device keeps for the current account (D2): the app calls it on logout. */
+    /**
+     * Removes the end-of-deal proofs version 1.4.0 kept for the current account (D2); the device keeps no new ones.
+     * The app calls it on logout.
+     */
     suspend fun clearStoredProofs() = eraseProofs()
 
     /**
@@ -288,6 +307,24 @@ class P2pTracker(
             import(cookies)
             s.loop.judgeImportedSteamSession()
             s.loop.forceHeartbeatNow()
+            publishSteamSession(s)
+        }
+    }
+
+    /**
+     * Deletes the Steam session the core uses ([MobileTrackerPlatform.clearSteamSession]). A host calls
+     * [MobileTracker.clearSteamSession], which comes here once the tracker is built; see the contract there. With a loop
+     * running it waits for the loop's cycle and returns the session's state (gone); otherwise `null`.
+     */
+    suspend fun clearSteamSession(): SteamWebSessionState? {
+        val clear = clearSteamCookies ?: return null
+        val s = session?.takeIf { it.job.isActive }
+        if (s == null) {
+            clear()
+            return null
+        }
+        return s.cycleLock.withLock {
+            clear()
             publishSteamSession(s)
         }
     }
@@ -432,8 +469,15 @@ class P2pTracker(
      * Steam, for every deal) it sends nothing and answers [UpdateFailure.RATE_LIMITED] at once.
      *
      * **The server permit** (DMA-963, DMA-1016). Before the cycle the tracker takes the deal's permit
-     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal (a cancelled one
-     * counts): while one is left, the next run goes without a refresh, against the entry the forced heartbeat serves.
+     * (`POST …/deals/{id}/refresh`). A permit allows `1 + retries` notary sessions for the deal: a session counts
+     * once the notary answered it with `101`, also when the user's Cancel or the cycle's deadline cut it after that
+     * (only a prover that says so, [com.dmarket.p2p.tracker.notary.NotarySessionCutException], gets such a cut counted),
+     * and never when a stop or a logout cut it. While one is left, the next run goes without a refresh, against the
+     * entry the forced heartbeat serves.
+     * Two updates at once take one permit: the second waits for the first one's refresh, and its cycle checks the
+     * permit again once it holds the lock, so it runs only while the first one left a session. An update whose permit's
+     * window closed while it waited for the lock takes a new permit if it ran on another update's, and answers
+     * [UpdateFailure.TIMEOUT] with no session and no second refresh if it took that permit itself.
      * Once they are spent it answers [UpdateFailure.RATE_LIMITED] until [StatusUpdate.nextAllowedAt], sending nothing,
      * unless a proof made for the deal was not delivered: those bytes go again within their hour, no session and no
      * Retry spent, and a resend DMarket had already accepted reads as success.
@@ -441,11 +485,26 @@ class P2pTracker(
      * like any other. A 503 (or any other failure of the call) is [UpdateFailure.DMARKET] and charged nothing; a deal
      * with nothing to refresh (no watch entry, or a 404) still runs its cycle, uncounted.
      *
+     * **The buyer's return from Steam** ([afterSteamReturn], owner's decision 2026-11-26) needs no permit: where the
+     * permit would answer [UpdateFailure.RATE_LIMITED] (its sessions spent, or the refresh's own 429), the update runs
+     * its cycle anyway, uncounted, and the buyer proves the deal's transition in it, read off the forced heartbeat's
+     * watch entry (a refresh's 429 carries none). p2p takes such a proof (BE, 2026-11-26) but its hourly limit does not
+     * see it, so a deal gets one such cycle per permit window; a later return in it answers [UpdateFailure.RATE_LIMITED].
+     * A late proof (the deal moved on: `verified: false`, a 404) is no failure: the refusal is emitted and latched, no
+     * second proof is made, and the report goes once without one. DMarket's and Steam's own 429 backoff still holds it.
+     *
      * @param allowCellularProof the user allowed a proof on mobile data for this update (T-13); the gate stays as it is
      *   for every other cycle.
      * @param retries how many Retries a permit allows after its first session (the app's remote config); below 0 is 0.
+     * @param afterSteamReturn the update is the buyer's return to the app after Accept in Steam (the app's
+     *   `ReportSteamReturn`), not the Update status button: a spent permit does not stop it, once per permit window.
      */
-    suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false, retries: Int = DEFAULT_RETRIES): StatusUpdate {
+    suspend fun updateStatus(
+        dealId: DealId,
+        allowCellularProof: Boolean = false,
+        retries: Int = DEFAULT_RETRIES,
+        afterSteamReturn: Boolean = false,
+    ): StatusUpdate {
         val allowed = retries.coerceAtLeast(0)
         val now = clock.now()
         listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldown.until, steamCooldown.until)
@@ -453,21 +512,93 @@ class P2pTracker(
             ?.takeIf { it > now }
             ?.let { return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = it - now) }
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
-        val permit = activePermit(dealId, now)
-        when {
-            permit == null -> takePermit(dealId, now, allowed)?.let { return it }
-            // Bytes made and not delivered go again under a spent permit: sending them is no notary session.
-            // shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a
-            // proof due on the other also mints that one; gate the mint on the permit if both ever come due together.
-            permit.sessions > allowed && !s.loop.hasUndeliveredProof(dealId) ->
-                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - now)
+        var refreshed = false
+        var lapsed = false
+
+        // The permit's own "not yet" ([UpdateFailure.RATE_LIMITED]): the answer, or the return's cycle without a permit.
+        suspend fun permitLimited(answer: StatusUpdate): StatusUpdate =
+            if (afterSteamReturn && takeBypass(dealId)) withoutPermit(s, dealId, allowCellularProof, allowed) else answer
+        while (true) {
+            val checkedAt = clock.now()
+            // Whether this run goes under a permit, as the check saw it: one that lapses before the cycle lock stops it.
+            var held = false
+            var limited: StatusUpdate? = null
+            permitLock.withLock {
+                val permit = activePermit(dealId, checkedAt)
+                if (permit == null) {
+                    takePermit(dealId, checkedAt, allowed)?.let { answer ->
+                        // The refresh's own 429 marks the permit spent; anything else (Kong's 429, a 5xx) ends every update.
+                        if (activePermit(dealId, checkedAt)?.sessions != EXHAUSTED) return answer
+                        limited = answer
+                    }
+                    refreshed = true
+                    // shortcut: a granted window already past by this device's clock runs uncounted, so a clock far ahead
+                    // still runs its update; compare with the server's time if that ever matters.
+                    held = activePermit(dealId, clock.now()) != null
+                } else if (spent(permit, allowed, dealId, s.loop)) {
+                    limited = statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - checkedAt)
+                } else {
+                    held = true
+                }
+            }
+            limited?.let { return permitLimited(it) }
+            // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session, or the
+            // permit's window may have closed while this update waited, which leaves its session nothing to count against.
+            val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true, buyerProofsFor = dealId) {
+                activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } ?: held
+            } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+            if (!run.probe.permitSpent) return finished(dealId, s, run, allowed)
+            val permit = activePermit(dealId, clock.now())
+            if (permit != null && spent(permit, allowed, dealId, s.loop)) {
+                return permitLimited(statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - clock.now()))
+            }
+            // The window closed: one refresh per tap, so an update that took its own permit asks for no second one, and
+            // one whose second permit closed too goes no further.
+            if (refreshed || lapsed) return statusOf(dealId, UpdateFailure.TIMEOUT, allowed)
+            lapsed = true
         }
-        val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true)
+    }
+
+    /**
+     * Whether the return from Steam may run without [dealId]'s permit, marking it run: once per permit window, because
+     * p2p's own limit sees neither these proofs nor their notary sessions.
+     */
+    private fun takeBypass(dealId: DealId): Boolean {
+        var taken = false
+        permits.update { all ->
+            val permit = all[dealId]?.takeUnless { it.bypassed }
+            taken = permit != null
+            if (permit != null) all + (dealId to permit.copy(bypassed = true)) else all
+        }
+        return taken
+    }
+
+    /**
+     * The buyer's return from Steam where the permit says "not yet": one cycle that counts against no permit, its proofs
+     * of [dealId] made as the buyer's and their refusal latching nothing ([TradeTrackerLoop.buyerProofWithoutPermit]).
+     */
+    private suspend fun withoutPermit(s: Session, dealId: DealId, allowCellularProof: Boolean, allowed: Int): StatusUpdate {
+        val run = cycle(s, wake = null, manual = true, allowCellularProof, buyerProofsFor = dealId, withoutPermit = true)
             ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+        return finished(dealId, s, run, allowed)
+    }
+
+    /** [updateStatus]'s answer for the cycle [run] that ran under its permit. */
+    private suspend fun finished(dealId: DealId, s: Session, run: CycleRun, allowed: Int): StatusUpdate {
         val retryAfter = run.probe.retryAfter
         if (retryAfter != null) deal(dealId.value) { it.copy(cooldownUntil = clock.now() + retryAfter) }
         return statusOf(dealId, failureOf(dealId, s.loop, run), allowed, retryAfter, s.loop.observedCode(dealId))
     }
+
+    /**
+     * Whether [permit] has no session left for [dealId]. Bytes made and not delivered go again under a spent permit:
+     * sending them is no notary session.
+     * shortcut: the bypass is per deal and the bytes per transition, so a deal with bytes held for one axis and a proof
+     * due on the other also mints that one, and so does the one update that finds Steam on another decisive code before
+     * its cycle drops the old bytes; gate the mint on the permit if either ever matters.
+     */
+    private fun spent(permit: Permit, allowed: Int, dealId: DealId, loop: TradeTrackerLoop): Boolean =
+        permit.sessions > allowed && !loop.hasUndeliveredProof(dealId)
 
     /** [dealId]'s permit while it holds. */
     private fun activePermit(dealId: DealId, now: Instant): Permit? = permits.value[dealId]?.takeIf { it.until > now }
@@ -483,7 +614,8 @@ class P2pTracker(
             val retryAfter = e.retryAfterSeconds
             val wait = if (e.errorCode == REFRESH_RATE_LIMITED && retryAfter != null) {
                 val until = now + retryAfter.coerceAtLeast(0).seconds
-                permits.update { it + (dealId to Permit(until, EXHAUSTED)) }
+                // A permit still held keeps its sessions: the 429 only says this refresh came too soon.
+                if (activePermit(dealId, now) == null) permits.update { it + (dealId to Permit(until, EXHAUSTED)) }
                 until - now
             } else {
                 dmarketCooldown.refused(now, retryAfter).also { wait -> deal(dealId.value) { it.copy(cooldownUntil = now + wait) } }
@@ -502,12 +634,12 @@ class P2pTracker(
     }
 
     /**
-     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit.
-     * shortcut: counted when the attempt ends, so a re-tap that lands between Cancel and the old cycle's end still sees
-     * the session unspent; count at the prove's start if that window ever matters.
+     * One notary session ran for [dealId]: an update's cycle counts it against the deal's permit. Counted when the
+     * attempt ends; a re-tap that lands before then waits for the cycle lock and checks the permit again. A session a
+     * stop, a logout or an account change cut is not counted: the user did not cancel it.
      */
     private fun countNotarySession(dealId: DealId) {
-        if (!probe.countsSessions) return
+        if (!probe.countsSessions || session?.job?.isActive != true) return
         permits.update { all ->
             val permit = all[dealId] ?: return@update all
             if (permit.sessions == EXHAUSTED) all else all + (dealId to permit.copy(sessions = permit.sessions + 1))
@@ -656,7 +788,10 @@ class P2pTracker(
      * `null` when the session stopped under it. A [wake] or a [manual] update forces the heartbeat first: both always
      * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
-     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only).
+     * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only), and a
+     * [manual] cycle whose [permitSpent] answers `true` under the lock sends nothing. [buyerProofsFor]: the deal whose
+     * buyer started the cycle, so this device proves its transitions as the buyer ([updateStatus] only);
+     * [withoutPermit]: that buyer's proof runs without the deal's permit (the return from Steam).
      */
     private suspend fun cycle(
         s: Session,
@@ -667,14 +802,18 @@ class P2pTracker(
         allowProof: Boolean = true,
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
+        buyerProofsFor: DealId? = null,
+        withoutPermit: Boolean = false,
+        permitSpent: () -> Boolean = { false },
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions, buyerProofsFor, withoutPermit) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
                         s.loop.wakeFromPush(wake.signal)
                     }
+                    manual && permitSpent() -> probe.permitSpent = true
                     manual -> {
                         s.loop.forceHeartbeatNow()
                         s.loop.runOnceReporting()
@@ -705,10 +844,15 @@ class P2pTracker(
         allowProof: Boolean = true,
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
+        buyerProofsFor: DealId? = null,
+        withoutPermit: Boolean = false,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
-        val cycleProbe = CycleProbe().also { it.countsSessions = countsSessions }
+        val cycleProbe = CycleProbe().also {
+            it.countsSessions = countsSessions
+            it.withoutPermitFor = buyerProofsFor.takeIf { withoutPermit }
+        }
         probe = cycleProbe
         val metered = runCatching { network.metered() }.getOrNull()
         val background = runCatching { backgroundProofs() }.getOrNull()
@@ -716,6 +860,8 @@ class P2pTracker(
         val option = if (onScreenCycle) runCatching { cellularProofs() }.getOrNull() else background
         s.loop.proofsDeferred = !(metered == false || allowCellularProof || option == true)
         s.loop.proofsOutOfBudget = !allowProof
+        s.loop.buyerProofsFor = buyerProofsFor
+        s.loop.buyerProofWithoutPermit = withoutPermit
         s.loop.heartbeatContext = TradeTrackerLoop.HeartbeatContext(
             wakeId = wake?.wakeId,
             network = metered?.let { if (it) NetworkType.CELLULAR else NetworkType.WIFI },
@@ -874,8 +1020,10 @@ class P2pTracker(
             is LifecycleEvent.TradeStatusReported -> deal(event.dealId) {
                 it.copy(lastCode = event.steamStatusCode, proofState = ProofState.NONE)
             }
-            is LifecycleEvent.TradeStatusReportFailed ->
-                if ((event.dealId to event.source) !in probe.sellerProves) probe.reportFailed += event.dealId
+            is LifecycleEvent.TradeStatusReportFailed -> {
+                val sellersProof = (event.dealId to event.source) in probe.sellerProves && event.reason?.contains(PROOF_REQUIRED) == true
+                if (!sellersProof) probe.reportFailed += event.dealId
+            }
             // The gate's deferral outlasts the withheld report it causes, which is announced after it.
             is LifecycleEvent.TradeStatusReportDeferred -> if ((event.dealId to event.source) !in probe.sellerProves) {
                 deal(event.dealId) { if (it.proofState == ProofState.DEFERRED) it else it.copy(proofState = ProofState.PENDING) }
@@ -904,7 +1052,12 @@ class P2pTracker(
                 deal(event.dealId) { it.copy(proofState = ProofState.PENDING) }
             }
             is LifecycleEvent.ProofSubmitted -> {
-                if (event.verified) probe.proofLanded += event.dealId else probe.proofRefused += event.dealId
+                // A late proof made without a permit, refused because the deal moved on, is no failure of the update.
+                if (event.verified) {
+                    probe.proofLanded += event.dealId
+                } else if (event.dealId != probe.withoutPermitFor?.value) {
+                    probe.proofRefused += event.dealId
+                }
                 deal(event.dealId) { it.copy(proofState = ProofState.NONE) }
             }
             else -> Unit
@@ -946,6 +1099,9 @@ class P2pTracker(
 
         /** The refresh's own 429, as against Kong's, which names no P2P code. */
         private const val REFRESH_RATE_LIMITED = "P2P_REFRESH_RATE_LIMITED"
+
+        /** DMarket's refusal of a decisive report that came without its proof. */
+        private const val PROOF_REQUIRED = "P2P_PROOF_REQUIRED"
 
         /** A permit the refresh's 429 closed: no session is left under it. */
         private const val EXHAUSTED = Int.MAX_VALUE

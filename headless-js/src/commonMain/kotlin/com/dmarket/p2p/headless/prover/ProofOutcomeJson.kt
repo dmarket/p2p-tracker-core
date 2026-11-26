@@ -23,7 +23,7 @@ object ProofOutcomeJson {
      * `summary`, which serialization alone would leave out.
      */
     fun failure(failure: ProofFailure): String {
-        val fields = json.encodeToJsonElement(ProofFailure.serializer(), failure.redacted()).jsonObject
+        val fields = json.encodeToJsonElement(ProofFailure.serializer(), failure.mapTexts(ProverOutput::redact)).jsonObject
         return JsonObject(fields + ("summary" to JsonPrimitive(ProverOutput.redact(failure.summary)))).toString()
     }
 
@@ -36,16 +36,21 @@ object ProofOutcomeJson {
         val rest = fields.map { (key, value) -> key to (value?.let(::JsonPrimitive) ?: JsonNull) }
         return JsonObject((head + rest).toMap()).toString()
     }
+}
 
-    private fun ProofFailure.redacted(): ProofFailure = when (this) {
-        is ProofFailure.UpgradeRefused -> this
-        is ProofFailure.SessionClosed -> copy(reason = reason?.let(ProverOutput::redact))
-        is ProofFailure.NotaryUnreachable -> copy(detail = ProverOutput.redact(detail))
-        is ProofFailure.VersionMismatch -> copy(detail = ProverOutput.redact(detail))
-        is ProofFailure.SteamFailed -> copy(detail = ProverOutput.redact(detail))
-        is ProofFailure.LimitsExceeded -> copy(detail = ProverOutput.redact(detail))
-        is ProofFailure.ProverKilled -> copy(detail = detail?.let(ProverOutput::redact))
-        is ProofFailure.NotStarted -> copy(reason = ProverOutput.redact(reason))
-        is ProofFailure.Other -> copy(detail = ProverOutput.redact(detail))
-    }
+/**
+ * [this] with [text] applied to every text it carries: the one list of them, so a failure type added later cannot be
+ * missed by one redaction and caught by another.
+ */
+internal fun ProofFailure.mapTexts(text: (String) -> String): ProofFailure = when (this) {
+    is ProofFailure.UpgradeRefused -> this
+    is ProofFailure.SessionClosed -> copy(reason = reason?.let(text))
+    is ProofFailure.NotaryUnreachable -> copy(detail = text(detail))
+    is ProofFailure.VersionMismatch -> copy(detail = text(detail))
+    is ProofFailure.SteamFailed -> copy(detail = text(detail))
+    is ProofFailure.ProxyUnreachable -> copy(detail = text(detail))
+    is ProofFailure.LimitsExceeded -> copy(detail = text(detail))
+    is ProofFailure.ProverKilled -> copy(detail = detail?.let(text))
+    is ProofFailure.NotStarted -> copy(reason = text(reason))
+    is ProofFailure.Other -> copy(detail = text(detail))
 }

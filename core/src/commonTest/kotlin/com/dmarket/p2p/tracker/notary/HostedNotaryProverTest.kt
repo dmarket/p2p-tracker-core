@@ -4,6 +4,9 @@ import com.dmarket.p2p.tracker.model.DealId
 import com.dmarket.p2p.tracker.model.OfferId
 import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
+import com.dmarket.p2p.tracker.net.SteamProxy
+import com.dmarket.p2p.tracker.runtime.SteamRoute
 import com.dmarket.p2p.tracker.support.FakeClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -63,6 +66,70 @@ class HostedNotaryProverTest {
         assertFalse(TOKEN in json, "the request JSON carries no token")
         assertFalse(TOKEN in sent.toString() || SESSION_ID in sent.toString(), "toString redacts both Steam values")
         assertEquals(listOf(headers), host.signed)
+    }
+
+    @Test
+    fun a_proof_takes_the_routes_proxy_and_tells_the_route_how_it_went() = runTest {
+        val proxy = SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128")
+        val route = SteamRoute(clock) { proxy }
+        val host = RecordingHost(HostedProofOutcome.Failed(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED")))
+        val prover = HostedNotaryProver(host, signer, clock, SESSION_ID, route = route)
+
+        val failure = assertFailsWith<HostedProofException> { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+        assertIs<ProofFailure.ProxyUnreachable>(failure.failure)
+        assertEquals(proxy, host.proofs.single().steamProxy)
+        assertFalse("s3cret" in host.proofs.single().toString() || "203.0.113.7" in host.proofs.single().toString())
+        assertTrue(route.isUnreachable)
+        assertEquals("could not connect to the proxy: ECONNREFUSED", route.detail)
+
+        host.answer = HostedProofOutcome.Proved("cHJvb2Y=")
+        prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+        assertFalse(route.isUnreachable, "a proof made through the proxy went through it")
+    }
+
+    @Test
+    fun a_route_that_requires_a_proxy_and_holds_none_starts_no_proof_and_never_asks_the_host() = runTest {
+        val route = SteamRoute(clock, required = { true }) { null }
+        val host = RecordingHost()
+        val prover = HostedNotaryProver(host, signer, clock, SESSION_ID, route = route)
+
+        val failure = assertFailsWith<HostedProofException> { prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential()) }
+
+        assertEquals(ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL), failure.failure)
+        assertTrue(host.proofs.isEmpty(), "the host was never handed a proof it would dial Steam for directly")
+        assertTrue(route.isProxyMissing)
+    }
+
+    @Test
+    fun a_proof_tells_its_host_whether_the_proxy_is_required_so_its_steam_leg_can_never_go_direct() = runTest {
+        val proxy = SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128")
+        var pinned = false
+        val host = RecordingHost()
+        val prover = HostedNotaryProver(host, signer, clock, SESSION_ID, route = SteamRoute(clock, required = { pinned }) { proxy })
+
+        prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+        pinned = true
+        prover.proveRead(binding, ProvenReadKind.TRADE_OFFER, credential())
+
+        assertEquals(listOf(false, true), host.proofs.map { it.steamProxyRequired })
+        assertTrue(host.proofs.all { it.steamProxy == proxy })
+    }
+
+    @Test
+    fun the_proxy_failure_is_the_steam_legs_more_exact_word() {
+        assertEquals(
+            ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"),
+            ProofFailures.classify(
+                targetError = "the proxy answered CONNECT with HTTP 407",
+                proxyError = "the proxy answered CONNECT with HTTP 407",
+                message = "io error",
+            ),
+        )
+        assertEquals(
+            ProofFailure.UpgradeRefused(401),
+            ProofFailures.classify(upgradeStatus = 401, proxyError = "x"),
+            "the notary's word first",
+        )
     }
 
     @Test

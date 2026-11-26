@@ -4,12 +4,15 @@ package com.dmarket.p2p.headless
 
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyRefusal
 import com.dmarket.p2p.tracker.engine.FailedCancelKind
 import com.dmarket.p2p.tracker.engine.ProofSkipReason
 import com.dmarket.p2p.tracker.loop.OFFER_WRITES_DISABLED
 import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
 import com.dmarket.p2p.tracker.notary.PROOF_TOKEN_EXPIRING_REASON
 import com.dmarket.p2p.tracker.runtime.HeadlessTracker
 
@@ -25,7 +28,11 @@ import com.dmarket.p2p.tracker.runtime.HeadlessTracker
  * - `tokenExpiringDefer`: a create deferred because the token expires before it could be confirmed;
  * - `proofTokenExpiring`: a proof not started because the token is too close to its expiry (it appears inside
  *   a longer reason);
- * - `noProver`: a proof suppressed because the tracker makes none.
+ * - `noProver`: a proof suppressed because the tracker makes none;
+ * - `steamProxyUnreachable`: a create or a cancel not sent because the Steam proxy pushed with the token could not be
+ *   reached — or, with `requireSteamProxy`, because none is held;
+ * - `steamProxyMissing`: with `requireSteamProxy`, a proof not started (and the `detail` of a `SteamProxyMissing` a
+ *   Steam call or a proof raised) because no proxy is held.
  */
 @JsExport
 fun reasons(): dynamic = REASONS
@@ -36,6 +43,8 @@ private val REASONS: dynamic = frozen(
     "tokenExpiringDefer" to TOKEN_EXPIRING_DEFER_REASON,
     "proofTokenExpiring" to PROOF_TOKEN_EXPIRING_REASON,
     "noProver" to ProofSkipReason.NO_PROVER.message,
+    "steamProxyUnreachable" to STEAM_PROXY_UNREACHABLE_REASON,
+    "steamProxyMissing" to STEAM_PROXY_MISSING_DETAIL,
 )
 
 /** The `kind` of a failed-cancel check, by name: `alreadyInactive`, `alreadyTraded`, `stillOpen`, `unread`. */
@@ -53,6 +62,29 @@ private val DIRECTIVE_ACTIONS: dynamic = frozen(*DirectiveAction.entries.map { i
 /** The gateway's error code for a heartbeat refused because the DMarket account links no Steam account. */
 @JsExport
 fun steamNotLinkedCode(): String = HeadlessTracker.STEAM_NOT_LINKED_CODE
+
+/**
+ * The `code` of the error `pushSteamToken` rejects with when its `proxy` is neither `null` nor an `http://` URL with a
+ * host and a port: the rejection a host traces back to the proxy it was given rather than to its own call.
+ */
+@JsExport
+fun steamProxyInvalidCode(): String = STEAM_PROXY_INVALID_CODE
+
+internal const val STEAM_PROXY_INVALID_CODE = "STEAM_PROXY_INVALID"
+
+/**
+ * The `code` of the error `pushSteamToken` rejects with when it names `proxy: null` once a proxy has been held: the
+ * tracker is pinned to a proxy, another may replace it, none may not. Nothing changed; a host maps it to a 400.
+ */
+@JsExport
+fun steamProxyLockedCode(): String = SteamProxyRefusal.LOCKED.code
+
+/**
+ * The `code` of the error `pushSteamToken` rejects with, on a tracker made with `requireSteamProxy`, when the push
+ * would leave no proxy held (none named with none held, or `proxy: null`). Nothing changed; a host maps it to a 400.
+ */
+@JsExport
+fun steamProxyRequiredCode(): String = SteamProxyRefusal.REQUIRED.code
 
 /** Under this much token life no create or proof starts, and the tracker stops claiming the device present. */
 @JsExport

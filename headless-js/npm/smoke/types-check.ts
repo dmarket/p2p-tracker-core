@@ -16,6 +16,9 @@ import {
     runProverChild,
     start,
     steamNotLinkedCode,
+    steamProxyInvalidCode,
+    steamProxyLockedCode,
+    steamProxyRequiredCode,
     stop,
     trackerState,
     type HeadlessTrackerOptions,
@@ -24,6 +27,7 @@ import {
     type ProofFailure,
     type ProofOutcome,
     type ProverLineStream,
+    type SteamTokenPushOptions,
     type SteamTokenPushResult,
     type TrackerHandle,
     type TrackerState,
@@ -39,6 +43,7 @@ function describeFailure(failure: ProofFailure): string {
         case "notary_unreachable":
         case "version_mismatch":
         case "limits_exceeded":
+        case "proxy_unreachable":
         case "other":
             return failure.detail;
         case "steam_failed":
@@ -83,6 +88,7 @@ const options: HeadlessTrackerOptions = {
         void line;
     },
     nowMs: () => Date.now(),
+    requireSteamProxy: true,
 };
 
 // @ts-expect-error an option the tracker does not have
@@ -167,6 +173,13 @@ async function host(): Promise<void> {
     }
     // @ts-expect-error no push result has this type
     if (token.type === "expired") void token;
+    const proxied: SteamTokenPushOptions = { proxy: "http://user:pass@127.0.0.1:3128" };
+    const viaProxy: SteamTokenPushResult = await pushSteamToken(handle, "token", proxied);
+    const renewal: SteamTokenPushResult = await pushSteamToken(handle, "token", {});
+    const direct: SteamTokenPushResult = await pushSteamToken(handle, "token", { proxy: null });
+    void [viaProxy, renewal, direct];
+    // @ts-expect-error the proxy is a URL string
+    void pushSteamToken(handle, "token", { proxy: 3128 });
 
     const state: TrackerState = trackerState(handle);
     const hasTradingApiKey: boolean = state.hasTradingApiKey;
@@ -181,6 +194,12 @@ async function host(): Promise<void> {
     const updateRequired: boolean = state.updateRequired;
     const updateDueTimeMs: number | null = state.updateDueTimeMs;
     const dealDeadlines: Readonly<Record<string, number>> = state.dealDeadlines;
+    const steamProxyUnreachable: boolean = state.steamProxyUnreachable;
+    const steamProxyUnreachableSinceMs: number | null = state.steamProxyUnreachableSinceMs;
+    const steamProxy: "set" | "none" = state.steamProxy;
+    const steamProxyRequired: boolean = state.steamProxyRequired;
+    // @ts-expect-error the proxy is never readable back
+    void state.proxy;
     // @ts-expect-error the state is read-only
     state.clockSkewed = true;
     void [
@@ -196,6 +215,10 @@ async function host(): Promise<void> {
         updateRequired,
         updateDueTimeMs,
         dealDeadlines,
+        steamProxyUnreachable,
+        steamProxyUnreachableSinceMs,
+        steamProxy,
+        steamProxyRequired,
     ];
 
     await stop(handle);
@@ -205,9 +228,13 @@ const reasonTexts: string[] = Object.values(reasons());
 const createOffer: "create_offer" = directiveActions().createOffer;
 const alreadyTraded: "already_traded" = failedCancelKinds().alreadyTraded;
 const notLinked: "P2P_STEAM_NOT_LINKED" = steamNotLinkedCode();
+const proxyInvalid: "STEAM_PROXY_INVALID" = steamProxyInvalidCode();
+const proxyLocked: "STEAM_PROXY_LOCKED" = steamProxyLockedCode();
+const proxyRequired: "STEAM_PROXY_REQUIRED" = steamProxyRequiredCode();
+const proxyMissing: "no Steam proxy is held, and this tracker requires one" = reasons().steamProxyMissing;
 // @ts-expect-error the constants are frozen
 reasons().noProver = "changed";
 const durations: [number, number] = [minWriteTokenLifetimeMs(), maxClockSkewMs()];
 const version: string = headlessVersion();
 const childEntry: () => void = runProverChild;
-void [reasonTexts, createOffer, alreadyTraded, notLinked, durations, version, childEntry, host];
+void [reasonTexts, createOffer, alreadyTraded, notLinked, proxyInvalid, proxyLocked, proxyRequired, proxyMissing, durations, version, childEntry, host];

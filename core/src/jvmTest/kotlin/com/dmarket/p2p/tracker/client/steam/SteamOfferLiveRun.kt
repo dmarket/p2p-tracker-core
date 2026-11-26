@@ -3,6 +3,7 @@ package com.dmarket.p2p.tracker.client.steam
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
 import com.dmarket.p2p.tracker.adapter.host.SystemClock
+import com.dmarket.p2p.tracker.adapter.host.VaultSteamCookieStore
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.config.SteamEndpointsConfig
 import com.dmarket.p2p.tracker.model.AssetId
@@ -53,7 +54,7 @@ class SteamOfferLiveRun {
     /** One account's mobile Steam stack over its own in-memory vault. */
     private class Account(loginSecure: String) {
         val vault = SealedSteamCookieVault(InMemoryDeviceKeyValueStore())
-        val jar = VaultCookieJar(vault, SystemClock())
+        val jar = WebCookieJar(VaultSteamCookieStore(vault, SystemClock()))
         val http = createSteamHttpClient(cookies = jar)
         val endpoints = SteamEndpointsConfig()
         val reader = KtorSteamReadClient(http, endpoints)

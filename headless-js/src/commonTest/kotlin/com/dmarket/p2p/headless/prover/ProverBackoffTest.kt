@@ -11,6 +11,7 @@ import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 /** How long each notary refusal holds the next proof back, by the notary's own table. */
 class ProverBackoffTest {
@@ -22,6 +23,7 @@ class ProverBackoffTest {
         ProofFailure.UpgradeRefused(599) to 30.seconds,
         ProofFailure.SessionClosed(1013, "queue full") to 30.seconds,
         ProofFailure.NotaryUnreachable("ECONNREFUSED") to 30.seconds,
+        ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED") to 30.seconds,
         // Sent only by the deferred admission gate: mapped now, so its return needs no release.
         ProofFailure.UpgradeRefused(403) to 60.seconds,
         ProofFailure.SessionClosed(4029) to 60.seconds,
@@ -82,5 +84,94 @@ class ProverBackoffTest {
         assertNotNull(backoff.blocked(T0 + 1.seconds))
         backoff.keyChanged()
         assertNull(backoff.blocked(T0 + 1.seconds))
+    }
+
+    @Test
+    fun a_key_push_leaves_a_proxys_wait_and_its_recovery_lift_alone() {
+        val backoff = ProverBackoff()
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), T0)
+        backoff.keyChanged()
+        assertNotNull(backoff.blocked(T0 + 1.seconds), "a key does not clear the wait for a dead proxy")
+        backoff.proxyRecovered()
+        assertNull(backoff.blocked(T0 + 1.seconds))
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), T0 + 2.seconds)
+        backoff.keyChanged()
+        backoff.proxyRecovered()
+        assertNotNull(backoff.blocked(T0 + 3.seconds), "the lift stays spent after a key push; the doubled wait holds")
+        assertNull(backoff.blocked(T0 + 62.seconds))
+    }
+
+    @Test
+    fun another_proxy_or_the_same_one_back_ends_a_proxys_wait_and_leaves_the_notarys_alone() {
+        val now = Instant.fromEpochSeconds(1_781_611_200)
+        for (lift in listOf(ProverBackoff::proxyChanged, ProverBackoff::proxyRecovered)) {
+            val proxyDown = ProverBackoff().apply { failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 407"), now) }
+            assertNotNull(proxyDown.blocked(now))
+            lift(proxyDown)
+            assertNull(proxyDown.blocked(now), lift.name)
+
+            val notaryDown = ProverBackoff().apply { failed(ProofFailure.NotaryUnreachable("ECONNREFUSED"), now) }
+            lift(notaryDown)
+            assertNotNull(notaryDown.blocked(now), "a busy notary is not the proxy's to clear (${lift.name})")
+        }
+    }
+
+    @Test
+    fun a_proxy_that_lets_reads_through_but_not_the_prover_lifts_one_wait_and_then_the_ladder_holds() {
+        val refused = ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429")
+        val backoff = ProverBackoff()
+        var now = T0
+
+        backoff.failed(refused, now)
+        backoff.proxyRecovered()
+        assertNull(backoff.blocked(now), "the first recovery lets the held proof start")
+
+        // Each later cycle: the prover's tunnel is refused again, the tracker's reads get through again.
+        val waits = (1..4).map {
+            backoff.failed(refused, now)
+            backoff.proxyRecovered()
+            assertNotNull(backoff.blocked(now), "recovery $it must not lift the wait again")
+            var wait = Duration.ZERO
+            while (backoff.blocked(now + wait) != null) wait += 1.seconds
+            now += wait
+            wait
+        }
+        assertEquals(listOf(60.seconds, 120.seconds, 240.seconds, 5.minutes), waits)
+    }
+
+    @Test
+    fun a_proof_that_comes_back_or_another_proxy_lets_a_recovery_lift_a_wait_again() {
+        val refused = ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429")
+        for (rearm in listOf<(ProverBackoff) -> Unit>({ it.succeeded() }, { it.proxyChanged() })) {
+            val backoff = ProverBackoff()
+            backoff.failed(refused, T0)
+            backoff.proxyRecovered()
+            backoff.failed(refused, T0)
+            rearm(backoff)
+
+            backoff.failed(refused, T0)
+            assertEquals(
+                "no proof until ${T0 + 30.seconds}, after ${refused.summary}",
+                backoff.blocked(T0),
+                "the run starts again from the first wait",
+            )
+            backoff.proxyRecovered()
+            assertNull(backoff.blocked(T0))
+        }
+    }
+
+    @Test
+    fun another_proxy_pushed_while_the_notary_waits_gives_the_new_proxy_its_own_lift_and_keeps_the_notarys_wait() {
+        val backoff = ProverBackoff()
+        backoff.failed(ProofFailure.ProxyUnreachable("the proxy answered CONNECT with HTTP 429"), T0)
+        backoff.proxyRecovered()
+        backoff.failed(ProofFailure.NotaryUnreachable("ECONNREFUSED"), T0)
+
+        backoff.proxyChanged()
+        assertNotNull(backoff.blocked(T0), "a busy notary is not the proxy's to clear")
+
+        backoff.failed(ProofFailure.ProxyUnreachable("could not connect to the proxy: ECONNREFUSED"), T0)
+        backoff.proxyRecovered()
+        assertNull(backoff.blocked(T0), "the new proxy's first recovery lifts its wait")
     }
 }

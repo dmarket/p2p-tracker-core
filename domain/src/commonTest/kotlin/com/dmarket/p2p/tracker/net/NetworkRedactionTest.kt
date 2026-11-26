@@ -223,4 +223,53 @@ class NetworkRedactionTest {
     fun plus_secret_param_ignores_a_blank_name() {
         assertEquals(NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES, NetworkRedaction.plusSecretParam("  "))
     }
+    // ---- URL user info -----------------------------------------------------------------------------
+
+    @Test
+    fun a_url_closing_a_compact_json_or_html_value_keeps_the_next_fields_text() {
+        val bodies = listOf(
+            "{\"site\":\"https://dmarket.com\",\"contact\":\"x@y.com\"}",
+            "<a href=\"https://dmarket.com\">site</a><a href=\"mailto:x@y.com\">mail</a>",
+        )
+        for (body in bodies) assertEquals(body, NetworkRedaction.redactBody(body), body)
+    }
+
+    @Test
+    fun a_proxy_password_with_any_character_parse_takes_is_redacted_in_every_context() {
+        val passwords = listOf("p\"ss", "p,ss", "p<ss>", "p'ss", "p@ss", "p@s\"s", "p@s,s@x")
+        for (password in passwords) {
+            val url = "http://trader:$password@203.0.113.7:3128"
+            SteamProxy.parse(url)
+            val contexts = listOf(
+                "proxy $url failed",
+                "{\"proxy\":\"$url\",\"contact\":\"x@y.com\"}",
+                "<a href=\"$url\">p</a> mail x@y.com",
+                "http://[2001:db8::1]:80/ $url/",
+            )
+            for (body in contexts) {
+                val redacted = NetworkRedaction.redactBody(body).orEmpty()
+                assertFalse("trader" in redacted || "ss" in redacted, "$password: $redacted")
+                assertTrue("http://<redacted>@203.0.113.7:3128" in redacted, "$password: $redacted")
+            }
+        }
+        val ipv6 = NetworkRedaction.redactBody("{\"p\":\"http://u:p\"w@[2001:db8::1]:443\"}").orEmpty()
+        assertEquals("{\"p\":\"http://<redacted>@[2001:db8::1]:443\"}", ipv6)
+    }
+
+    @Test
+    fun a_proxy_echoed_without_its_default_port_loses_a_password_with_a_comma_or_quote() {
+        for (password in listOf("p,ss", "p'ss")) {
+            val redacted = NetworkRedaction.redactBody("connect to http://trader:$password@proxy.example.net/ failed").orEmpty()
+            assertEquals("connect to http://<redacted>@proxy.example.net/ failed", redacted)
+        }
+    }
+
+    @Test
+    fun a_plain_url_user_info_is_redacted_whatever_the_host() {
+        val body = "{\"a\":\"https://user:pw@example.net/x\",\"b\":\"ftp://anon@files.example.net\"}"
+        assertEquals(
+            "{\"a\":\"https://<redacted>@example.net/x\",\"b\":\"ftp://<redacted>@files.example.net\"}",
+            NetworkRedaction.redactBody(body),
+        )
+    }
 }

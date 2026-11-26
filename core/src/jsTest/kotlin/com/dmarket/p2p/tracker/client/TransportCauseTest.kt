@@ -52,6 +52,34 @@ class TransportCauseTest {
         assertTrue(e.message!!.startsWith("Fail to fetch (read ECONNRESET) on GET https://api.steampowered.com/"), e.message)
     }
 
+    /** Ktor 3.6 stopped wrapping the rejection in a `JsError`: `Error("Fail to fetch", <rejection>)`. */
+    @Test
+    fun a_bare_rejection_under_ktors_message_carries_its_cause_too() = runTest {
+        val bare =
+            Error("Fail to fetch", nodeRejection(systemError("ECONNREFUSED", "connect ECONNREFUSED 127.0.0.1:443")).unsafeCast<Throwable>())
+        val e = assertFailsWith<HttpTransportException> {
+            createSteamHttpClient(engine = MockEngine { throw bare }, describeTransportCauses = true).get(steamReadUrl).bodyAsText()
+        }
+        assertEquals("connect ECONNREFUSED 127.0.0.1:443", e.detail)
+        val other = IllegalStateException("boom", nodeRejection(systemError("ECONNRESET", "read ECONNRESET")).unsafeCast<Throwable>())
+        assertFailsWith<IllegalStateException> {
+            createSteamHttpClient(engine = MockEngine { throw other }, describeTransportCauses = true).get(steamReadUrl).bodyAsText()
+        }
+    }
+
+    @Test
+    fun a_proxy_failure_under_a_bare_rejection_is_its_own_exception() = runTest {
+        val proxy = systemError("STEAM_PROXY_UNREACHABLE", "could not connect to the proxy: ECONNREFUSED")
+        val bare = Error("Fail to fetch", nodeRejection(proxy).unsafeCast<Throwable>())
+        for (describe in listOf(true, false)) {
+            val e = assertFailsWith<SteamProxyUnreachableException> {
+                createSteamHttpClient(engine = MockEngine { throw bare }, describeTransportCauses = describe).get(steamReadUrl).bodyAsText()
+            }
+            assertEquals("could not connect to the proxy: ECONNREFUSED", e.detail)
+            assertFalse(secretJwt in e.message.orEmpty(), e.message)
+        }
+    }
+
     @Test
     fun an_undici_cause_is_named_by_its_code_and_a_nested_one_follows() = runTest {
         val socket = systemError("UND_ERR_SOCKET", "other side closed")

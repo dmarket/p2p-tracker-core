@@ -61,11 +61,13 @@ internal fun SteamPushResult.toJs(): dynamic {
             o.type = "invalid"
             o.reason = reason
         }
+        // The facade rejects these with a coded error before they get here.
+        is SteamPushResult.ProxyRefused -> error("a refused proxy is a rejection, not a result")
     }
     return o
 }
 
-/** The tracker's state without either secret. `dealDeadlines` maps each deal id to its deadline. */
+/** The tracker's state without any secret. `dealDeadlines` maps each deal id to its deadline. */
 internal fun HeadlessTrackerState.toJs(): dynamic {
     val o = plainObject()
     o.hasTradingApiKey = hasTradingApiKey
@@ -82,5 +84,11 @@ internal fun HeadlessTrackerState.toJs(): dynamic {
     val deadlines = plainObject()
     dealDeadlines.forEach { (deal, deadline) -> deadlines[deal.value] = deadline.toEpochMilliseconds().toDouble() }
     o.dealDeadlines = deadlines
+    // Whether the proxy pushed with the token is unreachable, never the proxy itself.
+    o.steamProxyUnreachable = steamProxyUnreachable
+    o.steamProxyUnreachableSinceMs = steamProxyUnreachableSince.epochMs()
+    // Whether a proxy is held (`set`/`none`) and whether one must be: never which one.
+    o.steamProxy = if (steamProxyHeld) "set" else "none"
+    o.steamProxyRequired = steamProxyRequired
     return o
 }

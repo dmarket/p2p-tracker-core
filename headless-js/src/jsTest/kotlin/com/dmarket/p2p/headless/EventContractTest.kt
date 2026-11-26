@@ -6,6 +6,8 @@ import com.dmarket.p2p.tracker.loop.STEAM_SESSION_MISSING_DROP_REASON
 import com.dmarket.p2p.tracker.loop.TOKEN_EXPIRING_DEFER_REASON
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.toWireJson
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_REASON
 import com.dmarket.p2p.tracker.notary.PROOF_TOKEN_EXPIRING_REASON
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -36,6 +38,10 @@ class EventContractTest {
         LifecycleEvent.TradeStatusReported("deal-1", "offer", steamStatusCode = 2),
         LifecycleEvent.DuplicateWriteSuppressed("create_offer", "deal-1", "dir-3", phase = "completed", steamOfferId = "777"),
         LifecycleEvent.CreateUnanswered("deal-1", "dir-1", error = "timeout"),
+        LifecycleEvent.SteamWriteDeferred("create_offer", "dir-4", STEAM_PROXY_UNREACHABLE_REASON, dealId = "deal-2"),
+        LifecycleEvent.SteamProxyUnreachable(dealIds = listOf("deal-1", "deal-2"), detail = "could not connect to the proxy: ECONNREFUSED"),
+        LifecycleEvent.SteamProxyRecovered,
+        LifecycleEvent.SteamProxyMissing(dealIds = listOf("deal-1"), detail = STEAM_PROXY_MISSING_DETAIL),
         // Read by the log alone, for its level.
         LifecycleEvent.CycleFailed(reason = "boom"),
         LifecycleEvent.DirectiveReportFailed("create_offer", "dir-1", reason = "HTTP 500"),
@@ -45,7 +51,7 @@ class EventContractTest {
 
     @Test
     fun every_event_health_and_the_log_read_keeps_its_wire_json() = runTest {
-        assertEquals(21, events.size)
+        assertEquals(25, events.size)
         val expected = golden("lifecycle-events.golden.jsonl").trimEnd('\n')
         assertEquals(expected, events.joinToString("\n") { it.toWireJson() })
     }

@@ -18,6 +18,9 @@ import kotlinx.serialization.json.Json
  *   server name staying the target's. MPC-only; proxy routing belongs to the notary. Never set in production.
  * @property transport `direct` (default) or `egress` (proxy only); egress uses the Worker frontend at `notaryUrl`.
  * @property mode `mpc` (default, including old IPC) or `proxy`.
+ * @property requireSteamProxy a proof with no [ToChild.Prove.steamProxy] is not started: the Steam leg is only ever the
+ *   tunnel, never the transport's direct connector. Set per proof by the host: its `requireSteamProxy`, or a proxy the
+ *   tracker held once.
  */
 @Serializable
 data class ProverSettings(
@@ -28,11 +31,13 @@ data class ProverSettings(
     @SerialName("targetAddress") val targetAddress: String? = null,
     @SerialName("mode") val mode: IssuanceMode = IssuanceMode.MPC,
     @SerialName("transport") val transport: String = "direct",
+    @SerialName("requireSteamProxy") val requireSteamProxy: Boolean = false,
 ) {
     init {
         require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
         require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
         require(mode != IssuanceMode.PROXY || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
+        require(!requireSteamProxy || mode == IssuanceMode.MPC) { "requireSteamProxy needs mode mpc" }
     }
 
     companion object {
@@ -55,7 +60,8 @@ data class ProverSettings(
  *
  * The SDK sends [ToChild.Prove]; the child asks for its upgrade headers ([FromChild.HeadersWanted]) just before it
  * connects to the notary, gets them in [ToChild.Headers], and answers [FromChild.Proved] or [FromChild.Failed].
- * The Steam token and the signed headers cross this channel and nothing else: never argv, the environment or a log.
+ * The Steam token, its proxy and the signed headers cross this channel and nothing else: never argv, the environment
+ * or a log.
  */
 object ProverIpc {
     val json: Json = Json {
@@ -75,7 +81,11 @@ object ProverIpc {
 
 @Serializable
 sealed interface ToChild {
-    /** Prove [request] with [steamAccessToken]; [id] tags every message about this proof. */
+    /**
+     * Prove [request] with [steamAccessToken]; [id] tags every message about this proof. [steamProxy] is the URL of
+     * the proxy the Steam leg must tunnel through (`null`: dial Steam directly), a secret like the token: it travels
+     * here and nowhere else, never in [settings], argv or the environment.
+     */
     @Serializable
     @SerialName("prove")
     data class Prove(
@@ -84,8 +94,10 @@ sealed interface ToChild {
         val steamAccessToken: String,
         val steamSessionId: String,
         val settings: ProverSettings,
+        val steamProxy: String? = null,
     ) : ToChild {
-        override fun toString(): String = "Prove(id=$id, request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>)"
+        override fun toString(): String = "Prove(id=$id, request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>, " +
+            "steamProxy=${steamProxy?.let { "<redacted>" }})"
     }
 
     /** The signed upgrade headers for proof [id], or why there are none ([error]). */

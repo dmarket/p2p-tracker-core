@@ -11,17 +11,19 @@ import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
  * app's version and what this build does.
  *
  * [capabilities] are only what the build can do: `wake_v1` (the app shows its own notification and the core acks,
- * §2.3), and `steam_writes` when the tracker writes Steam offers. No `wake_v2` (needs the early-access FCM SDK), no
- * `background_prove` (no native prover yet), no `buyer_reports` (no buyer reporter yet): the backend counts a device
- * reachable on them.
+ * §2.3), `steam_writes` when the tracker writes Steam offers, and `background_prove` when it has the native prover
+ * ([backgroundProve]). No `wake_v2` (needs the early-access FCM SDK) and no `buyer_reports` (the buyer reporter exists,
+ * but the backend has not said what the flag means yet): the backend counts a device reachable on them.
  */
 class DeviceRegistry(
     private val client: DeviceRegistryClient,
     private val platform: String,
     private val clientVersion: String,
     steamWrites: Boolean,
+    backgroundProve: Boolean = false,
 ) {
-    val capabilities: List<String> = listOfNotNull(WAKE_V1, STEAM_WRITES.takeIf { steamWrites })
+    val capabilities: List<String> =
+        listOfNotNull(WAKE_V1, STEAM_WRITES.takeIf { steamWrites }, BACKGROUND_PROVE.takeIf { backgroundProve })
 
     suspend fun register(deviceId: DeviceId, pushToken: String, provider: PushProvider, apns: ApnsTarget?) {
         require(pushToken.isNotBlank()) { "a push token is required" }
@@ -44,6 +46,7 @@ class DeviceRegistry(
     companion object {
         const val WAKE_V1 = "wake_v1"
         const val STEAM_WRITES = "steam_writes"
+        const val BACKGROUND_PROVE = "background_prove"
         private const val TOKEN = "token"
     }
 }

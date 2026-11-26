@@ -31,6 +31,8 @@ object ProofProblems {
             TOO_MANY_REQUESTS -> ProblemCode.STEAM_RATE_LIMITED
             else -> ProblemCode.STEAM_UNREACHABLE
         }
+        // This SDK pushes no Steam proxy, so it never sees one fail; were it to, Steam is out of reach all the same.
+        is ProofFailure.ProxyUnreachable -> ProblemCode.STEAM_UNREACHABLE
         is ProofFailure.ProverKilled -> ProblemCode.PROVER_KILLED
         is ProofFailure.NotStarted -> null
         is ProofFailure.LimitsExceeded, is ProofFailure.Other -> ProblemCode.PROOF_FAILED

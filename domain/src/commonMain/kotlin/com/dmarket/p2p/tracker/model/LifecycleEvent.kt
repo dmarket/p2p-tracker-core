@@ -122,7 +122,8 @@ sealed interface LifecycleEvent {
      * A leased `create_offer` was **not attempted this cycle** — the create surface's own back-pressure
      * firing, not a Steam failure. [reason] names which limit deferred it (the surface or the partner is
      * cooling down after a Steam refusal, a per-partner / per-cycle cap, or the concurrent-chain limit), and
-     * [retryAfterSeconds] is set when the reason is a cooldown with a known deadline.
+     * [retryAfterSeconds] is set when the reason is a cooldown with a known deadline. A `create_offer` or a
+     * `cancel_offer` ([kind]) the account's Steam proxy kept from going out is deferred the same way.
      *
      * Nothing was written and (pending agreement with the backend) nothing was reported, so the directive is
      * simply re-leased later. Without this event that is indistinguishable from a client silently ignoring
@@ -481,6 +482,33 @@ sealed interface LifecycleEvent {
      * cycle carries on without the refused call, as before.
      */
     data class RateLimited(val surface: String, val retryAfterSeconds: Long?) : LifecycleEvent
+
+    /**
+     * The Steam proxy this account's traffic goes through could not be reached (no connection, no answer, or a
+     * `CONNECT` it refused), so nothing reaches Steam: nothing falls back to a direct connection, no create is sent
+     * and none is reported failed. Emitted once when the problem starts, and once more for another proxy pushed in
+     * its place that cannot be reached either; [SteamProxyRecovered] ends it.
+     *
+     * [dealIds] are the deals the tracker was tracking then, every one of them held back; [detail] says what failed
+     * in fixed words and an error code (`ECONNREFUSED`, `HTTP 407`), never the proxy's address or credentials.
+     */
+    data class SteamProxyUnreachable(val dealIds: List<String>, val detail: String) : LifecycleEvent
+
+    /**
+     * A tracker that requires a Steam proxy (headless `requireSteamProxy`) holds none: nothing reaches Steam, nothing
+     * goes out directly, no create is sent and none is reported failed, and a token push without a proxy is refused.
+     * Emitted once when the problem starts — the first cycle or push that finds it, so right after a start — and
+     * [SteamProxyRecovered] ends it, once a token is held with a proxy.
+     *
+     * [dealIds] are the deals the tracker was tracking then (none, before a heartbeat); [detail] is fixed words.
+     */
+    data class SteamProxyMissing(val dealIds: List<String>, val detail: String) : LifecycleEvent
+
+    /**
+     * The [SteamProxyUnreachable] or [SteamProxyMissing] problem is over: a connection went through the proxy, or the
+     * host pushed another proxy (or, where none is required, none).
+     */
+    data object SteamProxyRecovered : LifecycleEvent
 
     /** One cycle finished; mirrors `loop.TickOutcome`. */
     data class CycleCompleted(val directivesExecuted: Int, val reportsSent: Int, val proofsSubmitted: Int, val watching: Int) :

@@ -61,6 +61,20 @@ export interface HeadlessTrackerOptions {
     onProverLine?: (stream: ProverLineStream, line: string) => void;
     /** The clock, in epoch milliseconds; the system clock by default. */
     nowMs?: () => number;
+    /**
+     * `true` to fail closed without a Steam proxy from the start: for a host that knows this account uses one, as
+     * after a restart (the proxy is held in memory only; the host remembers the fact and sets this). No token is held
+     * without a proxy: a push that would leave none held (none named and none held, or `proxy: null`) rejects with an
+     * `Error` coded `steamProxyRequiredCode()` and changes nothing. With no token held the tracker sends no heartbeat
+     * and makes no Steam call and no proof, so nothing reaches Steam, directly or otherwise. (The Steam transport and the
+     * prover refuse to go direct as well, a backstop a host does not see in practice.) The host hears `SteamProxyMissing`
+     * (ended by `SteamProxyRecovered`), and the state says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile.
+     * Needs `prover.mode` `mpc`.
+     *
+     * `false` by default: the proxy is optional, but the tracker pins itself to one the first time it holds one
+     * (`proxy: null` then rejects coded `steamProxyLockedCode()`), for as long as it runs.
+     */
+    requireSteamProxy?: boolean;
 }
 
 /** What became of a pushed key compared with the one held before it. */
@@ -100,10 +114,41 @@ export interface TrackerState {
     readonly updateDueTimeMs: number | null;
     /** Each tracked deal's deadline, by deal id. */
     readonly dealDeadlines: Readonly<Record<string, number>>;
+    /**
+     * Whether the last attempt through the Steam proxy pushed with the token failed. While it is, nothing reaches
+     * Steam — nothing falls back to a direct connection — and no create or cancel is sent or reported failed. Cleared
+     * when a connection gets through it, or another proxy (or none) is pushed. The proxy itself is never readable back.
+     */
+    readonly steamProxyUnreachable: boolean;
+    /** Since when, while `steamProxyUnreachable`. */
+    readonly steamProxyUnreachableSinceMs: number | null;
+    /** Whether a Steam proxy is held with the token: `set` or `none`, never which one. */
+    readonly steamProxy: "set" | "none";
+    /**
+     * Whether no Steam traffic may go direct: `requireSteamProxy`, or a proxy held once (the tracker is pinned). With
+     * `steamProxy: "none"` nothing reaches Steam until a token is pushed with a proxy.
+     */
+    readonly steamProxyRequired: boolean;
 }
 
-/** Why a prover process ended before its proof did. */
-export type KillCause = "out_of_memory" | "connect_deadline" | "session_deadline" | "exited";
+/** The options of a Steam token push. */
+export interface SteamTokenPushOptions {
+    /**
+     * The HTTP proxy this Steam account's traffic goes through, `http://user:pass@host:port` (HTTP CONNECT; no
+     * SOCKS), held with the token. Absent (or `undefined`): a renewal, the proxy held before stays — a push that names
+     * none never moves the account back to this host's address. A URL: that proxy from now on, replacing the one held.
+     * `null`: no proxy from now on, Steam reached directly — only while none has ever been held (else rejected coded
+     * `steamProxyLockedCode()`) and without `requireSteamProxy` (else `steamProxyRequiredCode()`). A token that is not
+     * held changes neither. Write-only.
+     */
+    proxy?: string | null;
+}
+
+/**
+ * Why a prover process ended before its proof did. `proxy_pinned`: cut because the account's first Steam proxy was
+ * pushed mid-proof; the proof runs again through it.
+ */
+export type KillCause = "out_of_memory" | "connect_deadline" | "session_deadline" | "exited" | "proxy_pinned";
 
 /** Why a proof produced nothing. Every text in it, `summary` included, is redacted. */
 export type ProofFailure =
@@ -112,6 +157,7 @@ export type ProofFailure =
     | { readonly type: "notary_unreachable"; readonly detail: string; readonly summary: string }
     | { readonly type: "version_mismatch"; readonly detail: string; readonly summary: string }
     | { readonly type: "steam_failed"; readonly status: number | null; readonly detail: string; readonly summary: string }
+    | { readonly type: "proxy_unreachable"; readonly detail: string; readonly summary: string }
     | { readonly type: "limits_exceeded"; readonly detail: string; readonly summary: string }
     | { readonly type: "prover_killed"; readonly cause: KillCause; readonly detail: string | null; readonly summary: string }
     | { readonly type: "not_started"; readonly reason: string; readonly summary: string }
@@ -136,7 +182,10 @@ export declare function start(handle: TrackerHandle): void;
 /** Runs one cycle now, behind the cycle in flight. */
 export declare function cycle(handle: TrackerHandle): Promise<void>;
 
-/** Stops the tracker and kills every prover process at once. Every later call with the handle is refused. */
+/**
+ * Stops the tracker; kills every prover process and every tunnel through its Steam proxy at once. Every later call with
+ * the handle is refused.
+ */
 export declare function stop(handle: TrackerHandle): Promise<void>;
 
 /** Pushes the DMarket Trading API key pair (hex). */
@@ -146,8 +195,25 @@ export declare function pushTradingApiKey(
     secretKey: string,
 ): Promise<TradingApiKeyPushResult>;
 
-/** Pushes a Steam access token. */
-export declare function pushSteamToken(handle: TrackerHandle, accessToken: string): Promise<SteamTokenPushResult>;
+/**
+ * Pushes a Steam access token, and what becomes of the proxy its Steam traffic goes through (`options.proxy`: kept
+ * when absent, replaced by a URL, dropped by `null`). Every Steam call and
+ * every proof's Steam leg then tunnels through that proxy and fails rather than go direct: a failure is reported as
+ * the `SteamProxyUnreachable` event (`SteamProxyRecovered` ends it), `steamProxyUnreachable` in the state, a create
+ * or a cancel deferred (`SteamWriteDeferred`) with `reasons().steamProxyUnreachable` — never sent, read or reported
+ * failed — and a proof's `proxy_unreachable`. Rejects a `proxy` that is neither `null` nor an `http://` URL with a host
+ * and a port with an `Error` whose `code` is `steamProxyInvalidCode()`, naming the rule and never the value; resolves
+ * `invalid` where the host cannot route Steam through a proxy.
+ *
+ * The proxy is optional, but sticky once set: from the first push held with one, `proxy: null` rejects with an `Error`
+ * coded `steamProxyLockedCode()`; with `requireSteamProxy`, a push that would leave none held rejects coded
+ * `steamProxyRequiredCode()`. Either way nothing changed, and the caller asked for something refused (a 400).
+ */
+export declare function pushSteamToken(
+    handle: TrackerHandle,
+    accessToken: string,
+    options?: SteamTokenPushOptions,
+): Promise<SteamTokenPushResult>;
 
 /** What the tracker holds right now. */
 export declare function trackerState(handle: TrackerHandle): TrackerState;
@@ -159,6 +225,8 @@ export declare function reasons(): Readonly<{
     tokenExpiringDefer: "the Steam token expires before a create could be confirmed";
     proofTokenExpiring: "the Steam token is too close to its expiry to start a proof";
     noProver: "no notary prover is configured on this host";
+    steamProxyUnreachable: "not sent: the Steam proxy could not be reached";
+    steamProxyMissing: "no Steam proxy is held, and this tracker requires one";
 }>;
 
 /** The `kind` of a failed-cancel check, by name. The same frozen object each call. */
@@ -179,6 +247,24 @@ export declare function directiveActions(): Readonly<{
 
 /** The gateway's error code for a heartbeat refused because the DMarket account links no Steam account. */
 export declare function steamNotLinkedCode(): "P2P_STEAM_NOT_LINKED";
+
+/**
+ * The `code` of the `Error` `pushSteamToken` rejects with when `options.proxy` is neither `null` nor an `http://` URL
+ * with a host and a port. Its message names the rule broken, never the value. No other rejection carries it.
+ */
+export declare function steamProxyInvalidCode(): "STEAM_PROXY_INVALID";
+
+/**
+ * The `code` of the `Error` `pushSteamToken` rejects with for `proxy: null` once a proxy has been held: the tracker is
+ * pinned to a proxy; another may replace it, none may not. Nothing changed.
+ */
+export declare function steamProxyLockedCode(): "STEAM_PROXY_LOCKED";
+
+/**
+ * The `code` of the `Error` `pushSteamToken` rejects with, on a tracker made with `requireSteamProxy`, for a push that
+ * would leave no proxy held: none named with none held, or `proxy: null`. Nothing changed.
+ */
+export declare function steamProxyRequiredCode(): "STEAM_PROXY_REQUIRED";
 
 /** Under this much token life no create or proof starts. */
 export declare function minWriteTokenLifetimeMs(): number;

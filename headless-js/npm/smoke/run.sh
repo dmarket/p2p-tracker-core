@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # run.sh <tarball> [<work-dir>] — installs a packed @dmarket/p2p-tracker-headless into an empty directory and uses
-# it the way a host does: imports the entry, builds a tracker with a prover, forks the packaged prover child over
-# IPC against a stub notary, and type-checks a host file against the package's types.
+# it the way a host does: imports the entry, builds a tracker with a prover, sends a tracker's Steam calls through a
+# local proxy (`undici` resolved from the install), forks the packaged prover child over IPC against a stub notary,
+# and type-checks a host file against the package's types.
 #
 # The tests in the build import the package from the build directory and hand the child script in explicitly. What
 # only an installed package exercises — resolving the package root, the default prover files, `ws` as a dependency,
@@ -30,11 +31,12 @@ npm init -y >/dev/null
 npm pkg set type=module
 npm install --no-audit --no-fund --loglevel=error "$TARBALL"
 npm install --no-audit --no-fund --loglevel=error --save-dev "typescript@$TYPESCRIPT_VERSION"
-cp "$SMOKE_DIR"/surface.mjs "$SMOKE_DIR"/tracker.mjs "$SMOKE_DIR"/child.mjs "$SMOKE_DIR"/types-check.ts "$WORK"/
+cp "$SMOKE_DIR"/surface.mjs "$SMOKE_DIR"/tracker.mjs "$SMOKE_DIR"/proxy.mjs "$SMOKE_DIR"/child.mjs "$SMOKE_DIR"/types-check.ts "$WORK"/
 
 node --input-type=module -e "import * as h from '@dmarket/p2p-tracker-headless'; console.log(Object.keys(h))"
 node surface.mjs
 node tracker.mjs
+node proxy.mjs
 node child.mjs "$REPO_ROOT/headless-js/src/jsTest/resources/prover-ipc-prove.json" \
   "$REPO_ROOT/core/build/dist/js/productionLibrary/VERSION"
 npx tsc --noEmit --strict --module nodenext --moduleResolution nodenext types-check.ts

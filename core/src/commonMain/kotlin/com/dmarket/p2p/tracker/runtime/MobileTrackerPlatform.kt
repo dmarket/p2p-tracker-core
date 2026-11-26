@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.adapter.host.PersistedDeviceIdStore
 import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
+import com.dmarket.p2p.tracker.adapter.host.VaultSteamCookieStore
 import com.dmarket.p2p.tracker.adapter.platformElapsedClock
 import com.dmarket.p2p.tracker.client.marketplace.CredentialMarketplaceAuthenticator
 import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
@@ -38,6 +39,7 @@ import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.host.SteamCookieStore
 import com.dmarket.p2p.tracker.port.host.SteamCookieVault
 import com.dmarket.p2p.tracker.port.marketplace.MarketplaceCredentialProvider
 import io.ktor.client.engine.HttpClientEngine
@@ -49,10 +51,12 @@ import kotlinx.coroutines.sync.withLock
  * members; the install and account rules over them are the same on every platform and live here. Nothing secret
  * passes through the host.
  *
- * **Install scope.** The device id, the Steam credential and the Steam session's cookies belong to one install on one device ([installMarker]). On
+ * **Install scope.** The device id, the Steam credential and the sealed vault's Steam cookies belong to one install on one device ([installMarker]). On
  * another install (a fresh one, a reinstall, a restore or a transfer) the device id is made anew, the vault reads
  * empty, and the state that came along with them is erased before anything reads it. The install is settled once per
- * process, on the first call that needs it; a new process reads it from disk again.
+ * process, on the first call that needs it; a new process reads it from disk again. The platform's WebView store
+ * ([webCookies]) is not the install's: a new install never erases it, so a Steam sign-in made before the core's first
+ * call stays the session.
  *
  * **Account scope.** State belongs to one Steam account at a time. [storageFor] another account erases the previous
  * one's state first, and [clearAccountState] (logout) erases it with the Steam credential and cookies, so a new account always
@@ -99,6 +103,14 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     /** Removes every key of [accountStore]. */
     protected abstract suspend fun clearAccountStore()
 
+    /**
+     * The platform's WebView cookie store when the host chose it for the Steam session (Android `CookieManager`), else
+     * `null`: the session then lives in the core's sealed vault ([steamCookies]), the default. With a WebView store the
+     * session is the one the app's WebViews hold: [importSteamSession] copies nothing, and the sealed vault's key is
+     * removed once per process, unread (no migration).
+     */
+    open val webCookies: SteamCookieStore? = null
+
     private val mutex = Mutex()
     private val ids by lazy { PersistedDeviceIdStore(sealedStore) }
     private val sealedCookies by lazy { SealedSteamCookieVault(sealedStore) }
@@ -119,9 +131,10 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     }
 
     /**
-     * The Steam session's cookies, sealed in [sealedStore] next to the device id: after the import that follows a Steam
-     * sign-in, the only source of Steam cookies. Read from the sealed store once per process and kept in memory, which
-     * every write, import and clear updates under the same lock; each call settles the install first, like [vault].
+     * The sealed vault's Steam cookies, in [sealedStore] next to the device id: the backing of [steamCookieStore] when
+     * there is no [webCookies], and after the import that follows a Steam sign-in the only source of Steam cookies.
+     * Read from the sealed store once per process and kept in memory, which every write, import and clear updates under
+     * the same lock; each call settles the install first, like [vault].
      */
     val steamCookies: SteamCookieVault = object : SteamCookieVault {
         override suspend fun readSteamCookies(): List<SteamCookie> = inInstall {
@@ -134,14 +147,33 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     }
 
     /**
-     * The import that follows a Steam sign-in in the app, whether or not a tracker is built or runs: the cookies of
-     * `steamcommunity.com`, `store.steampowered.com` and `login.steampowered.com` ([SteamCookie.SESSION_DOMAINS]) replace
-     * whatever [steamCookies] held, and the Steam credential scraped from the previous session is dropped. Both in one
-     * step of the install. A host calls [MobileTracker.importSteamSession], which comes here.
+     * Where the core's Steam session lives: [webCookies] when the host chose it, else the sealed vault ([steamCookies])
+     * matched by the core. Each call settles the install first.
+     */
+    val steamCookieStore: SteamCookieStore by lazy {
+        webCookies?.let(::InstallSettledStore) ?: VaultSteamCookieStore(steamCookies, clock)
+    }
+
+    /**
+     * The import that follows a Steam sign-in in the app, whether or not a tracker is built or runs: the Steam credential
+     * scraped from the previous session is dropped, and with the sealed vault the cookies of `steamcommunity.com`,
+     * `store.steampowered.com` and `login.steampowered.com` ([SteamCookie.SESSION_DOMAINS]) replace whatever
+     * [steamCookies] held, in the same step of the install. With [webCookies] [cookies] are not read: the sign-in already
+     * left the session there. A host calls [MobileTracker.importSteamSession], which comes here.
      */
     suspend fun importSteamSession(cookies: List<SteamCookie>) = inInstall {
-        writeCookiesLocked(sessionCookies(cookies))
+        if (webCookies == null) writeCookiesLocked(sessionCookies(cookies))
         sealedVault.clearSteamCredential()
+    }
+
+    /**
+     * Deletes the Steam session the core uses ([SteamCookieStore.clearSession]: the sealed vault, or every Steam host's
+     * cookies in [webCookies]) and the Steam credential scraped from it. The account's state and the device id stay. A
+     * host calls [MobileTracker.clearSteamSession], which comes here. Throws when the store could not be cleared.
+     */
+    suspend fun clearSteamSession() = inInstall {
+        sealedVault.clearSteamCredential()
+        webCookies?.clearSession() ?: writeCookiesLocked(emptyList())
     }
 
     /** The install's device id; another install gets a new one. */
@@ -174,9 +206,14 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
         accountStore
     }
 
-    /** The loop's persisted stores for [account], over [storageFor]: the same set the headless tracker builds. */
+    /**
+     * The loop's persisted stores for [account], over [storageFor]: the same set the headless tracker builds. Sent
+     * proofs are not kept on the device ([NoProofArchive], owner's decision 2026-11-23); the archive key that 1.4.0
+     * wrote into the account store is removed here, on every loop's build.
+     */
     suspend fun stores(account: SteamId, tunables: TrackerConfig = TrackerConfig.defaults()): MobileTrackerStores {
         val storage = storageFor(account)
+        if (storage.get(PersistedProofArchiveStore.KEY) != null) storage.remove(PersistedProofArchiveStore.KEY)
         return MobileTrackerStores(
             loopState = PersistedLoopStateStore(storage),
             progress = PersistedTrackerProgressStore(storage),
@@ -185,28 +222,30 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
             offerGuard = PersistedOfferGuardStore(storage),
             throttle = PersistedSteamWriteThrottleStore(limits = tunables.steamWrites, storage = storage),
             notaryThrottle = PersistedNotaryProofThrottleStore(limits = tunables.notary.breaker, storage = storage),
-            proofArchive = PersistedProofArchiveStore(storage),
         )
     }
 
-    /** Erases the end-of-deal proofs the current account keeps (D2); the rest of its state stays. */
+    /** Erases the end-of-deal proofs 1.4.0 kept for the current account (D2); the rest of its state stays. */
     suspend fun clearStoredProofs() = mutex.withLock { accountStore.remove(PersistedProofArchiveStore.KEY) }
 
     /**
      * Logout: erases every key of the current account's state (stores, and whatever else a later part keeps there,
-     * proofs included), the Steam credential and the Steam session's cookies. The device id stays: it belongs to the
-     * install.
+     * proofs included), the Steam credential and the Steam session's cookies (the sealed vault's, and every Steam host's
+     * in [webCookies]). The device id stays: it belongs to the install. The WebView store is cleared last, so its
+     * failure leaves nothing else behind; it is then thrown.
      */
     suspend fun clearAccountState() = mutex.withLock {
         clearAccountStore()
         installStore.remove(ACTIVE_ACCOUNT)
         sealedVault.clearSteamCredential()
         writeCookiesLocked(emptyList())
+        webCookies?.clearSession()
     }
 
     /**
      * The device id, made on first use; what another install left is erased before anything reads it. Settled once per
-     * process: the install does not change while the process runs.
+     * process: the install does not change while the process runs. [webCookies] is never erased here (see the class);
+     * with it, the sealed vault's cookie key is removed instead, once per process.
      */
     private suspend fun currentInstallLocked(): DeviceId = installId ?: run {
         if (!installMarker.isSameInstall()) {
@@ -217,6 +256,7 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
             sealedStore.remove(DeviceVaultKeys.DEVICE_ID)
             installMarker.markInstall()
         }
+        if (webCookies != null) writeCookiesLocked(emptyList())
         ids.current().also { installId = it }
     }
 
@@ -229,6 +269,20 @@ abstract class MobileTrackerPlatform(tokens: MarketplaceTokenSupplier) {
     private suspend fun <T> inInstall(block: suspend () -> T): T = mutex.withLock {
         currentInstallLocked()
         block()
+    }
+
+    /** [webCookies] with the install settled before every call, like [vault]. */
+    private inner class InstallSettledStore(private val delegate: SteamCookieStore) : SteamCookieStore {
+        override suspend fun cookieHeader(url: String): String? = inInstall { delegate.cookieHeader(url) }
+
+        override suspend fun value(url: String, name: String): String? = inInstall { delegate.value(url, name) }
+
+        override suspend fun store(url: String, setCookieLines: List<String>) = inInstall { delegate.store(url, setCookieLines) }
+
+        override suspend fun set(url: String, name: String, value: String, expiresAtEpochSeconds: Long?, httpOnly: Boolean) =
+            inInstall { delegate.set(url, name, value, expiresAtEpochSeconds, httpOnly) }
+
+        override suspend fun clearSession() = inInstall { delegate.clearSession() }
     }
 
     private companion object {
@@ -253,6 +307,6 @@ class MobileTrackerStores(
     val offerGuard: OfferGuardStore,
     val throttle: SteamWriteThrottleStore,
     val notaryThrottle: NotaryProofThrottleStore,
-    /** The end-of-deal proofs this device sent, kept 30 days from the deal's final status (D2). */
+    /** Where the end-of-deal proofs this device sent go; [MobileTrackerPlatform.stores] keeps none. */
     val proofArchive: ProofArchiveStore = NoProofArchive,
 )

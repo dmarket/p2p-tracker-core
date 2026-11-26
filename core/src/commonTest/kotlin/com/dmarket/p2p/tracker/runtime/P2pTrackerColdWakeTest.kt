@@ -54,7 +54,9 @@ import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -105,6 +107,9 @@ class P2pTrackerColdWakeTest {
 
     private var createHang = Hang.NONE
 
+    /** The bind read before a create (`active_only=1`) stops answering. */
+    private var bindReadHangs = false
+
     /** DMarket: the fake, plus the wake acks the core sends through it. */
     private class Backend(val fake: FakeMarketplaceClient) :
         MarketplaceClient by fake,
@@ -131,14 +136,18 @@ class P2pTrackerColdWakeTest {
         override val installStore: DeviceKeyValueStore = install
         override val sealedStore: DeviceKeyValueStore = sealed
         override val sealedVault: CredentialVault = credentials
+
+        // As Android's SharedPreferencesKeyValueStore, whose withContext(io) writes nothing in a cancelled coroutine.
         override val accountStore: DeviceKeyValueStore = object : DeviceKeyValueStore {
             override suspend fun get(key: String): String? = accountEntries[key]
 
             override suspend fun set(key: String, value: String) {
+                currentCoroutineContext().ensureActive()
                 accountEntries[key] = value
             }
 
             override suspend fun remove(key: String) {
+                currentCoroutineContext().ensureActive()
                 accountEntries.remove(key)
             }
         }
@@ -173,6 +182,7 @@ class P2pTrackerColdWakeTest {
         val endpoints = SteamEndpointsConfig()
         return when {
             path == endpoints.getTradeOffersPath -> {
+                if (bindReadHangs && request.url.parameters[endpoints.paramActiveOnly] == "1") awaitCancellation()
                 // bob as accountid_other: his steamid64 less 76561197960265728.
                 val offers = sentOffers.joinToString(",") {
                     """{"tradeofferid":"$it","accountid_other":39734274,"trade_offer_state":9,"time_created":1792420000,
@@ -488,6 +498,26 @@ class P2pTrackerColdWakeTest {
         assertTrue(events.events.any { it is LifecycleEvent.CreateUnanswered })
     }
 
+    @Test
+    fun a_create_cut_short_during_its_bind_read_leaves_no_claim_on_disk_and_the_next_cold_wake_creates() = runTest {
+        signedInEarlier()
+        lease(create("dir-1"))
+        bindReadHangs = true
+
+        val outcome = process(reportUnsentCreates = false).tracker.onPush(wake("directive"), deadline = 20.seconds)
+
+        assertEquals(WakeOutcome.failed(WakeCause.BUDGET), outcome)
+        assertEquals(0, createPosts)
+        assertTrue(events.events.none { it is LifecycleEvent.DirectiveDropped }, "a stopped read is no failed read: ${events.events}")
+        bindReadHangs = false
+
+        clock.advance(1.minutes) // inside the claim's 15 min
+        process(reportUnsentCreates = false).tracker.onPush(wake("directive", id = "w-2"))
+
+        assertEquals(1, createPosts, "no in-flight claim left on disk holds the deal")
+        assertEquals(OfferId("8001"), marketplace.directiveOutcomes.single { it.directiveId.value == "dir-1" }.steamOfferId)
+    }
+
     // ---- a dead Steam session reaches DMarket --------------------------------------------------------------------
 
     private val sessionsSent get() = marketplace.heartbeatsSent.map { it.steamSession }
@@ -531,6 +561,30 @@ class P2pTrackerColdWakeTest {
         next.tracker.setForeground(true)
         advanceTimeBy(1.minutes)
         assertEquals(listOf(SteamWebSessionState.GONE, SteamWebSessionState.ALIVE), sessionsSent)
+        next.tracker.setForeground(false)
+    }
+
+    @Test
+    fun a_session_change_whose_heartbeat_fails_waits_a_heartbeat_floor_before_the_next_one() = runTest {
+        process().tracker.onPush(wake("watch")) // GONE sent; the next heartbeat by the schedule is 24 h away
+        val next = process()
+        next.tracker.start()
+        next.mobile.platform.steamCookies.writeSteamCookies(session())
+        marketplace.heartbeatThrows = true
+        val before = marketplace.heartbeatAttempts
+
+        // The app comes back on screen every 31 s, each time with the change still unsent.
+        repeat(3) {
+            next.tracker.setForeground(true)
+            advanceTimeBy(1.seconds)
+            next.tracker.setForeground(false)
+            clock.advance(31.seconds)
+        }
+        assertEquals(1, marketplace.heartbeatAttempts - before, "the failed heartbeat waits its 90 s floor")
+
+        next.tracker.setForeground(true)
+        advanceTimeBy(1.seconds)
+        assertEquals(2, marketplace.heartbeatAttempts - before, "and goes again after it")
         next.tracker.setForeground(false)
     }
 

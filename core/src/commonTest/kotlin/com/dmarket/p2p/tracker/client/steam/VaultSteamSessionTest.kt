@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.client.steam
 
 import com.dmarket.p2p.tracker.adapter.host.InMemoryDeviceKeyValueStore
 import com.dmarket.p2p.tracker.adapter.host.SealedSteamCookieVault
+import com.dmarket.p2p.tracker.adapter.host.VaultSteamCookieStore
 import com.dmarket.p2p.tracker.client.createSteamHttpClient
 import com.dmarket.p2p.tracker.credential.steam.DefaultSteamSessionRefresher
 import com.dmarket.p2p.tracker.model.SteamId
@@ -33,7 +34,7 @@ import kotlin.time.Duration.Companion.minutes
 class VaultSteamSessionTest {
     private val clock = FakeClock()
     private val vault = SealedSteamCookieVault(InMemoryDeviceKeyValueStore())
-    private val jar = VaultCookieJar(vault, clock)
+    private val jar = WebCookieJar(VaultSteamCookieStore(vault, clock))
     private val alice = SteamId("76561198000000001")
 
     private fun loginSecure(left: Duration, steamId: SteamId = alice) =

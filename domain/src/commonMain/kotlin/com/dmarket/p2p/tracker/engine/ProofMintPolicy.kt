@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.engine
 
 import com.dmarket.p2p.tracker.model.marketplace.DealRole
+import com.dmarket.p2p.tracker.model.marketplace.ProofSite
 import com.dmarket.p2p.tracker.policy.CooldownLadder
 import kotlin.time.Instant
 
@@ -79,8 +80,10 @@ enum class ProofSkipReason(val message: String) {
     BUDGET_SPENT("this cycle's proving budget is spent; the next heartbeat is due"),
 
     /**
-     * This device is the deal's buyer, and a changed transition is proven by the seller's tracker alone (DMA-664): both
-     * sides watch the same trade, so a buyer that proved too would spend a second MPC session on the same transition.
+     * This device is the deal's buyer and leaves this transition to the seller's tracker (DMA-664): outside a cycle the
+     * buyer's own action started ([ProofMintPolicy.decide]'s `buyerMayProve`), or on a site DMarket takes no buyer
+     * proof for ([ProofMintPolicy.BUYER_SITES]: `offer_confirmed`). Both sides watch the same trade, so a buyer that
+     * proved on every poll would spend a second MPC session on most transitions.
      * [unprovable]: the buyer's report goes out once without a proof and the spent claim holds it after that. On a deal
      * the backend runs with unproven reports inert (`dma-458`) it drops that report without a trace; on an older deal
      * an unproven offer `3` from the buyer makes the 18 h deadline freeze the deal instead of closing it as the buyer's
@@ -162,6 +165,18 @@ sealed interface ProofMintVerdict {
  */
 object ProofMintPolicy {
     /**
+     * The sites DMarket takes a buyer's proof for (p2p `07ce5fa`): the role is the account the notary attested, the
+     * counterparty is the seller. `offer_confirmed` is not one: offer `2` stays the seller's to prove.
+     */
+    val BUYER_SITES: Set<ProofSite> = setOf(
+        ProofSite.OFFER_ACCEPTED,
+        ProofSite.OFFER_DECLINED,
+        ProofSite.OFFER_CANCELLED,
+        ProofSite.TRADE_COMPLETED,
+        ProofSite.TRADE_REVERSED,
+    )
+
+    /**
      * @param refused transitions the backend has answered `verified = false` for (the loop's in-memory latch).
      * @param accepted transitions the backend has answered `verified = true` for, and when — narrowed to the
      *   tracked deals by the caller.
@@ -175,8 +190,11 @@ object ProofMintPolicy {
      * @param wakeBudget whether the wake gave no time for a proof ([ProofSkipReason.WAKE_BUDGET]).
      * @param role this account's side of the deal ([com.dmarket.p2p.tracker.model.marketplace.TrackedDeal.role]):
      *   [DealRole.BUYER] skips as [ProofSkipReason.SELLER_PROVES], after the settled answers and ahead of the spending
-     *   gates; [DealRole.SELLER] and [DealRole.UNKNOWN] decide as before. A later "the buyer may prove" signal from
-     *   the backend belongs in this one branch.
+     *   gates, unless [buyerMayProve] and the transition reaches one of [BUYER_SITES]; [DealRole.SELLER] and
+     *   [DealRole.UNKNOWN] decide as before.
+     * @param buyerMayProve the cycle was started by the buyer's own action on this deal (`P2pTracker.updateStatus`: the
+     *   return from Steam after Accept, the Update status button), so the buyer proves at once instead of waiting for
+     *   the seller's tick (owner's decision 2026-11-26). Polls and wakes leave it `false`.
      */
     fun decide(
         intent: ProofIntent,
@@ -191,10 +209,12 @@ object ProofMintPolicy {
         networkDeferred: Boolean = false,
         wakeBudget: Boolean = false,
         role: DealRole = DealRole.UNKNOWN,
+        buyerMayProve: Boolean = false,
     ): ProofMintVerdict = when {
         intent in refused -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_REFUSED)
         isCorroborated(intent, now, accepted, acceptedTtlMs) -> ProofMintVerdict.Skip(ProofSkipReason.ALREADY_ACCEPTED)
-        role == DealRole.BUYER -> ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES)
+        role == DealRole.BUYER && !(buyerMayProve && ProofSite.forTransition(intent.source, intent.steamStatusCode) in BUYER_SITES) ->
+            ProofMintVerdict.Skip(ProofSkipReason.SELLER_PROVES)
         else -> spendingGates(now, proverAvailable, proverParkedUntil, mintedThisCycle, cycleDeadline, networkDeferred, wakeBudget)
     }
 

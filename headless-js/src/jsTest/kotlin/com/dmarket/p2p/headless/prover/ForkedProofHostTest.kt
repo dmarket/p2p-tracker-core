@@ -9,14 +9,18 @@ import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.headless.node.readFile
 import com.dmarket.p2p.headless.node.tempDir
 import com.dmarket.p2p.headless.steamToken
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.notary.KillCause
 import com.dmarket.p2p.tracker.notary.NotaryProofRequest
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeHeaders
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeSigner
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.await
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
@@ -129,6 +133,110 @@ class ForkedProofHostTest {
     }
 
     @Test
+    fun the_proxy_reaches_the_child_over_ipc_alone_and_no_line_or_failure_quotes_it() = runTest {
+        val report = join(tempDir(), "report.json")
+        val proxied = HostedProofRequest(proof.request, token, SESSION_ID, SteamProxy.parse(PROXY))
+
+        val outcome = withContext(Dispatchers.Default) { host("proxy-down", report).prove(proxied, upgrade) }
+
+        val failure = assertIs<ProofFailure.ProxyUnreachable>(assertIs<HostedProofOutcome.Failed>(outcome).failure)
+        assertEquals("could not connect to the proxy: ECONNREFUSED (<proxy>)", failure.detail)
+        assertEquals(listOf<Pair<String, ProofFailure?>>("deal-1" to failure), outcomes)
+        awaitLine { "tunnelling through" in it }
+        val seen = readFile(report, "utf8").await()
+        for (text in lines + notices + seen + failure.summary) {
+            for (part in listOf("s3cret-pass", "proxy-user", "203.0.113.7", "3128")) assertFalse(part in text, "the proxy leaked: $text")
+        }
+    }
+
+    @Test
+    fun a_proof_with_a_proxy_is_not_started_in_proxy_issuance_where_the_notary_dials_steam() = runTest {
+        val proxyMode = ForkedProofHost(
+            script = "/nowhere/never-forked.js",
+            args = emptyList(),
+            settings = settings.copy(mode = IssuanceMode.PROXY),
+            clock = clock,
+            onOutcome = { deal, failure -> outcomes += deal to failure },
+        ).also { hosts += it }
+        val proxied = HostedProofRequest(proof.request, token, SESSION_ID, SteamProxy.parse(PROXY))
+
+        val outcome = proxyMode.prove(proxied, upgrade)
+
+        assertEquals(ProofFailure.NotStarted(PROXY_ISSUANCE_BYPASSES_STEAM_PROXY), assertIs<HostedProofOutcome.Failed>(outcome).failure)
+        assertEquals(0, proxyMode.forks, "no prover process, so no Steam leg around the proxy")
+    }
+
+    @Test
+    fun a_proof_with_no_proxy_is_not_started_where_the_steam_proxy_is_required_and_no_child_is_forked() = runTest {
+        val strict = ForkedProofHost(
+            script = "/nowhere/never-forked.js",
+            args = emptyList(),
+            settings = settings.copy(requireSteamProxy = true),
+            clock = clock,
+            onOutcome = { deal, failure -> outcomes += deal to failure },
+        ).also { hosts += it }
+
+        val outcome = strict.prove(proof, upgrade)
+
+        assertEquals(ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL), assertIs<HostedProofOutcome.Failed>(outcome).failure)
+        assertEquals(0, strict.forks, "no prover process, so no direct Steam leg")
+        assertEquals(listOf<Pair<String, ProofFailure?>>("deal-1" to ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL)), outcomes)
+    }
+
+    @Test
+    fun a_proof_whose_request_says_the_proxy_is_required_and_carries_none_is_not_started_either() = runTest {
+        val pinned = ForkedProofHost(
+            script = "/nowhere/never-forked.js",
+            args = emptyList(),
+            settings = settings,
+            clock = clock,
+            onOutcome = { deal, failure -> outcomes += deal to failure },
+        ).also { hosts += it }
+        val unproxied = HostedProofRequest(proof.request, proof.steamAccessToken, proof.steamSessionId, steamProxyRequired = true)
+
+        val outcome = pinned.prove(unproxied, upgrade)
+
+        assertEquals(ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL), assertIs<HostedProofOutcome.Failed>(outcome).failure)
+        assertEquals(0, pinned.forks, "a tracker pinned to a proxy never forks a child that could dial Steam directly")
+    }
+
+    @Test
+    fun a_proof_whose_request_says_the_proxy_is_required_tells_its_child_never_to_dial_steam_without_one() = runTest {
+        val report = join(tempDir(), "report.json")
+        val proxied = HostedProofRequest(proof.request, token, SESSION_ID, SteamProxy.parse(PROXY), steamProxyRequired = true)
+
+        withContext(Dispatchers.Default) { host("proxy-down", report).prove(proxied, upgrade) }
+
+        val sent: dynamic = JSON.parse(readFile("$report.settings.json", "utf8").await())
+        assertEquals(true, sent.requireSteamProxy, "a tracker pinned without the option still pins its child")
+    }
+
+    @Test
+    fun a_first_proxy_pushed_mid_proof_cuts_the_child_proving_directly_and_not_one_proving_through_a_proxy() = runTest {
+        withContext(Dispatchers.Default) {
+            val direct = host("hang-after-connect", deadline = 10_000)
+            val running = async { direct.prove(proof, upgrade) }
+            withTimeout(5_000) { while (direct.forks == 0 || lines.none { "upgrade headers" in it }) delay(20) }
+
+            direct.steamProxyChanged()
+
+            val cut = withTimeout(5_000) { running.await() }
+            assertEquals(
+                ProofFailure.ProverKilled(KillCause.PROXY_PINNED, PROOF_CUT_FOR_PROXY),
+                assertIs<HostedProofOutcome.Failed>(cut).failure,
+            )
+
+            val tunnelled = host("hang-after-connect", deadline = 1_500)
+            val proxied = HostedProofRequest(proof.request, token, SESSION_ID, SteamProxy.parse(PROXY))
+            val stays = async { tunnelled.prove(proxied, upgrade) }
+            delay(300)
+            tunnelled.steamProxyChanged()
+            val outcome = stays.await()
+            assertEquals(ProofFailure.ProverKilled(KillCause.SESSION_DEADLINE), assertIs<HostedProofOutcome.Failed>(outcome).failure)
+        }
+    }
+
+    @Test
     fun a_child_that_never_connects_is_killed_at_the_connect_deadline() = runTest {
         val outcome = host("hang-before-connect").proveNow()
         assertEquals(ProofFailure.ProverKilled(KillCause.CONNECT_DEADLINE), assertIs<HostedProofOutcome.Failed>(outcome).failure)
@@ -208,6 +316,7 @@ class ForkedProofHostTest {
         const val API_KEY = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9"
         const val SIGN_DATE = "1781611234"
         const val SESSION_ID = "feedfacecafebeef01234567"
+        const val PROXY = "http://proxy-user:s3cret-pass@203.0.113.7:3128"
 
         /** Mode in argv[2]; argv[3], when set, is a file to report argv, execArgv and env into. */
         const val FAKE_CHILD = """
@@ -219,9 +328,16 @@ class ForkedProofHostTest {
             process.on('message', (raw) => {
               const msg = JSON.parse(raw);
               if (msg.type === 'prove') {
+                if (report) fs.writeFileSync(report + '.settings.json', JSON.stringify(msg.settings));
                 served++;
                 token = msg.steamAccessToken;
                 console.log('proving deal ' + msg.request.dealId + ' with access_token=' + token + ' sessionid=' + msg.steamSessionId);
+                if (msg.steamProxy) console.log('tunnelling through ' + msg.steamProxy + ' as ' + msg.steamProxy.split('@')[0].slice(7));
+                if (mode === 'proxy-down') {
+                  const detail = 'could not connect to the proxy: ECONNREFUSED (' + msg.steamProxy + ')';
+                  process.send(JSON.stringify({ type: 'failed', id: msg.id, failure: { type: 'proxy_unreachable', detail } }));
+                  return;
+                }
                 if (mode === 'hang-before-connect') return;
                 if (mode === 'sigkill-once' && !fs.existsSync(__filename + '.killed')) {
                   fs.writeFileSync(__filename + '.killed', '1');

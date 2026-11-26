@@ -26,6 +26,26 @@ class LifecycleEventJsonTest {
     }
 
     @Test
+    fun steam_proxy_events_carry_the_waiting_deals_and_the_detail_only() {
+        val down = parse(LifecycleEvent.SteamProxyUnreachable(listOf("deal1", "deal2"), "the Steam proxy refused the tunnel (407)"))
+        assertEquals(setOf("event", "dealIds", "detail"), down.keys)
+        assertEquals("SteamProxyUnreachable", down["event"]?.jsonPrimitive?.content)
+        assertEquals(listOf("deal1", "deal2"), down["dealIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("the Steam proxy refused the tunnel (407)", down["detail"]?.jsonPrimitive?.content)
+        assertEquals(emptyList(), parse(LifecycleEvent.SteamProxyUnreachable(emptyList(), "x"))["dealIds"]!!.jsonArray.toList())
+
+        val missing = parse(LifecycleEvent.SteamProxyMissing(listOf("deal1"), "a token push named no Steam proxy"))
+        assertEquals(setOf("event", "dealIds", "detail"), missing.keys)
+        assertEquals("SteamProxyMissing", missing["event"]?.jsonPrimitive?.content)
+        assertEquals(listOf("deal1"), missing["dealIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("a token push named no Steam proxy", missing["detail"]?.jsonPrimitive?.content)
+
+        val back = parse(LifecycleEvent.SteamProxyRecovered)
+        assertEquals(setOf("event"), back.keys)
+        assertEquals("SteamProxyRecovered", back["event"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun suspicious_outgoing_offers_carry_ids_and_level_only() {
         val offer =
             SuspiciousOffer(OfferId("o1"), SteamId("76561198781084366"), setOf(AssetId("a1"), AssetId("a2")), SuspicionLevel.IMPERSONATION)
@@ -418,6 +438,9 @@ class LifecycleEventJsonTest {
             LifecycleEvent.WakeFinished("w-1", "failed", "os_killed", acknowledged = true),
             LifecycleEvent.ProofDeferred("d-1", "offer"),
             LifecycleEvent.RateLimited("steam", null),
+            LifecycleEvent.SteamProxyUnreachable(listOf("deal1"), "the Steam proxy refused the tunnel (407)"),
+            LifecycleEvent.SteamProxyMissing(listOf("deal1"), "a token push named no Steam proxy"),
+            LifecycleEvent.SteamProxyRecovered,
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),
         )
         for (event in samples) {

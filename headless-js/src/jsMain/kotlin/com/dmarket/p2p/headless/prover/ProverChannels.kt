@@ -2,8 +2,11 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.node.nodePath
 import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.headless.node.nodeStream
 import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.headless.node.wsWebSocket
+import com.dmarket.p2p.headless.proxy.openSteamTunnel
+import com.dmarket.p2p.tracker.net.SteamProxy
 import kotlin.js.Promise
 
 /**
@@ -17,6 +20,9 @@ internal class ProverSessionRecord {
     var closeCode: Int? = null
     var closeReason: String? = null
     var targetError: String? = null
+
+    /** Why the tunnel through the account's Steam proxy did not open, in the tunnel's own words. */
+    var proxyError: String? = null
     var targetStatus: Int? = null
     var signingError: String? = null
 
@@ -132,13 +138,17 @@ internal fun recordedTargetChannel(
     return open(connect, host, port, dialTimeoutMs, onError).unsafeCast<Promise<Any?>>()
 }
 
+/** The `file:` URL of [file] in the transport's `dist` under [assetsDir]. */
+private fun transportEntry(assetsDir: String, file: String): String =
+    nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", file)).href as String
+
 /**
  * The transport's Node connector, `connectTcp(host, port)` from `transport/dist/node.js` under [assetsDir]: the
  * module behind `client-wasm-transport`'s `/node` export, imported on the first dial. It imports `node:` built-ins, so
  * only a Node host loads it; the browser path never reaches this file.
  */
 internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> Promise<Any?> {
-    val url = nodeUrl.pathToFileURL(nodePath.join(assetsDir, "transport", "dist", "node.js")).href as String
+    val url = transportEntry(assetsDir, "node.js")
     val dial: dynamic = js(
         """
         (function (url) {
@@ -155,3 +165,129 @@ internal fun nodeTcpConnector(assetsDir: String): (host: String, port: Int) -> P
 
 /** How long the target's TCP dial may take: Steam answers a connect in well under a second. */
 internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000
+
+/**
+ * The target leg through the account's Steam proxy: a `CONNECT` tunnel through [proxy] ([openSteamTunnel]) handed to
+ * the transport as a socket the SDK owns. From prover package 1.1.0 that is `wrapTcpSocket(socket)` from
+ * `transport/dist/node.js` under [assetsDir], the transport's own handoff (with its close deadline); a package without
+ * it (1.0.1) gets the `TcpIoChannel` of `transport/dist/index.js` over the socket, adapted as the transport's Node
+ * connector adapts a direct one ([tunnelSocket]). The tunnel's failure goes to [onProxyError]
+ * in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials Steam directly
+ * instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
+ *
+ * The tunnel handed to `wrapTcpSocket` is the socket the transport reads and writes. Without it, the generic entry's
+ * own `TcpIoChannel` is built on the tunnel here, so the transport never dials at all. A package exporting neither is
+ * refused ([NO_TUNNEL_HANDOFF]) before anything is opened: its generic `connectTcp` would dial itself, and whether it
+ * honours `connect` could only be checked after a connection it made. That refusal is the Steam leg's, not the
+ * proxy's: [onProxyError] is not told, so the proxy is not reported unreachable.
+ */
+internal fun proxiedTcpConnector(
+    assetsDir: String,
+    proxy: SteamProxy,
+    onProxyError: (String) -> Unit,
+): (host: String, port: Int) -> Promise<Any?> {
+    val nodeEntry = transportEntry(assetsDir, "node.js")
+    val genericEntry = transportEntry(assetsDir, "index.js")
+    val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
+    val dial: dynamic = js(
+        """
+        (function (nodeEntry, genericEntry, open, onProxyError, adapt, noHandOff) {
+          let loading = null;
+          const tunnel = (host, port) => open(host, port).catch((error) => {
+            onProxyError(error && error.message ? error.message : 'the tunnel did not open');
+            throw error;
+          });
+          const handOff = (wrapTcpSocket) => (host, port) => tunnel(host, port).then((socket) => {
+            try {
+              return wrapTcpSocket(socket);
+            } catch (error) {
+              socket.destroy();
+              throw error;
+            }
+          });
+          const refuse = () => Promise.reject(new Error(noHandOff));
+          const generic = (module) => {
+            // The transport's own channel, on the tunnel: nothing of the transport dials.
+            if (typeof module.TcpIoChannel === 'function') {
+              return (host, port) => {
+                if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+                  return Promise.reject(new Error('TCP destination requires a host and a port between 1 and 65535'));
+                }
+                return tunnel(host, port).then((socket) => {
+                  const adapted = adapt(socket);
+                  try {
+                    return new module.TcpIoChannel(adapted);
+                  } catch (error) {
+                    adapted.close();
+                    throw error;
+                  }
+                });
+              };
+            }
+            // No handoff at all: the generic connectTcp would dial on its own, so the dial is refused before anything opens.
+            return refuse;
+          };
+          return (host, port) => {
+            if (loading === null) {
+              loading = import(nodeEntry).then((module) => module.wrapTcpSocket, () => undefined).then((wrapTcpSocket) => {
+                if (typeof wrapTcpSocket === 'function') return handOff(wrapTcpSocket);
+                return import(genericEntry).then(generic);
+              });
+            }
+            return loading.then((connect) => connect(host, port));
+          };
+        })
+        """,
+    )
+    return dial(nodeEntry, genericEntry, open, onProxyError, tunnelSocket, NO_TUNNEL_HANDOFF)
+        .unsafeCast<(String, Int) -> Promise<Any?>>()
+}
+
+/** Why a Steam dial through the proxy is refused on a prover package that cannot take the tunnel. */
+internal const val NO_TUNNEL_HANDOFF: String =
+    "the prover's transport has neither wrapTcpSocket nor TcpIoChannel to take the Steam tunnel; nothing was dialled"
+
+/**
+ * An open tunnel's Node socket as the transport's `TcpSocket` (`readable`, `writable`, `close`): the adaptation the
+ * transport's own Node connector makes of a direct socket, made here of one that is already connected. The two
+ * directions are adapted apart, so the read side's end does not end the write side, and a socket error reaches both.
+ */
+private val tunnelSocket: dynamic = js(
+    """
+    (function (stream) {
+      return function (socket) {
+        const readable = stream.Readable.toWeb(stream.Readable.from(socket.iterator({ destroyOnReturn: false }), { objectMode: false }));
+        const writable = new WritableStream({
+          start(controller) {
+            socket.on('error', (error) => controller.error(error));
+          },
+          write(data) {
+            return new Promise((resolve, reject) => socket.write(data, (error) => (error ? reject(error) : resolve())));
+          },
+          close() {
+            return new Promise((resolve, reject) => {
+              const cleanup = stream.finished(socket, { readable: false }, (error) => {
+                cleanup();
+                error ? reject(error) : resolve();
+              });
+              socket.end();
+            });
+          },
+          abort() {
+            socket.destroy();
+          },
+        });
+        return {
+          readable,
+          writable,
+          close() {
+            if (socket.closed) return Promise.resolve();
+            const closed = new Promise((resolve) => socket.once('close', () => resolve()));
+            socket.destroy();
+            return closed;
+          },
+        };
+      };
+    })
+    """,
+)(nodeStream)

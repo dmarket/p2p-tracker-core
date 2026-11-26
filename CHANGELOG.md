@@ -14,6 +14,52 @@ GitHub Release.
 
 ## [Unreleased]
 
+## [1.5.0-beta] - 2026-11-26
+
+### Added
+
+- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it, another URL replaces it, and `proxy: null` is refused once one has been held; see below), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
+- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
+- Mobile: the push device registration adds the `background_prove` capability when the tracker has the native prover (`AndroidTracker.install(nativeProofs)`, `MobileTracker(proofEngine)`) (DMA-540).
+- Mobile: `AndroidTracker.install(steamSessionInWebView = true)` keeps the core's Steam session in the WebView's `CookieManager`, shared with the app's WebViews, instead of the core's sealed vault; off by default. With it `importSteamSession()` copies nothing, logout clears every Steam host's cookies in the WebView, and the app must not clear the WebView's Steam cookies itself (DMA-662).
+- Mobile: `MobileTracker.clearSteamSession()` and `AndroidTracker.clearSteamSession()` delete the core's Steam session and the token read from it, for a Steam sign-in that must replace the session (DMA-662).
+- Headless: the Steam proxy is optional, but once a proxy is held no Steam traffic goes direct again: `proxy: null` is refused and a proof running direct when it arrives is cut and rerun (DMA-1012). New: `createHeadlessTracker({requireSteamProxy})` to start pinned after a restart, `steamProxyLockedCode()` / `steamProxyRequiredCode()`, `trackerState().steamProxy` / `steamProxyRequired`, the `SteamProxyMissing` event and the `proxy_pinned` kill cause.
+
+### Changed
+
+- Mobile: on the buyer's phone `P2pTracker.updateStatus` now proves the deal's accepted, declined, cancelled, completed or reversed trade itself instead of leaving it to the seller, under the same proof gate and update permit (DMA-664).
+- Mobile: `P2pTracker.updateStatus` takes `afterSteamReturn`; with it the buyer's update after Accept in Steam proves even while the update permit is spent, once per permit window, and a refusal of that proof (the deal moved on) is no update failure and does not hold the report (DMA-664).
+- Mobile: the tracker no longer keeps sent end-of-deal proofs on the device, and removes the ones 1.4.0 stored when it next starts (DMA-540).
+- Mobile: the Steam session is read through `MobileTrackerPlatform.steamCookieStore`, a `SteamCookieStore`; a platform gives its WebView store as `webCookies`, and `VaultCookieJar` is now `WebCookieJar` (DMA-662).
+
+### Fixed
+
+- Headless: when the proxy client fails to load, only that Steam call fails, the next one loads it again, and the proxy is not reported unreachable for it (DMA-1012).
+- Headless: a proxy that lets Steam reads through but refuses the prover's tunnel gets one early proof retry, then proofs wait out their backoff (DMA-1012).
+- Headless: the creates for a partner that wait behind one the Steam proxy kept from going out are deferred with `reasons().steamProxyUnreachable` too (DMA-1012).
+- Headless: after a proof fails with `proxy_unreachable`, the next Steam answer through the same proxy, over a kept-alive connection too, ends the outage: `SteamProxyRecovered` arrives and `trackerState().steamProxyUnreachable` is `false` again (DMA-1012).
+- Headless: a proxy pushed in place of an unreachable one that cannot be reached either gets its own `SteamProxyUnreachable`, with its `detail` (DMA-1012).
+- Headless: a token push that names the proxy already held leaves the proofs waiting on it as they are (DMA-1012).
+- Headless: a Trading API key push leaves the proof wait that follows an unreachable Steam proxy as it is (DMA-1012).
+- Headless: a Steam proxy that answers `CONNECT` with any 2xx opens the tunnel (DMA-1012).
+- Headless: a proxy whose user or password has both a percent escape and a character outside the BMP, such as an emoji, now authenticates with exactly that user and password (DMA-1012).
+- Headless: a proxy user or password that is part of a word, such as `steam`, is redacted only where it stands alone, so `onProverLine` lines and proof failure texts keep Steam host names like `steamcommunity.com` intact (DMA-1012).
+- Android: a native proof keeps every frame the notary sent before it closed the socket, even when the prover had not read them yet (DMA-540).
+- Android: cancelling an MPC native proof while it connects to Steam ends it at once instead of after the connect timeout (DMA-540).
+- Mobile: `updateStatus` no longer spends a Retry on a proof cut by `stop()`, and two updates of the same deal at once no longer run more notary sessions than the permit allows (DMA-1016).
+- Mobile: an update that waited for a running cycle past its permit's `nextAllowedAt` takes a new permit before it runs, or answers `TIMEOUT` with no session when it already took one itself, never `RATE_LIMITED` for another update's new permit (DMA-1016).
+- Android: a native proof the update's cycle deadline cuts after the notary accepted the connection now spends a Retry, as the notary already spent that session (DMA-1016).
+- Mobile: cancelling `updateStatus` spends a Retry only once the notary accepted the proof's connection; a Cancel before that (waiting for the prover, minting its token, connecting) spends none (DMA-1016).
+- Mobile: a proof that was not delivered no longer keeps `StatusUpdate.retryLeft` at 1 or lets `updateStatus` past a spent permit once its deal leaves tracking or Steam shows another code for it (DMA-1016).
+- Mobile: a create Steam refused frees its deal at once when the cycle is cut right after, instead of after the 2-minute unanswered grace (DMA-664).
+- Android: cancelling a native proof while it waits for the notary's answer to the WebSocket upgrade ends it at once instead of after the 30 s connect timeout (DMA-540).
+- Mobile: `NativeNotaryProver.cancel(dealId)` finds a proof that is just starting and cancels every running proof of that deal (DMA-540).
+- Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
+- Mobile: on a buyer's deal, a status report that did not reach DMarket (a 5xx, a dropped call) is again `UpdateFailure.DMARKET` on a manual status update and `failed` (`other`) on a wake; only DMarket's `P2P_PROOF_REQUIRED` refusal of it is skipped (DMA-664).
+- A failed fetch's cause is read again on Ktor 3.6, which stopped wrapping the rejection in a `JsError`: `HttpTransportException.detail` had been empty for every failed Steam call on Node (DMA-1012).
+- Mobile: `updateStatus` no longer spends a Retry on a proof the notary refused or could not be reached for, on one cut by the cycle deadline, or on a second update of the same deal started while the first one was taking its permit (DMA-1016).
+- Mobile: after a Steam session change, a heartbeat that fails (a 429, a 5xx, the network) is retried after the heartbeat floor or the `Retry-After`, not on every cycle (DMA-664).
+
 ## [1.4.0-beta] - 2026-11-25
 
 ### Added
@@ -656,7 +702,8 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...HEAD
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.5.0-beta...HEAD
+[1.5.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...v1.5.0-beta
 [1.4.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...v1.4.0-beta
 [1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta

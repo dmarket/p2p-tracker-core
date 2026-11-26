@@ -8,21 +8,31 @@ import com.dmarket.p2p.tracker.client.marketplace.MarketplaceAuthenticator
 import com.dmarket.p2p.tracker.config.MarketplaceRetryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.MarketplaceTokenSupplier
+import com.dmarket.p2p.tracker.loop.NoProofArchive
 import com.dmarket.p2p.tracker.loop.PersistedProofArchiveStore
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DeviceId
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.RuntimeSurface
 import com.dmarket.p2p.tracker.model.SteamId
+import com.dmarket.p2p.tracker.model.marketplace.DeviceRegistration
 import com.dmarket.p2p.tracker.model.marketplace.MarketplaceCredential
+import com.dmarket.p2p.tracker.model.marketplace.PushProvider
 import com.dmarket.p2p.tracker.model.marketplace.TradeStatusSource
 import com.dmarket.p2p.tracker.model.steam.SteamCookie
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.notary.NativeIssuance
+import com.dmarket.p2p.tracker.notary.NativeIssuanceListener
+import com.dmarket.p2p.tracker.notary.NativeIssuanceOutcome
+import com.dmarket.p2p.tracker.notary.NativeProverEngine
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.CredentialVault
 import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.marketplace.DeviceRegistryClient
+import com.dmarket.p2p.tracker.port.marketplace.MarketplaceClient
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
@@ -125,6 +135,35 @@ class MobileTrackerTest {
         .tracker(scope, "https://api.test", config, NoOpNetworkObserver, NoOpEventObserver)
 
     @Test
+    fun theRegistrationOffersBackgroundProveOnlyWithTheNativeProver() = runTest {
+        val sent = mutableListOf<List<String>>()
+        val backend = object : MarketplaceClient by FakeMarketplaceClient(), DeviceRegistryClient {
+            override suspend fun registerDevice(deviceId: DeviceId, registration: DeviceRegistration) {
+                sent += registration.capabilities
+            }
+
+            override suspend fun unregisterDevice(deviceId: DeviceId) = Unit
+        }
+        val engine = object : NativeProverEngine {
+            override fun unavailableReason(): String? = null
+
+            override suspend fun issue(issuance: NativeIssuance, listener: NativeIssuanceListener) = NativeIssuanceOutcome()
+        }
+        for (proofEngine in listOf(null, engine)) {
+            MobileTracker(
+                platform,
+                linkedAccount = { linked },
+                cellularProofs = { false },
+                hostMarketplaceClient = MarketplaceClientFactory { _, _, _, _ -> backend },
+                proofEngine = proofEngine,
+            ).tracker(backgroundScope, "https://api.test", TrackerConfig.defaults(), NoOpNetworkObserver, NoOpEventObserver)
+                .registerDevice("fcm-token", PushProvider.FCM)
+        }
+
+        assertEquals(listOf(listOf("wake_v1"), listOf("wake_v1", "background_prove")), sent)
+    }
+
+    @Test
     fun aThrowFromTheHostSupplierIsATemporaryFailureAndNullIsALogout() = runTest {
         var answer: () -> MarketplaceCredential? = { error("keychain locked") }
         val credentials = FakePlatform(clock, tokens = { answer() }).marketplaceCredentials
@@ -168,8 +207,22 @@ class MobileTrackerTest {
         stores.progress.recordHandledDirectives(setOf(DirectiveId("directive-1")))
     }
 
-    private suspend fun keepAProof(account: SteamId) =
-        platform.stores(account).proofArchive.keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+    /** A proof as 1.4.0 kept it, straight into the account store. */
+    private suspend fun keepAProof() =
+        PersistedProofArchiveStore(platform.account).keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+
+    @Test
+    fun noProofIsKeptAndTheArchiveAnEarlierVersionWroteGoesWithTheNextLoop() = runTest {
+        val stores = platform.stores(alice)
+        assertSame(NoProofArchive, stores.proofArchive)
+        stores.proofArchive.keep(DealId("deal-1"), TradeStatusSource.HISTORY, 3, "proof", clock.now())
+        assertFalse(proofsKept())
+
+        keepAProof()
+        assertTrue(proofsKept())
+        platform.stores(alice)
+        assertFalse(proofsKept())
+    }
 
     private fun proofsKept() = platform.account.entries.keys.any { it == PersistedProofArchiveStore.KEY }
 
@@ -177,25 +230,25 @@ class MobileTrackerTest {
     fun storedProofsGoOnLogoutOnASteamAccountSwitchOnAnUnlinkAndOnRequest() = runTest {
         val tracker = tracker()
         tracker.start()
-        keepAProof(alice)
+        keepAProof()
         assertTrue(proofsKept())
 
         tracker.clearStoredProofs()
         assertFalse(proofsKept())
 
-        keepAProof(alice)
+        keepAProof()
         linked = bob
         tracker.start()
         assertFalse(proofsKept(), "a Steam account switch")
 
-        keepAProof(bob)
+        keepAProof()
         linked = null
         assertFalse(tracker.start())
         assertFalse(proofsKept(), "an unlink")
 
         linked = alice
         tracker.start()
-        keepAProof(alice)
+        keepAProof()
         tracker.onLogout()
         assertFalse(proofsKept(), "a logout")
     }

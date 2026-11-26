@@ -71,6 +71,11 @@ fun CreateOfferResult.toOutcomeJson(): String {
             }
             // Refused before any Steam write while the host keeps offer creation paused.
             CreateOfferResult.CreatesPaused -> put("status", "creates_paused")
+            // Not sent: the account's Steam proxy could not be reached, so nothing reached Steam.
+            is CreateOfferResult.NotSent -> {
+                put("status", "not_sent")
+                put("reason", result.reason)
+            }
         }
     }.toString()
 }

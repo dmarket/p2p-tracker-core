@@ -24,6 +24,9 @@ internal class LazyTcpTransport(
 
     @Volatile private var socket: Socket? = null
 
+    /** The socket [dial] is connecting, so [close] can end the dial instead of waiting out its timeout. */
+    @Volatile private var connecting: Socket? = null
+
     @Volatile private var closed = false
 
     @Volatile var targetError: String? = null
@@ -47,6 +50,7 @@ internal class LazyTcpTransport(
 
     override fun close() {
         closed = true
+        runCatching { connecting?.close() }
         runCatching { socket?.close() }
         dialled.countDown()
     }
@@ -56,7 +60,10 @@ internal class LazyTcpTransport(
         socket?.let { return it }
         if (closed) throw IOException("the target connection was closed before it was dialled")
         val dialling = socketFactory.createSocket()
+        connecting = dialling
         try {
+            // A close() between the check above and the field missed this socket: it is caught here.
+            if (closed) throw IOException("the target connection was closed before it was dialled")
             dialling.tcpNoDelay = true
             dialling.connect(InetSocketAddress(host, port), connectTimeoutMs)
         } catch (e: IOException) {
@@ -64,6 +71,8 @@ internal class LazyTcpTransport(
             targetError = "could not connect to $host:$port: ${e.message ?: e::class.simpleName}"
             dialled.countDown()
             throw e
+        } finally {
+            connecting = null
         }
         socket = dialling
         dialled.countDown()

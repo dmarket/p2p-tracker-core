@@ -1,8 +1,8 @@
 package com.dmarket.p2p.tracker.client
 
 import com.dmarket.p2p.tracker.adapter.host.NoOpNetworkObserver
-import com.dmarket.p2p.tracker.client.steam.VaultCookieJar
-import com.dmarket.p2p.tracker.client.steam.vaultCookiesPlugin
+import com.dmarket.p2p.tracker.client.steam.WebCookieJar
+import com.dmarket.p2p.tracker.client.steam.webCookiesPlugin
 import com.dmarket.p2p.tracker.model.ExchangeOrigin
 import com.dmarket.p2p.tracker.net.NetworkRedaction
 import com.dmarket.p2p.tracker.port.host.NetworkObserver
@@ -29,7 +29,7 @@ import io.ktor.client.plugins.HttpTimeout
  *   call. Defaults to [NoOpNetworkObserver] (no plugin, zero overhead).
  * @param origin Tags every observed exchange so Steam vs marketplace traffic is never conflated.
  * @param describeTransportCauses see [sanitizeHttpFailures]. Off by default.
- * @param cookies when set, the client sends the vault's cookies and saves every `Set-Cookie` into it (see
+ * @param cookies when set, the client sends the core's cookie store's cookies and saves every `Set-Cookie` into it (see
  *   [createSteamHttpClient]); `null` installs nothing.
  */
 fun createHttpClient(
@@ -39,10 +39,10 @@ fun createHttpClient(
     origin: ExchangeOrigin = ExchangeOrigin.MARKETPLACE,
     secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
     describeTransportCauses: Boolean = false,
-    cookies: VaultCookieJar? = null,
+    cookies: WebCookieJar? = null,
 ): HttpClient = HttpClient(engine) {
     sanitizeHttpFailures(secretParamNames, describeTransportCauses)
-    cookies?.let { install(vaultCookiesPlugin(it)) }
+    cookies?.let { install(webCookiesPlugin(it)) }
     install(HttpTimeout) {
         requestTimeoutMillis = requestTimeoutMs
     }
@@ -67,8 +67,8 @@ fun createHttpClient(
  * @param secretParamNames redaction set for the [NetworkObservation] plugin. Defaults to
  *   [NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES]; a caller that renames the Steam `access_token`
  *   query param augments this so the renamed param is still scrubbed from observed URLs.
- * @param cookies on mobile, the vault's cookie jar: every request carries the vault's cookies for its host in an
- *   explicit `Cookie` header and every `Set-Cookie` goes back to the vault. Give it an engine with no cookie store of
+ * @param cookies on mobile, the core's cookie jar: every request carries the store's cookies for its URL in an
+ *   explicit `Cookie` header and every `Set-Cookie` goes back to the store. Give it an engine with no cookie store of
  *   its own. `null` (web, headless) sends no cookies from the core.
  */
 fun createSteamHttpClient(
@@ -77,7 +77,7 @@ fun createSteamHttpClient(
     observer: NetworkObserver = NoOpNetworkObserver,
     secretParamNames: Set<String> = NetworkRedaction.DEFAULT_SECRET_PARAM_NAMES,
     describeTransportCauses: Boolean = false,
-    cookies: VaultCookieJar? = null,
+    cookies: WebCookieJar? = null,
 ): HttpClient =
     createHttpClient(engine, requestTimeoutMs, observer, ExchangeOrigin.STEAM, secretParamNames, describeTransportCauses, cookies)
 

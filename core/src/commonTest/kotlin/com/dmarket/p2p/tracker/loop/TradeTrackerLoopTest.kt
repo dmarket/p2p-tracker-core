@@ -24,6 +24,7 @@ import com.dmarket.p2p.tracker.engine.TrackerBlock
 import com.dmarket.p2p.tracker.model.AssetId
 import com.dmarket.p2p.tracker.model.ClaimPhase
 import com.dmarket.p2p.tracker.model.DealId
+import com.dmarket.p2p.tracker.model.DealWriteClaim
 import com.dmarket.p2p.tracker.model.DirectiveId
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.OfferId
@@ -51,9 +52,14 @@ import com.dmarket.p2p.tracker.model.steam.SteamTransfer
 import com.dmarket.p2p.tracker.model.steam.SuspicionLevel
 import com.dmarket.p2p.tracker.model.steam.SuspiciousOffer
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
+import com.dmarket.p2p.tracker.notary.HostedProofException
+import com.dmarket.p2p.tracker.notary.KillCause
+import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.notary.ProvenReadKind
 import com.dmarket.p2p.tracker.notary.ProvenReadRegistry
 import com.dmarket.p2p.tracker.policy.SteamCreateFailureCause
+import com.dmarket.p2p.tracker.policy.SteamWriteFailureKind
+import com.dmarket.p2p.tracker.policy.SteamWriteThrottleState
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.port.marketplace.DmarketOfferVerifier
@@ -3786,6 +3792,41 @@ class TradeTrackerLoopTest {
     }
 
     @Test
+    fun slow_failures_behind_an_unreachable_steam_proxy_do_not_arm_the_breaker() = runTest {
+        // A dead proxy says nothing about the prover, and a park armed by it would run its whole rung after the
+        // proxy is back. Past `countedFailureMinMs` and inside the cycle's proof deadline, so only the proxy
+        // carve-out keeps them from counting.
+        val clock = FakeClock()
+        val notary = FakeNotaryProver().apply {
+            proveThrows = HostedProofException(ProofFailure.ProxyUnreachable("the Steam proxy refused the tunnel"))
+            onProve = { clock.advance(2.seconds) }
+        }
+        val events = RecordingEventObserver()
+
+        threeProofLoop(notary, clock, events = events).runOnce()
+
+        assertEquals(3, notary.proven.size, "proxy failures must not park the deals behind them")
+        assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
+    }
+
+    @Test
+    fun proofs_cut_because_the_first_steam_proxy_was_pushed_do_not_arm_the_breaker() = runTest {
+        // Headless: a proof running without a proxy when the account's first one is pushed is killed so its Steam leg
+        // never goes direct. Not the prover's fault, and it must run again at once through the proxy.
+        val clock = FakeClock()
+        val notary = FakeNotaryProver().apply {
+            proveThrows = HostedProofException(ProofFailure.ProverKilled(KillCause.PROXY_PINNED, "cut for the proxy"))
+            onProve = { clock.advance(2.seconds) }
+        }
+        val events = RecordingEventObserver()
+
+        threeProofLoop(notary, clock, events = events).runOnce()
+
+        assertEquals(3, notary.proven.size, "proxy cuts must not park the deals behind them")
+        assertTrue(parkedSuppressions(events).isEmpty(), "nothing should have been parked")
+    }
+
+    @Test
     fun slow_failures_still_arm_the_breaker() = runTest {
         // The counterpart that keeps the breaker meaningful: a failure that consumed real prover time (the
         // wedge takes 30-75 s) counts, exactly as before the floor existed.
@@ -6641,6 +6682,39 @@ class TradeTrackerLoopTest {
         val event = observer.events.filterIsInstance<LifecycleEvent.CreateUnanswered>().single()
         assertEquals("deal-1" to "dir-1", event.dealId to event.directiveId)
         assertTrue(observer.events.filterIsInstance<LifecycleEvent.DirectiveExecuted>().isEmpty())
+    }
+
+    @Test
+    fun a_cycle_cut_after_steam_refused_the_create_releases_its_claim() = runTest {
+        assertTrue(cutAfterSteamAnswered(CreateOfferResult.Failed("There was an error sending your trade offer.")).isEmpty())
+    }
+
+    @Test
+    fun a_cycle_cut_after_steam_created_the_offer_still_holds_its_claim() = runTest {
+        val held = cutAfterSteamAnswered(CreateOfferResult.NeedsConfirmation(OfferId("offer-created"))).single()
+        assertEquals(setOf(AssetId("asset-1")), held.unanswered?.assetIds, "a release would let the deal be created twice")
+    }
+
+    /** The claims left after a create Steam answered with [answer], when the cycle is cut folding it into the throttle. */
+    private suspend fun cutAfterSteamAnswered(answer: CreateOfferResult): Collection<DealWriteClaim> {
+        val claims = PersistedDealWriteClaimStore()
+        val shipped = PersistedSteamWriteThrottleStore(limits = TrackerConfig.defaults().steamWrites, random = Random(7))
+        // The cycle is stopped while the refusal is folded into the throttle, after Steam answered.
+        val cutOnResult = object : SteamWriteThrottleStore by shipped {
+            override suspend fun onResult(partner: SteamId, kind: SteamWriteFailureKind?, now: Instant): SteamWriteThrottleState =
+                throw CancellationException("stopped")
+        }
+        val l = loop(
+            marketplace = createLease(createDirective()),
+            creator = FakeSteamOfferCreator(result = answer),
+            claims = claims,
+            throttle = cutOnResult,
+            directivesEnabled = true,
+            unansweredCreateGrace = 2.minutes,
+        )
+
+        assertFailsWith<CancellationException> { l.runOnce() }
+        return claims.all()
     }
 
     @Test
