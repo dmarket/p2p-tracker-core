@@ -67,6 +67,12 @@ class SteamProxyFacadeTest {
 
     private fun basic(user: String, password: String): String = "Basic " + js("Buffer").from("$user:$password").toString("base64") as String
 
+    /** The state's word on the proxy: `steamProxy` (`set`/`none`) and `steamProxyRequired`. */
+    private fun proxyState(handle: Any): List<Any?> {
+        val state = trackerState(handle)
+        return listOf(state.steamProxy as String, state.steamProxyRequired as Boolean)
+    }
+
     private fun assertNoProxyIn(texts: List<String>, vararg parts: String) {
         for (text in texts) for (part in parts) assertFalse(part in text, "the proxy leaked: $text")
     }
@@ -170,7 +176,7 @@ class SteamProxyFacadeTest {
     }
 
     @Test
-    fun a_renewal_without_a_proxy_keeps_it_and_only_null_sends_steam_direct() = runTest {
+    fun a_renewal_without_a_proxy_keeps_it_and_null_once_one_was_held_is_refused_locked() = runTest {
         val host = TestHost().apply { backend.heartbeatBody = createLease }
         val proxy = refusingProxy("trader", "s3cret-pass")
         val handle = host.proxiedTracker()
@@ -186,8 +192,95 @@ class SteamProxyFacadeTest {
         assertTrue(proxy.connects.size > tunnelled, "the renewed token still goes through the proxy")
         assertTrue(host.backend.steamRequests().isEmpty(), "nothing went around it")
 
-        // No cycle after it: with no proxy the Steam calls would go to Steam's real hosts.
-        assertEquals("held", pushSteamToken(handle, steamToken(), js("({proxy: null})")).await().type)
-        assertEquals(false, trackerState(handle).steamProxyUnreachable, "null dropped the proxy, and nothing is unreachable")
+        val locked = runCatching { pushSteamToken(handle, steamToken(), js("({proxy: null})")).await() }.exceptionOrNull()
+        assertEquals(steamProxyLockedCode(), locked.asDynamic().code as String?, locked?.message)
+        assertTrue(js("(function (e) { return e instanceof Error; })")(locked) as Boolean)
+        assertNoProxyIn(listOf(locked?.message.orEmpty()), "s3cret", "trader", "127.0.0.1")
+        assertEquals(true, trackerState(handle).steamProxyUnreachable, "null after set changed nothing: the same proxy, and its problem")
+        assertEquals(listOf<Any?>("set", true), proxyState(handle))
+        withContext(Dispatchers.Default) { cycle(handle).await() }
+        assertTrue(host.backend.steamRequests().isEmpty(), "and still nothing goes around the down proxy")
+    }
+
+    @Test
+    fun with_require_steam_proxy_no_token_is_held_without_one_and_steam_never_goes_direct() = runTest {
+        val global: dynamic = js("globalThis")
+        val realFetch = global.fetch
+        val directFetches = mutableListOf<String>()
+        global.fetch = { input: dynamic, init: dynamic ->
+            directFetches += input.toString()
+            realFetch(input, init)
+        }
+        try {
+            val host = TestHost().apply { backend.heartbeatBody = createLease }
+            val proxy = refusingProxy("trader", "s3cret-pass")
+            val options = host.options(tempDir())
+            options.requireSteamProxy = true
+            val handle = createHeadlessTrackerForTest(options, host.backend.engine, idleScope(), realSteam = true).also { handles += it }
+            assertEquals(listOf<Any?>("none", true), proxyState(handle))
+            pushTradingApiKey(handle, PUBLIC_KEY, SECRET_SEED).await()
+
+            for (none in listOf<dynamic>(undefined, js("({proxy: null})"))) {
+                val refused = runCatching { pushSteamToken(handle, steamToken(), none).await() }.exceptionOrNull()
+                assertEquals(steamProxyRequiredCode(), refused.asDynamic().code as String?, refused?.message)
+            }
+            assertEquals(null, trackerState(handle).steamTokenSteamId, "no token is held without a proxy")
+            val missing = host.named("SteamProxyMissing").single()
+            assertEquals(reasons().steamProxyMissing, missing.detail)
+            withContext(Dispatchers.Default) { cycle(handle).await() }
+            assertTrue(proxy.connects.isEmpty() && directFetches.isEmpty(), "nothing went to Steam, through a proxy or around one")
+
+            ready(handle, proxy.url)
+            assertEquals(listOf<Any?>("set", true), proxyState(handle))
+            assertEquals(1, host.named("SteamProxyRecovered").size)
+            val tunnelled = proxy.connects.size
+            assertTrue(tunnelled > 0, "Steam went through the proxy")
+
+            val cleared = runCatching { pushSteamToken(handle, steamToken(), js("({proxy: null})")).await() }.exceptionOrNull()
+            assertEquals(steamProxyLockedCode(), cleared.asDynamic().code as String?, cleared?.message)
+            withContext(Dispatchers.Default) { cycle(handle).await() }
+            assertTrue(proxy.connects.size > tunnelled, "the refused null left the proxy in place")
+            assertEquals(emptyList(), directFetches, "the global fetch was never called")
+            assertTrue(host.backend.steamRequests().isEmpty())
+            assertEquals(1, host.named("SteamProxyMissing").size)
+            assertNoProxyIn(host.events, "s3cret", "trader")
+        } finally {
+            global.fetch = realFetch
+        }
+    }
+
+    @Test
+    fun without_require_steam_proxy_a_tracker_starts_direct_and_pins_itself_on_the_first_proxy() = runTest {
+        val host = TestHost()
+        val handle = host.proxiedTracker()
+        pushTradingApiKey(handle, PUBLIC_KEY, SECRET_SEED).await()
+        assertEquals("held", pushSteamToken(handle, steamToken()).await().type, "optional: a token alone is held")
+        assertEquals(listOf<Any?>("none", false), proxyState(handle))
+        assertEquals("held", pushSteamToken(handle, steamToken(), js("({proxy: null})")).await().type, "never pinned: null is allowed")
+
+        val proxy = refusingProxy("trader", "s3cret-pass")
+        assertEquals("held", pushSteamToken(handle, steamToken(), proxyOption(proxy.url)).await().type)
+        assertEquals(listOf<Any?>("set", true), proxyState(handle))
+        val locked = runCatching { pushSteamToken(handle, steamToken(), js("({proxy: null})")).await() }.exceptionOrNull()
+        assertEquals(steamProxyLockedCode(), locked.asDynamic().code as String?, locked?.message)
+        val other = refusingProxy("trader", "other-pass")
+        assertEquals("held", pushSteamToken(handle, steamToken(), proxyOption(other.url)).await().type, "another proxy may replace it")
+        assertEquals("set", trackerState(handle).steamProxy)
+    }
+
+    @Test
+    fun require_steam_proxy_must_be_a_boolean_and_refuses_proxy_issuance() = runTest {
+        val wrongType = TestHost().options(tempDir())
+        wrongType.requireSteamProxy = "yes"
+        assertEquals(
+            "requireSteamProxy must be a boolean",
+            runCatching { createHeadlessTracker(wrongType) }.exceptionOrNull()?.message,
+        )
+
+        val proxyIssuance = TestHost().options(tempDir())
+        proxyIssuance.requireSteamProxy = true
+        proxyIssuance.prover = js("({mode: 'proxy'})")
+        val refused = runCatching { createHeadlessTracker(proxyIssuance) }.exceptionOrNull()?.message.orEmpty()
+        assertTrue("requireSteamProxy needs prover.mode mpc" in refused, refused)
     }
 }

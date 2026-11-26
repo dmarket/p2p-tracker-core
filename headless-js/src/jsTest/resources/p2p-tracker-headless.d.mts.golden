@@ -14,5 +14,7 @@ export declare function runProverChild(): void;
 export declare function start(handle: any): void;
 export declare function steamNotLinkedCode(): string;
 export declare function steamProxyInvalidCode(): string;
+export declare function steamProxyLockedCode(): string;
+export declare function steamProxyRequiredCode(): string;
 export declare function stop(handle: any): Promise<void>;
 export declare function trackerState(handle: any): any;

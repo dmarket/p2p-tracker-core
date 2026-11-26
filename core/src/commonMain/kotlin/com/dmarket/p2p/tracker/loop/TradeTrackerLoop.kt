@@ -3985,10 +3985,13 @@ class TradeTrackerLoop(
             // re-read rather than reusing `now`: `now` predates the attempt, and the fold must measure it.
             //
             // A Steam proxy that could not be reached is excluded too: the proof never got past the proxy, so it
-            // says nothing about the prover, and a park it armed would outlast the proxy's recovery.
+            // says nothing about the prover, and a park it armed would outlast the proxy's recovery. So is a proof the
+            // host cut because the account's first proxy was pushed mid-proof (headless): it must run again at once.
             val spentEnough = clock.now() - attemptStartedAt >= config.tunables.notary.breaker.countedFailureMinMs.milliseconds
-            val proxyDown = failure is HostedProofException && failure.failure is ProofFailure.ProxyUnreachable
-            if (failure !is CancellationException && spentEnough && !proxyDown) {
+            val hosted = (failure as? HostedProofException)?.failure
+            val proxyDown = hosted is ProofFailure.ProxyUnreachable
+            val proxyCut = hosted is ProofFailure.ProverKilled && hosted.cause == KillCause.PROXY_PINNED
+            if (failure !is CancellationException && spentEnough && !proxyDown && !proxyCut) {
                 notaryThrottle.onResult(generated = false, now = clock.now())
             }
             // A refusal that names the online budget it needed is the one failure on this path that teaches

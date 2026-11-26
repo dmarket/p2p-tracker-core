@@ -72,7 +72,13 @@ assert.ok(connects.every(({ target }) => /^(steamcommunity\.com|api\.steampowere
 assert.ok(connects.every(({ auth }) => auth === `Basic ${Buffer.from('smoke:smoke-pass').toString('base64')}`));
 assert.ok(!JSON.stringify(headless.trackerState(tracker)).includes('smoke-pass'));
 
+// Sticky once set: the state says a proxy is held (never which), and dropping it is refused, coded, changing nothing.
+assert.equal(headless.trackerState(tracker).steamProxy, 'set');
+assert.equal(headless.trackerState(tracker).steamProxyRequired, true);
+await assert.rejects(headless.pushSteamToken(tracker, token, { proxy: null }), (error) => error.code === headless.steamProxyLockedCode());
+assert.equal(headless.trackerState(tracker).steamProxy, 'set');
+
 await headless.stop(tracker);
 dmarket.close();
 proxy.close();
-console.log(`proxy: ok (${connects.length} CONNECTs through the proxy, DMarket direct)`);
+console.log(`proxy: ok (${connects.length} CONNECTs through the proxy, DMarket direct, null refused)`);

@@ -19,7 +19,9 @@ import com.dmarket.p2p.tracker.adapter.host.SystemClock
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyRefusal
 import com.dmarket.p2p.tracker.credential.steam.SteamProxyUpdate
+import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.ProofFailure
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -66,6 +68,14 @@ fun headlessVersion(): String = TradeTrackerCore.VERSION
  *   for a proof made, else a plain object keyed by `type`, with every text in it, `summary` included, redacted.
  * - `onProverLine(stream, line)`: a prover process's output (`stdout`, `stderr`) and the host's own lines about the
  *   processes (`host`, a JSON object with `msg` and `level`), each line redacted.
+ * - `requireSteamProxy`: `true` to fail closed without a Steam proxy from the start — for a host that knows this
+ *   account uses one, as after a restart (the proxy is never stored; the host remembers the fact). No token is held
+ *   without a proxy: a [pushSteamToken] that would leave none held (none named and none held, or `proxy: null`)
+ *   rejects coded `steamProxyRequiredCode()` and changes nothing. A Steam call or a proof that finds none held sends
+ *   nothing and never goes direct: a write is deferred (`reasons().steamProxyUnreachable`), a proof is not started
+ *   (`reasons().steamProxyMissing`). The host hears `SteamProxyMissing` (ended by `SteamProxyRecovered`);
+ *   `trackerState()` says `steamProxy: "none"`, `steamProxyRequired: true` meanwhile. Needs `prover.mode` `mpc`.
+ *   `false` by default; without it the tracker pins itself to a proxy the first time it holds one.
  *
  * Throws on an unknown option or a value of the wrong type, naming the option and never the value. With `prover`,
  * throws "prover files not found" when the child script or the prover's files are missing.
@@ -137,11 +147,15 @@ fun pushTradingApiKey(handle: Any, publicKey: String, secretKey: String): Promis
  * - absent (or `undefined`): a renewal — the proxy held before stays, so a push that names none never moves the
  *   account back to this host's address;
  * - a URL: the proxy from now on;
- * - `null`: no proxy from now on, Steam reached directly.
+ * - `null`: no proxy from now on, Steam reached directly — only while no proxy has ever been held.
  * A token that is not held changes neither. Every Steam call and every proof's Steam leg tunnels through the held
  * proxy; one that cannot fails with a cause of its own and is never sent directly. The proxy is write-only: no
  * result, state, event or error carries it. A `proxy` that is not such a URL is refused (the promise rejects with an
  * error coded [STEAM_PROXY_INVALID_CODE]), naming the rule broken and never the value.
+ *
+ * **Sticky once set.** From the first push held with a proxy the tracker is pinned to one: `proxy: null` rejects coded
+ * `steamProxyLockedCode()` and changes nothing; another proxy may replace it. With `requireSteamProxy` a push that would
+ * leave none held rejects coded `steamProxyRequiredCode()`. Both mean the caller asked for something refused: a 400.
  */
 @Suppress("NON_EXPORTABLE_TYPE")
 @JsExport
@@ -154,6 +168,7 @@ fun pushSteamToken(handle: Any, accessToken: String, options: dynamic = undefine
     }
     return call(handle) {
         val push = tracker.pushSteamToken(accessToken, proxy)
+        if (push is SteamPushResult.ProxyRefused) throw push.refusal.rejection()
         // Another proxy, or none, may answer where the old one did not: the next proof need not wait it out.
         proofHost?.heardSteamPush(push)
         push.toJs()
@@ -181,6 +196,9 @@ private fun steamProxyOption(options: dynamic): SteamProxyUpdate {
         else -> throw IllegalArgumentException("proxy must be a string or null").proxyInvalid()
     }
 }
+
+/** The push's refusal as the error it rejects with: fixed words, coded [SteamProxyRefusal.code]. */
+private fun SteamProxyRefusal.rejection(): IllegalStateException = IllegalStateException(message).also { it.asDynamic().code = code }
 
 /** This refusal, coded [STEAM_PROXY_INVALID_CODE] as a JS error's `code`. */
 private fun IllegalArgumentException.proxyInvalid(): IllegalArgumentException = also { it.asDynamic().code = STEAM_PROXY_INVALID_CODE }
@@ -244,6 +262,7 @@ private fun create(
         baseUrl = options.baseUrl,
         tunables = TrackerConfig.defaults().let { it.copy(notary = it.notary.copy(notaryUrl = options.notaryUrl)) },
         steamWrites = options.steamWrites,
+        requireSteamProxy = options.requireSteamProxy,
     )
     val handle: Any = js("Object.freeze(Object.create(null))")
     trackers.set(handle, TrackerEntry(tracker, scope, proofHost, steamTransport))
@@ -267,6 +286,7 @@ private fun proofHost(options: HeadlessOptions, prover: ProverOptions, files: Pr
             assetsDir = files.assetsDir,
             mode = prover.mode,
             transport = prover.transport,
+            requireSteamProxy = options.requireSteamProxy,
         ),
         clock = clock,
         limits = ProverLimits(prover.connectDeadline, prover.sessionDeadline, prover.proofsPerChild),

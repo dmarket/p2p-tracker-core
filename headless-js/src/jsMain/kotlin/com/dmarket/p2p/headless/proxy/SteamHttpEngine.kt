@@ -1,5 +1,6 @@
 package com.dmarket.p2p.headless.proxy
 
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
 import com.dmarket.p2p.tracker.net.STEAM_PROXY_UNREACHABLE_CODE
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.runtime.SteamRoute
@@ -30,8 +31,12 @@ import kotlin.js.Promise
  *
  * One `Agent` per transport, so per tracker: two trackers never share a connection, a pool or a proxy. When the host
  * pushes another proxy, or none, the old `Agent` is closed (its requests in flight let finish) before the next request
- * goes out. Without a proxy the request goes out on the global `fetch`, as before. [close] ends the `Agent` and its
- * sockets at once, and refuses every request after it.
+ * goes out. Without a proxy the request goes out on the global `fetch`, as before, aborted if a first proxy is pushed
+ * while it is in flight ([SteamRoute.onProxyMoved]) — unless the route requires one
+ * ([SteamRoute.proxyRequired]): then the request is not sent at all, it fails coded `STEAM_PROXY_UNREACHABLE` with
+ * [STEAM_PROXY_MISSING_DETAIL] (so a write it held back is deferred, never failed), and the global `fetch` is never
+ * called. [close] ends the `Agent` and its sockets at once,
+ * and refuses every request after it.
  *
  * Every request is `cache: "no-store"` and `credentials: "include"`, the Steam engine's options on every platform.
  */
@@ -51,6 +56,14 @@ internal class SteamHttpTransport(private val route: SteamRoute, private val loa
     private var agentProxy: SteamProxy? = null
     private var closed = false
 
+    /** The `AbortController`s of the direct requests in flight: a proxy pushed now aborts them ([abortDirect]). */
+    private val directInFlight = mutableSetOf<dynamic>()
+
+    init {
+        // A first proxy pushed while a direct request is in flight: it must not go on (or follow a redirect) directly.
+        route.onProxyMoved { if (route.proxy != null) abortDirect() }
+    }
+
     /** The tracker is stopping: its pooled tunnels go now, not at their keep-alive timeout. */
     fun close() {
         closed = true
@@ -65,7 +78,10 @@ internal class SteamHttpTransport(private val route: SteamRoute, private val loa
             agent = proxy?.let(::tunnellingAgentFor)
             agentProxy = proxy
         }
-        if (proxy == null) return globalFetch(input, init)
+        if (proxy == null) {
+            if (route.proxyRequired) return Promise.reject(notSent(STEAM_PROXY_MISSING_DETAIL))
+            return direct(input, init)
+        }
         val loaded = checkNotNull(agent) { "an agent is made with its proxy" }
         return loaded.then(
             { tunnelling: dynamic ->
@@ -88,6 +104,35 @@ internal class SteamHttpTransport(private val route: SteamRoute, private val loa
                 Promise.reject(notSent(CLIENT_NOT_LOADED))
             },
         ).unsafeCast<Promise<Response>>()
+    }
+
+    /**
+     * A request on the global `fetch`, abortable by [abortDirect]. The abort is not coded as the proxy's: the request
+     * may have reached Steam, so a write is settled as one Steam did not answer, never re-sent as one never sent.
+     */
+    private fun direct(input: String, init: RequestInit?): Promise<Response> {
+        val controller: dynamic = js("new AbortController()")
+        val options: dynamic = js("Object").assign(js("Object").create(null), init)
+        val own: dynamic = init?.asDynamic()?.signal
+        options.signal = if (own != null && own != undefined) js("AbortSignal").any(arrayOf(own, controller.signal)) else controller.signal
+        directInFlight.add(controller)
+        return globalFetch(input, options.unsafeCast<RequestInit>()).then(
+            { response: Response ->
+                directInFlight.remove(controller)
+                response
+            },
+            { error: Throwable ->
+                directInFlight.remove(controller)
+                throw error
+            },
+        )
+    }
+
+    /** Aborts every direct request in flight: the account has a proxy now. */
+    private fun abortDirect() {
+        val inFlight = directInFlight.toList()
+        directInFlight.clear()
+        inFlight.forEach { runCatching { it.abort() } }
     }
 
     private fun tunnellingAgentFor(proxy: SteamProxy): Promise<dynamic> = loadUndici().then { undici: dynamic ->
@@ -118,7 +163,7 @@ internal class SteamHttpTransport(private val route: SteamRoute, private val loa
 }
 
 /**
- * The rejection of a request through the proxy that was not sent, shaped as Node's `fetch` shapes a failed one — a
+ * The rejection of a request through the proxy (or, where one is required, for want of one) that was not sent, shaped as Node's `fetch` shapes a failed one — a
  * `TypeError: fetch failed` with the reason as its `cause` — and coded `STEAM_PROXY_UNREACHABLE`, so the HTTP layer
  * reads it as the proxy's, never as Steam not answering.
  */

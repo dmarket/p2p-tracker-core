@@ -18,6 +18,7 @@
 {"event":"SteamWriteDeferred","kind":"create_offer","directiveId":"dir-4","reason":"not sent: the Steam proxy could not be reached","dealId":"deal-2","retryAfterSeconds":null}
 {"event":"SteamProxyUnreachable","dealIds":["deal-1","deal-2"],"detail":"could not connect to the proxy: ECONNREFUSED"}
 {"event":"SteamProxyRecovered"}
+{"event":"SteamProxyMissing","dealIds":["deal-1"],"detail":"no Steam proxy is held, and this tracker requires one"}
 {"event":"CycleFailed","reason":"boom"}
 {"event":"DirectiveReportFailed","kind":"create_offer","directiveId":"dir-1","reason":"HTTP 500"}
 {"event":"TradeStatusReportFailed","dealId":"deal-1","source":"offer","steamStatusCode":3,"reason":"HTTP 500"}

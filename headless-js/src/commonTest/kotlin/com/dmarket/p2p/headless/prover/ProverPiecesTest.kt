@@ -35,6 +35,20 @@ class ProverPiecesTest {
     }
 
     @Test
+    fun ipc_carries_the_proxy_requirement_and_an_older_host_defaults_it_off() {
+        val unpinned = ToChild.Prove(1, request, "token", "session", settings, "http://user:pass@203.0.113.7:3128")
+        val unpinnedJson = ProverIpc.encode(unpinned)
+        assertFalse("\"requireSteamProxy\"" in unpinnedJson, "the default stays off the wire, as for an older host")
+        assertEquals(false, (ProverIpc.toChild(unpinnedJson) as ToChild.Prove).settings.requireSteamProxy)
+
+        val pinned = unpinned.copy(settings = settings.copy(requireSteamProxy = true))
+        val pinnedJson = ProverIpc.encode(pinned)
+        assertTrue("\"requireSteamProxy\":true" in pinnedJson)
+        assertEquals(pinned, ProverIpc.toChild(pinnedJson))
+        kotlin.test.assertFailsWith<IllegalArgumentException> { settings.copy(mode = IssuanceMode.PROXY, requireSteamProxy = true) }
+    }
+
+    @Test
     fun the_ipc_round_trips_and_its_strings_hide_the_secrets() {
         val token = steamToken()
         val prove = ToChild.Prove(7, request, token, "abc123", settings)

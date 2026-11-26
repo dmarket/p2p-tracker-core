@@ -16,15 +16,19 @@ import kotlinx.serialization.Serializable
  *   `steamLoginSecure` cookie built from the token. The same value the tracker's own Steam writes send.
  * @property steamProxy the proxy the account's Steam traffic goes through: the proof's Steam leg is a `CONNECT`
  *   tunnel through it, never a direct connection. `null` to dial Steam directly. A secret like the token.
+ * @property steamProxyRequired whether the account may not reach Steam directly (the host's `requireSteamProxy`, or a
+ *   proxy held once): a host that finds no [steamProxy] then starts nothing, and its prover's Steam leg is only ever
+ *   a tunnel it can verify.
  */
 class HostedProofRequest(
     val request: NotaryProofRequest,
     val steamAccessToken: String,
     val steamSessionId: String,
     val steamProxy: SteamProxy? = null,
+    val steamProxyRequired: Boolean = false,
 ) {
     override fun toString(): String = "HostedProofRequest(request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>, " +
-        "steamProxy=${steamProxy?.let { "<redacted>" }})"
+        "steamProxy=${steamProxy?.let { "<redacted>" }}, steamProxyRequired=$steamProxyRequired)"
 }
 
 /**
@@ -176,6 +180,13 @@ enum class KillCause(val wireName: String) {
     /** It exited, or lost its channel to the host, without an answer. */
     @SerialName("exited")
     EXITED("exited without an answer"),
+
+    /**
+     * The host cut it: it was proving without a Steam proxy when the account's first one was pushed, and its Steam leg
+     * would have gone direct after that. Not the prover's fault: the proof runs again through the proxy.
+     */
+    @SerialName("proxy_pinned")
+    PROXY_PINNED("cut when a Steam proxy was first pushed"),
 }
 
 /** A hosted proof failed; [failure] says how. The message is [ProofFailure.summary], which carries no credential. */

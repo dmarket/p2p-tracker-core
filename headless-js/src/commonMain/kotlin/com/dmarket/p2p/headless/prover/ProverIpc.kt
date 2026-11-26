@@ -18,6 +18,9 @@ import kotlinx.serialization.json.Json
  *   server name staying the target's. MPC-only; proxy routing belongs to the notary. Never set in production.
  * @property transport `direct` (default) or `egress` (proxy only); egress uses the Worker frontend at `notaryUrl`.
  * @property mode `mpc` (default, including old IPC) or `proxy`.
+ * @property requireSteamProxy a proof with no [ToChild.Prove.steamProxy] is not started: the Steam leg is only ever the
+ *   tunnel, never the transport's direct connector. Set per proof by the host: its `requireSteamProxy`, or a proxy the
+ *   tracker held once.
  */
 @Serializable
 data class ProverSettings(
@@ -28,11 +31,13 @@ data class ProverSettings(
     @SerialName("targetAddress") val targetAddress: String? = null,
     @SerialName("mode") val mode: IssuanceMode = IssuanceMode.MPC,
     @SerialName("transport") val transport: String = "direct",
+    @SerialName("requireSteamProxy") val requireSteamProxy: Boolean = false,
 ) {
     init {
         require(transport == "direct" || transport == "egress") { "prover.transport must be direct or egress" }
         require(transport != "egress" || mode == IssuanceMode.PROXY) { "prover.transport egress requires mode proxy" }
         require(mode != IssuanceMode.PROXY || targetAddress == null) { "proxy target routing belongs to the notary; omit targetAddress" }
+        require(!requireSteamProxy || mode == IssuanceMode.MPC) { "requireSteamProxy needs mode mpc" }
     }
 
     companion object {

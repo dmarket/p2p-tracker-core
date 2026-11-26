@@ -2,6 +2,7 @@ package com.dmarket.p2p.headless.prover
 
 import com.dmarket.p2p.headless.node.nodeChildProcess
 import com.dmarket.p2p.headless.node.nodeProcess
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedProofOutcome
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
@@ -87,6 +88,14 @@ class ForkedProofHost(
 
     override suspend fun prove(proof: HostedProofRequest, upgrade: NotaryUpgradeSigner): HostedProofOutcome {
         val dealId = proof.request.dealId
+        // A tracker that requires the Steam proxy (by its option, or pinned by one held) never forks a child that could
+        // dial Steam without one.
+        val proxyRequired = settings.requireSteamProxy || proof.steamProxyRequired
+        if (proxyRequired && proof.steamProxy == null) {
+            val refused = ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL)
+            onOutcome(dealId, refused)
+            return HostedProofOutcome.Failed(refused)
+        }
         backoff.blocked(clock.now())?.let { reason ->
             val held = ProofFailure.NotStarted(reason)
             onOutcome(dealId, held)
@@ -102,7 +111,7 @@ class ForkedProofHost(
         val (child, id) = lock.withLock { (takeIdle() ?: fork()) to nextProofId++ }
         onNotice("proof started", false, listOf("dealId" to dealId, "pid" to child.pid))
         val outcome = try {
-            run(child, id, proof, upgrade).scrubbed(proof.steamProxy)
+            run(child, id, proof, upgrade, proxyRequired).scrubbed(proof.steamProxy)
         } catch (e: CancellationException) {
             child.kill()
             throw e
@@ -130,8 +139,19 @@ class ForkedProofHost(
     /** A newly held key may answer a notary 401: the next proof need not wait for the old one's backoff. */
     override fun keyChanged() = backoff.keyChanged()
 
-    /** Another proxy, or none, may answer: the next proof need not wait for the old failure's backoff. */
-    override fun steamProxyChanged() = backoff.proxyChanged()
+    /**
+     * Another proxy, or none, may answer: the next proof need not wait for the old failure's backoff. A proof still
+     * running without a proxy — started before the account's first one — is cut: its Steam leg would go direct after
+     * the account was pinned to a proxy. It fails as killed ([KillCause.PROXY_PINNED]), which the loop's notary breaker
+     * does not count, and runs again through the proxy.
+     */
+    override fun steamProxyChanged() {
+        backoff.proxyChanged()
+        live.filter { it.provingDirect && !it.gone }.forEach { child ->
+            child.cutForProxy = true
+            child.kill()
+        }
+    }
 
     /** The same proxy got the tracker's reads through again: the next proof may start, once per run of failures. */
     override fun steamProxyRecovered() = backoff.proxyRecovered()
@@ -143,12 +163,21 @@ class ForkedProofHost(
         idle.clear()
     }
 
-    private suspend fun run(child: ForkedChild, id: Int, proof: HostedProofRequest, upgrade: NotaryUpgradeSigner): HostedProofOutcome {
+    private suspend fun run(
+        child: ForkedChild,
+        id: Int,
+        proof: HostedProofRequest,
+        upgrade: NotaryUpgradeSigner,
+        proxyRequired: Boolean,
+    ): HostedProofOutcome {
         val started = TimeSource.Monotonic.markNow()
         var connected: TimeMark? = null
         // The child's lines are scrubbed of this proof's proxy too, whatever printed it.
         proof.steamProxy?.let { child.proxies += it }
-        val prove = ToChild.Prove(id, proof.request, proof.steamAccessToken, proof.steamSessionId, settings, proof.steamProxy?.url())
+        child.provingDirect = proof.steamProxy == null
+        // Past the checks above a required proxy is held and the mode is MPC: the child refuses to dial Steam without it.
+        val proofSettings = if (proxyRequired && !settings.requireSteamProxy) settings.copy(requireSteamProxy = true) else settings
+        val prove = ToChild.Prove(id, proof.request, proof.steamAccessToken, proof.steamSessionId, proofSettings, proof.steamProxy?.url())
         if (!child.send(ProverIpc.encode(prove))) {
             return killed(KillCause.EXITED, "the prover's channel was closed")
         }
@@ -161,7 +190,15 @@ class ForkedProofHost(
                 return killed(if (connected == null) KillCause.CONNECT_DEADLINE else KillCause.SESSION_DEADLINE, null)
             }
             when (event) {
-                is ChildEvent.Exited -> return killed(event.cause(), event.detail())
+                is ChildEvent.Exited ->
+                    return if (child.cutForProxy) {
+                        killed(
+                            KillCause.PROXY_PINNED,
+                            PROOF_CUT_FOR_PROXY,
+                        )
+                    } else {
+                        killed(event.cause(), event.detail())
+                    }
                 is ChildEvent.Message -> {
                     val message = runCatching { ProverIpc.fromChild(event.text) }.getOrNull()?.takeIf { it.id == id } ?: continue
                     when (message) {
@@ -194,6 +231,7 @@ class ForkedProofHost(
     }
 
     private fun release(child: ForkedChild, outcome: HostedProofOutcome) {
+        child.provingDirect = false
         val killed = outcome is HostedProofOutcome.Failed && outcome.failure is ProofFailure.ProverKilled
         if (killed || child.gone || child.served >= limits.proofsPerChild) {
             live.remove(child)
@@ -252,6 +290,10 @@ private sealed interface ChildEvent {
     }
 }
 
+/** Why a proof running without a proxy was cut when the account's first proxy was pushed. */
+internal const val PROOF_CUT_FOR_PROXY: String =
+    "a Steam proxy was pushed while this proof could still reach Steam directly; it runs again through the proxy"
+
 /** One forked prover process: its IPC messages and its end as [events], its output to [onLine]. */
 private class ForkedChild(
     private val process: dynamic,
@@ -266,6 +308,12 @@ private class ForkedChild(
 
     /** The proxies of the proofs this child has served: taken out of every line it prints. */
     val proxies = mutableSetOf<SteamProxy>()
+
+    /** Whether the proof it is running has no proxy: its Steam leg would go direct. */
+    var provingDirect = false
+
+    /** Killed because a first proxy was pushed while it proved directly ([ForkedProofHost.steamProxyChanged]). */
+    var cutForProxy = false
     private var killedBySdk = false
 
     init {
