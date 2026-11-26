@@ -243,7 +243,7 @@ private const val PARTNER_PARKED_MID_CHAIN = "counterparty's create chain stoppe
 internal const val LEASE_LAPSED_DROP_REASON = "lease lapsed before the Steam write"
 
 /**
- * Why a mobile create was not run: the account's sent offers, which may hold the offer an earlier lease made, could not
+ * Why a create was not run: the account's sent offers, which may hold the offer an earlier lease made, could not
  * be read. Unreported; the read runs again when the backend serves the directive again.
  */
 internal const val BIND_READ_FAILED_DROP_REASON = "sent offers unread before a create"
