@@ -61,6 +61,7 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.UnansweredCreate
 import com.dmarket.p2p.tracker.model.marketplace.DealActionResult
+import com.dmarket.p2p.tracker.model.marketplace.DealRole
 import com.dmarket.p2p.tracker.model.marketplace.Directive
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveAction
 import com.dmarket.p2p.tracker.model.marketplace.DirectiveOutcome
@@ -1339,6 +1340,13 @@ class TradeTrackerLoop(
      * Set by `P2pTracker` before each cycle.
      */
     var buyerProofsFor: DealId? = null
+
+    /**
+     * The buyer's proof of [buyerProofsFor] runs without the deal's update permit (`P2pTracker.updateStatus` after the
+     * return from Steam). DMarket may refuse it for that alone, so its `verified: false` latches nothing: the event is
+     * emitted, the report goes once without a proof, and the next cycle that may prove it proves again.
+     */
+    var buyerProofWithoutPermit: Boolean = false
 
     /**
      * Hears each notary session a proof attempt ran for a deal, once it ends: a proof, a failure after the notary's
@@ -3574,6 +3582,7 @@ class TradeTrackerLoop(
             // notary session, so none of the gates that ration one applies. They exist only while no verdict came, so
             // neither the refusal latch nor an acceptance can stand against them.
             val resend = undeliveredProof(intent, now)
+            val role = DealRoleBinding.roleOf(tracking, intent.dealId)
             val verdict = if (resend != null) {
                 null
             } else {
@@ -3589,7 +3598,7 @@ class TradeTrackerLoop(
                     cycleDeadline = proofDeadline,
                     networkDeferred = proofsDeferred,
                     wakeBudget = proofsOutOfBudget,
-                    role = DealRoleBinding.roleOf(tracking, intent.dealId),
+                    role = role,
                     buyerMayProve = intent.dealId == buyerProofsFor,
                 )
             }
@@ -3639,6 +3648,9 @@ class TradeTrackerLoop(
                 // Remember the verdict so a report the backend refuses anyway does not buy another MPC
                 // session on the next wake. Persisted, because an MV3 worker respawns between most cycles.
                 recordAcceptedProof(intent)
+            } else if (buyerProofWithoutPermit && role == DealRole.BUYER && intent.dealId == buyerProofsFor) {
+                // Made without the permit: the refusal may be about that alone, so no latch; the report goes unproven.
+                proofUnprovable += intent
             } else {
                 proofRejected += intent
                 // A fresh proof for this transition was just refused, so any earlier acceptance of it is no

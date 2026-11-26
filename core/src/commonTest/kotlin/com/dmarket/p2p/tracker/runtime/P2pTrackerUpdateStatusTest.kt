@@ -518,7 +518,12 @@ class P2pTrackerUpdateStatusTest {
     // ---- the buyer's own proof (DMA-664, owner's decision 2026-11-26) -----------------------------
 
     /** A buyer's tracker on a proof-required deal, Steam on offer [code], with a permit from the refresh. */
-    private fun buyer(code: Int = 3, lastOfferCode: Int? = null, metered: Boolean = false) = Setup(
+    private fun buyer(
+        code: Int = 3,
+        lastOfferCode: Int? = null,
+        metered: Boolean = false,
+        refresh: DealRefreshClient = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = clock.now() + 1.hours) },
+    ) = Setup(
         FakeMarketplaceClient(
             heartbeat(proofRequired = true, role = DealRole.BUYER).let { hb ->
                 hb.copy(activeTracking = hb.activeTracking.map { it.copy(lastOfferCode = lastOfferCode) })
@@ -526,7 +531,7 @@ class P2pTrackerUpdateStatusTest {
         ),
         reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to code)),
         metered = metered,
-        refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = clock.now() + 1.hours) },
+        refresh = refresh,
     )
 
     @Test
@@ -601,6 +606,82 @@ class P2pTrackerUpdateStatusTest {
         tracker.updateStatus(deal, allowCellularProof = true, retries = 1)
 
         assertEquals(1, setup.notary.proven.size)
+    }
+
+    // ---- the buyer's return from Steam without a permit (owner's decision 2026-11-26) -------------
+
+    /** A refresh on cooldown: its own 429 for every call. */
+    private fun refreshOnCooldown() = FakeRefresh { throw RateLimitedException(600, "P2P_REFRESH_RATE_LIMITED") }
+
+    @Test
+    fun the_buyers_return_from_steam_proves_while_the_refresh_is_on_cooldown() = runTest {
+        val setup = buyer(refresh = refreshOnCooldown())
+
+        val update = tracker(setup).updateStatus(deal, afterSteamReturn = true)
+
+        assertNull(update.failure)
+        assertEquals(1, setup.notary.proven.size, "the return needs no permit")
+        assertEquals(1, setup.marketplace.proofsSubmitted.size)
+    }
+
+    @Test
+    fun the_update_status_button_still_waits_out_the_refresh_cooldown() = runTest {
+        val setup = buyer(refresh = refreshOnCooldown())
+
+        val update = tracker(setup).updateStatus(deal)
+
+        assertEquals(UpdateFailure.RATE_LIMITED, update.failure)
+        assertTrue(setup.notary.proven.isEmpty())
+        assertTrue(setup.marketplace.heartbeatsSent.isEmpty(), "nothing sent")
+    }
+
+    @Test
+    fun the_buyers_return_from_steam_proves_after_the_permits_sessions_are_spent() = runTest {
+        // The button's run spent the permit's one session on a proof the notary dropped.
+        val setup = buyer()
+        val tracker = tracker(setup)
+        setup.notary.proveThrows = IllegalStateException("notary connection dropped")
+        assertEquals(UpdateFailure.NOTARY, tracker.updateStatus(deal, retries = 0).failure)
+        setup.notary.proveThrows = null
+        clock.advance(1.minutes)
+        assertEquals(UpdateFailure.RATE_LIMITED, tracker.updateStatus(deal, retries = 0).failure, "the button waits")
+
+        val update = tracker.updateStatus(deal, retries = 0, afterSteamReturn = true)
+
+        assertNull(update.failure)
+        assertEquals(1, setup.marketplace.proofsSubmitted.size, "the return proves without the permit")
+    }
+
+    @Test
+    fun a_refusal_of_the_buyers_proof_without_a_permit_holds_no_report_and_the_next_return_proves_again() = runTest {
+        // Whether DMarket takes a proof made without a permit is open with BE: its refusal latches nothing.
+        val setup = buyer(refresh = refreshOnCooldown())
+        setup.marketplace.proofVerified = false
+        val tracker = tracker(setup)
+
+        val update = tracker.updateStatus(deal, afterSteamReturn = true)
+
+        assertEquals(UpdateFailure.PROOF_REFUSED, update.failure)
+        assertTrue(events.events.any { it is LifecycleEvent.ProofSubmitted && !it.verified }, "the refusal is said")
+        assertEquals(listOf(3), setup.marketplace.tradeStatusReports.map { it.steamStatusCode }, "the report goes unproven")
+
+        setup.marketplace.proofVerified = true
+        clock.advance(1.minutes)
+        tracker.updateStatus(deal, afterSteamReturn = true)
+
+        assertEquals(2, setup.notary.proven.size, "the next return proves again")
+    }
+
+    @Test
+    fun a_refusal_under_a_permit_still_latches() = runTest {
+        val setup = buyer()
+        setup.marketplace.proofVerified = false
+        val tracker = tracker(setup)
+        assertEquals(UpdateFailure.PROOF_REFUSED, tracker.updateStatus(deal, retries = 1).failure)
+
+        tracker.updateStatus(deal, retries = 1)
+
+        assertEquals(1, setup.notary.proven.size, "the same bytes' refusal stands")
     }
 
     @Test

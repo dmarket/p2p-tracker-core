@@ -458,11 +458,25 @@ class P2pTracker(
      * like any other. A 503 (or any other failure of the call) is [UpdateFailure.DMARKET] and charged nothing; a deal
      * with nothing to refresh (no watch entry, or a 404) still runs its cycle, uncounted.
      *
+     * **The buyer's return from Steam** ([afterSteamReturn], owner's decision 2026-11-26) needs no permit: where the
+     * permit would answer [UpdateFailure.RATE_LIMITED] (its sessions spent, or the refresh's own 429), the update runs
+     * its cycle anyway, uncounted, and the buyer proves the deal's transition in it. DMarket may refuse a proof made
+     * without a permit (unconfirmed): that refusal is [UpdateFailure.PROOF_REFUSED] and latches nothing, so the report
+     * goes once without a proof and the next update or return proves again. DMarket's and Steam's own 429 backoff still
+     * holds it.
+     *
      * @param allowCellularProof the user allowed a proof on mobile data for this update (T-13); the gate stays as it is
      *   for every other cycle.
      * @param retries how many Retries a permit allows after its first session (the app's remote config); below 0 is 0.
+     * @param afterSteamReturn the update is the buyer's return to the app after Accept in Steam (the app's
+     *   `ReportSteamReturn`), not the Update status button: a spent permit does not stop it.
      */
-    suspend fun updateStatus(dealId: DealId, allowCellularProof: Boolean = false, retries: Int = DEFAULT_RETRIES): StatusUpdate {
+    suspend fun updateStatus(
+        dealId: DealId,
+        allowCellularProof: Boolean = false,
+        retries: Int = DEFAULT_RETRIES,
+        afterSteamReturn: Boolean = false,
+    ): StatusUpdate {
         val allowed = retries.coerceAtLeast(0)
         val now = clock.now()
         listOfNotNull(state.value.deals[dealId]?.cooldownUntil, dmarketCooldown.until, steamCooldown.until)
@@ -472,24 +486,34 @@ class P2pTracker(
         val s = sessionOrStart() ?: return StatusUpdate(failure = UpdateFailure.NOT_RUNNING)
         var refreshed = false
         var lapsed = false
+
+        // The permit's own "not yet" ([UpdateFailure.RATE_LIMITED]): the answer, or the return's cycle without a permit.
+        suspend fun permitLimited(answer: StatusUpdate): StatusUpdate =
+            if (afterSteamReturn) withoutPermit(s, dealId, allowCellularProof, allowed) else answer
         while (true) {
             val checkedAt = clock.now()
             // Whether this run goes under a permit, as the check saw it: one that lapses before the cycle lock stops it.
             var held = false
+            var limited: StatusUpdate? = null
             permitLock.withLock {
                 val permit = activePermit(dealId, checkedAt)
                 if (permit == null) {
-                    takePermit(dealId, checkedAt, allowed)?.let { return it }
+                    takePermit(dealId, checkedAt, allowed)?.let { answer ->
+                        // The refresh's own 429 marks the permit spent; anything else (Kong's 429, a 5xx) ends every update.
+                        if (activePermit(dealId, checkedAt)?.sessions != EXHAUSTED) return answer
+                        limited = answer
+                    }
                     refreshed = true
                     // shortcut: a granted window already past by this device's clock runs uncounted, so a clock far ahead
                     // still runs its update; compare with the server's time if that ever matters.
                     held = activePermit(dealId, clock.now()) != null
                 } else if (spent(permit, allowed, dealId, s.loop)) {
-                    return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - checkedAt)
+                    limited = statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - checkedAt)
                 } else {
                     held = true
                 }
             }
+            limited?.let { return permitLimited(it) }
             // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session, or the
             // permit's window may have closed while this update waited, which leaves its session nothing to count against.
             val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true, buyerProofsFor = dealId) {
@@ -498,13 +522,23 @@ class P2pTracker(
             if (!run.probe.permitSpent) return finished(dealId, s, run, allowed)
             val permit = activePermit(dealId, clock.now())
             if (permit != null && spent(permit, allowed, dealId, s.loop)) {
-                return statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - clock.now())
+                return permitLimited(statusOf(dealId, UpdateFailure.RATE_LIMITED, allowed, retryAfter = permit.until - clock.now()))
             }
             // The window closed: one refresh per tap, so an update that took its own permit asks for no second one, and
             // one whose second permit closed too goes no further.
             if (refreshed || lapsed) return statusOf(dealId, UpdateFailure.TIMEOUT, allowed)
             lapsed = true
         }
+    }
+
+    /**
+     * The buyer's return from Steam where the permit says "not yet": one cycle that counts against no permit, its proofs
+     * of [dealId] made as the buyer's and their refusal latching nothing ([TradeTrackerLoop.buyerProofWithoutPermit]).
+     */
+    private suspend fun withoutPermit(s: Session, dealId: DealId, allowCellularProof: Boolean, allowed: Int): StatusUpdate {
+        val run = cycle(s, wake = null, manual = true, allowCellularProof, buyerProofsFor = dealId, withoutPermit = true)
+            ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
+        return finished(dealId, s, run, allowed)
     }
 
     /** [updateStatus]'s answer for the cycle [run] that ran under its permit. */
@@ -714,7 +748,8 @@ class P2pTracker(
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
      * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only), and a
      * [manual] cycle whose [permitSpent] answers `true` under the lock sends nothing. [buyerProofsFor]: the deal whose
-     * buyer started the cycle, so this device proves its transitions as the buyer ([updateStatus] only).
+     * buyer started the cycle, so this device proves its transitions as the buyer ([updateStatus] only);
+     * [withoutPermit]: that buyer's proof runs without the deal's permit (the return from Steam).
      */
     private suspend fun cycle(
         s: Session,
@@ -726,10 +761,11 @@ class P2pTracker(
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
         buyerProofsFor: DealId? = null,
+        withoutPermit: Boolean = false,
         permitSpent: () -> Boolean = { false },
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions, buyerProofsFor) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions, buyerProofsFor, withoutPermit) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
@@ -767,6 +803,7 @@ class P2pTracker(
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
         buyerProofsFor: DealId? = null,
+        withoutPermit: Boolean = false,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
@@ -779,6 +816,7 @@ class P2pTracker(
         s.loop.proofsDeferred = !(metered == false || allowCellularProof || option == true)
         s.loop.proofsOutOfBudget = !allowProof
         s.loop.buyerProofsFor = buyerProofsFor
+        s.loop.buyerProofWithoutPermit = withoutPermit
         s.loop.heartbeatContext = TradeTrackerLoop.HeartbeatContext(
             wakeId = wake?.wakeId,
             network = metered?.let { if (it) NetworkType.CELLULAR else NetworkType.WIFI },
