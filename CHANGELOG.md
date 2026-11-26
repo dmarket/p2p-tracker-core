@@ -14,10 +14,17 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Added
+
+- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
+- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
+- Mobile: the push device registration adds the `background_prove` capability when the tracker has the native prover (`AndroidTracker.install(nativeProofs)`, `MobileTracker(proofEngine)`) (DMA-540).
+
 ### Changed
 
 - Mobile: on the buyer's phone `P2pTracker.updateStatus` now proves the deal's accepted, declined, cancelled, completed or reversed trade itself instead of leaving it to the seller, under the same proof gate and update permit (DMA-664).
 - Mobile: `P2pTracker.updateStatus` takes `afterSteamReturn`; with it the buyer's update after Accept in Steam proves even while the update permit is spent, once per permit window, and a refusal of that proof (the deal moved on) is no update failure and does not hold the report (DMA-664).
+- Mobile: the tracker no longer keeps sent end-of-deal proofs on the device, and removes the ones 1.4.0 stored when it next starts (DMA-540).
 
 ### Fixed
 
@@ -39,21 +46,6 @@ GitHub Release.
 - Mobile: cancelling `updateStatus` spends a Retry only once the notary accepted the proof's connection; a Cancel before that (waiting for the prover, minting its token, connecting) spends none (DMA-1016).
 - Mobile: a proof that was not delivered no longer keeps `StatusUpdate.retryLeft` at 1 or lets `updateStatus` past a spent permit once its deal leaves tracking or Steam shows another code for it (DMA-1016).
 - Mobile: a create Steam refused frees its deal at once when the cycle is cut right after, instead of after the 2-minute unanswered grace (DMA-664).
-
-## [1.5.0-beta] - 2026-11-25
-
-### Added
-
-- A Steam proxy per tracker for the headless package: `pushSteamToken(handle, accessToken, {proxy: "http://user:pass@host:port"})` holds the proxy with the token (a later push without `proxy` keeps it; only `proxy: null` drops it), and every Steam call (an `undici` `Agent` per tracker, on `undici`'s own `fetch`) and every proof's Steam leg (MPC target leg) becomes an HTTP `CONNECT` tunnel through it. DMarket and the notary stay direct. The proxy is write-only and redacted from every log line, error, event and `onProverLine` output; it reaches a prover process over IPC only. New dependency: `undici` 7.30.2, exact (DMA-1012).
-- Fail closed when that proxy cannot be reached: nothing falls back to a direct connection. A create or a cancel not sent for it is deferred (`SteamWriteDeferred` of its `kind`, with `reasons().steamProxyUnreachable`), never read or reported failed; the new `SteamProxyUnreachable` event (with the waiting `dealIds`) and `SteamProxyRecovered` event, `trackerState().steamProxyUnreachable` / `steamProxyUnreachableSinceMs`, and the proof failure `proxy_unreachable` say so; such a proof failure does not count toward the prover's breaker, and the proofs it holds back start again with `SteamProxyRecovered` rather than after the rest of their backoff. `CreateOfferResult.NotSent` and `CancelOfferResult.NotSent` are the core's results for such writes. A malformed `proxy` rejects with an `Error` coded `steamProxyInvalidCode()` (`STEAM_PROXY_INVALID`) (DMA-1012).
-- Mobile: the push device registration adds the `background_prove` capability when the tracker has the native prover (`AndroidTracker.install(nativeProofs)`, `MobileTracker(proofEngine)`) (DMA-540).
-
-### Changed
-
-- Mobile: the tracker no longer keeps sent end-of-deal proofs on the device, and removes the ones 1.4.0 stored when it next starts (DMA-540).
-
-### Fixed
-
 - Android: cancelling a native proof while it waits for the notary's answer to the WebSocket upgrade ends it at once instead of after the 30 s connect timeout (DMA-540).
 - Mobile: `NativeNotaryProver.cancel(dealId)` finds a proof that is just starting and cancels every running proof of that deal (DMA-540).
 - Mobile: a Steam offer create stopped while the tracker reads the account's sent offers before it no longer holds the deal's next create for up to 15 minutes after a restart (DMA-664).
@@ -704,8 +696,7 @@ behind a host-supplied proving context and stays inert until the backend flips p
   than the token — the claims are what actually distinguish "wrong scope", "expired" and "transport
   problem", so redaction costs no diagnostic power.
 
-[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.5.0-beta...HEAD
-[1.5.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...v1.5.0-beta
+[Unreleased]: https://github.com/dmarket/p2p-tracker-core/compare/v1.4.0-beta...HEAD
 [1.4.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.3.0-beta...v1.4.0-beta
 [1.3.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.2.0-beta...v1.3.0-beta
 [1.2.0-beta]: https://github.com/dmarket/p2p-tracker-core/compare/v1.1.0-beta...v1.2.0-beta
