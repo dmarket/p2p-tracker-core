@@ -14,6 +14,10 @@ GitHub Release.
 
 ## [Unreleased]
 
+### Changed
+
+- Mobile: on the buyer's phone `P2pTracker.updateStatus` now proves the deal's accepted, declined, cancelled, completed or reversed trade itself instead of leaving it to the seller, under the same proof gate and update permit (DMA-664).
+
 ### Fixed
 
 - Headless: when the proxy client fails to load, only that Steam call fails, the next one loads it again, and the proxy is not reported unreachable for it (DMA-1012).

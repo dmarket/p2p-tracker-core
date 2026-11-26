@@ -492,7 +492,7 @@ class P2pTracker(
             }
             // Checked again under the cycle lock: a cycle that ran meanwhile may have spent the last session, or the
             // permit's window may have closed while this update waited, which leaves its session nothing to count against.
-            val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true) {
+            val run = cycle(s, wake = null, manual = true, allowCellularProof, countsSessions = true, buyerProofsFor = dealId) {
                 activePermit(dealId, clock.now())?.let { spent(it, allowed, dealId, s.loop) } ?: held
             } ?: return statusOf(dealId, UpdateFailure.NOT_RUNNING, allowed)
             if (!run.probe.permitSpent) return finished(dealId, s, run, allowed)
@@ -713,7 +713,8 @@ class P2pTracker(
      * sync, and a wake's heartbeat carries its id. The proof gate is set for this cycle, [allowProof] `false` holds
      * every proof, and [onScreen] runs it as in the foreground (the user is acting in the app) whatever the app last said.
      * [countsSessions]: its notary sessions count against the deals' update permits ([updateStatus] only), and a
-     * [manual] cycle whose [permitSpent] answers `true` under the lock sends nothing.
+     * [manual] cycle whose [permitSpent] answers `true` under the lock sends nothing. [buyerProofsFor]: the deal whose
+     * buyer started the cycle, so this device proves its transitions as the buyer ([updateStatus] only).
      */
     private suspend fun cycle(
         s: Session,
@@ -724,10 +725,11 @@ class P2pTracker(
         allowProof: Boolean = true,
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
+        buyerProofsFor: DealId? = null,
         permitSpent: () -> Boolean = { false },
     ): CycleRun? {
         val run = s.scope.async {
-            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions) {
+            locked(s, allowCellularProof, onScreen, wake, allowProof, ends, countsSessions, buyerProofsFor) {
                 when {
                     wake != null -> {
                         s.loop.forceHeartbeatNow()
@@ -764,6 +766,7 @@ class P2pTracker(
         allowProof: Boolean = true,
         ends: TimeMark? = null,
         countsSessions: Boolean = false,
+        buyerProofsFor: DealId? = null,
         body: suspend () -> Unit,
     ): CycleRun = s.cycleLock.withLock {
         watchedAt = null
@@ -775,6 +778,7 @@ class P2pTracker(
         val option = if (onScreenCycle) runCatching { cellularProofs() }.getOrNull() else background
         s.loop.proofsDeferred = !(metered == false || allowCellularProof || option == true)
         s.loop.proofsOutOfBudget = !allowProof
+        s.loop.buyerProofsFor = buyerProofsFor
         s.loop.heartbeatContext = TradeTrackerLoop.HeartbeatContext(
             wakeId = wake?.wakeId,
             network = metered?.let { if (it) NetworkType.CELLULAR else NetworkType.WIFI },

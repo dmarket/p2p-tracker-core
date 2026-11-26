@@ -1334,6 +1334,13 @@ class TradeTrackerLoop(
     var proofsOutOfBudget: Boolean = false
 
     /**
+     * The deal whose buyer started this cycle by their own action (`P2pTracker.updateStatus`), or `null`: on it a buyer
+     * proves its transitions at once ([ProofMintPolicy.decide]'s `buyerMayProve`), elsewhere the seller's tracker does.
+     * Set by `P2pTracker` before each cycle.
+     */
+    var buyerProofsFor: DealId? = null
+
+    /**
      * Hears each notary session a proof attempt ran for a deal, once it ends: a proof, a failure after the notary's
      * `101`, a cut after it (the user's Cancel on T-14 or the cycle's deadline, said by the prover as a
      * [NotarySessionCutException]), or the prover's own cancel. Not an attempt the notary never took
@@ -3583,6 +3590,7 @@ class TradeTrackerLoop(
                     networkDeferred = proofsDeferred,
                     wakeBudget = proofsOutOfBudget,
                     role = DealRoleBinding.roleOf(tracking, intent.dealId),
+                    buyerMayProve = intent.dealId == buyerProofsFor,
                 )
             }
             if (verdict is ProofMintVerdict.Skip) {

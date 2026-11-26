@@ -462,19 +462,23 @@ class P2pTrackerUpdateStatusTest {
 
     // ---- the buyer's report without a proof (DMA-664) ----------------------------------------------
 
-    /** A buyer's tracker on a proof-required deal whose report DMarket refuses for want of a proof. */
-    private fun buyerRefused() = Setup(
+    /**
+     * A buyer's tracker on a proof-required deal whose report DMarket refuses for want of a proof. Steam reads [code]:
+     * offer `2` (`offer_confirmed`) stays the seller's to prove even in the buyer's own update.
+     */
+    private fun buyerRefused(code: Int = 2) = Setup(
         FakeMarketplaceClient(heartbeat(proofRequired = true, role = DealRole.BUYER)).apply {
             tradeStatusResults = { reports ->
                 reports.map { TradeStatusResult(dealId = it.dealId, accepted = false, reason = "P2P_PROOF_REQUIRED", source = it.source) }
             }
         },
+        reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to code)),
     )
 
     @Test
     fun a_buyers_report_refused_for_want_of_a_proof_is_no_update_failure() = runTest {
-        // The seller's tracker proves the transition; the buyer's report goes once without a proof, and its refusal
-        // is nothing the buyer can act on.
+        // The seller's tracker proves offer 2; the buyer's report goes once without a proof, and its refusal is
+        // nothing the buyer can act on.
         val setup = buyerRefused()
 
         val update = tracker(setup).updateStatus(deal)
@@ -487,7 +491,8 @@ class P2pTrackerUpdateStatusTest {
 
     @Test
     fun a_buyers_report_refused_for_want_of_a_proof_does_not_fail_the_wake() = runTest {
-        val setup = buyerRefused()
+        // A wake is no action of the buyer's: offer 3 too stays the seller's to prove there.
+        val setup = buyerRefused(code = 3)
 
         val outcome = tracker(setup).onPush("""{"v":"1","type":"wake_all","wakeId":"w-1","reason":"frozen"}""")
 
@@ -508,6 +513,94 @@ class P2pTrackerUpdateStatusTest {
         assertNull(update.failure)
         assertEquals(ProofState.NONE, update.proofState)
         assertEquals(1, setup.marketplace.tradeStatusReports.size)
+    }
+
+    // ---- the buyer's own proof (DMA-664, owner's decision 2026-11-26) -----------------------------
+
+    /** A buyer's tracker on a proof-required deal, Steam on offer [code], with a permit from the refresh. */
+    private fun buyer(code: Int = 3, lastOfferCode: Int? = null, metered: Boolean = false) = Setup(
+        FakeMarketplaceClient(
+            heartbeat(proofRequired = true, role = DealRole.BUYER).let { hb ->
+                hb.copy(activeTracking = hb.activeTracking.map { it.copy(lastOfferCode = lastOfferCode) })
+            },
+        ),
+        reader = FakeSteamReadClient(initialOffers = mapOf(OfferId("offer-1") to code)),
+        metered = metered,
+        refresh = FakeRefresh { DealRefresh(tracked = true, nextAllowedAt = clock.now() + 1.hours) },
+    )
+
+    @Test
+    fun the_buyers_own_update_proves_offer_accepted_against_the_permit() = runTest {
+        // Back from Steam after Accept the app runs this update: the buyer proves at once instead of waiting for the
+        // seller's tick, and the session counts against the deal's permit like the seller's.
+        val setup = buyer()
+        val tracker = tracker(setup)
+
+        val update = tracker.updateStatus(deal, retries = 0)
+
+        assertNull(update.failure)
+        assertEquals(1, setup.notary.proven.size, "one notary session on the buyer's side")
+        assertEquals(1, setup.marketplace.proofsSubmitted.size)
+        assertEquals(0, update.retryLeft)
+        assertEquals(UpdateFailure.RATE_LIMITED, tracker.updateStatus(deal, retries = 0).failure)
+        assertEquals(1, setup.notary.proven.size)
+    }
+
+    @Test
+    fun a_buyers_update_proves_what_an_earlier_wake_left_to_the_seller() = runTest {
+        // The H1 run: the seller's proof waits on its phone; the buyer's wake reported offer 3 unproven and DMarket
+        // refused it, then the buyer came back from Steam.
+        val setup = buyerRefused(code = 3)
+        val tracker = tracker(setup)
+        tracker.onPush("""{"v":"1","type":"wake_all","wakeId":"w-1","reason":"frozen"}""")
+        assertTrue(setup.notary.proven.isEmpty(), "the wake leaves it to the seller")
+        setup.marketplace.tradeStatusResults = null
+
+        val update = tracker.updateStatus(deal)
+
+        assertNull(update.failure)
+        assertEquals(1, setup.notary.proven.size)
+        assertEquals(1, setup.marketplace.proofsSubmitted.size)
+    }
+
+    @Test
+    fun the_buyer_proves_a_transition_once() = runTest {
+        val setup = buyer()
+        val tracker = tracker(setup)
+        tracker.updateStatus(deal, retries = 1)
+        clock.advance(10.minutes)
+
+        tracker.updateStatus(deal, retries = 1)
+        tracker.onPush("""{"v":"1","type":"wake_all","wakeId":"w-2","reason":"frozen"}""")
+
+        assertEquals(1, setup.notary.proven.size, "an accepted transition is not proven again")
+    }
+
+    @Test
+    fun a_transition_dmarket_already_holds_costs_the_buyer_no_session() = runTest {
+        // The heartbeat's settled offer code is the backend's word that it has offer 3 (from the seller's proof).
+        val setup = buyer(lastOfferCode = 3)
+
+        val update = tracker(setup).updateStatus(deal)
+
+        assertNull(update.failure)
+        assertTrue(setup.notary.proven.isEmpty())
+        assertTrue(setup.marketplace.proofsSubmitted.isEmpty())
+    }
+
+    @Test
+    fun the_buyers_proof_waits_behind_the_sellers_network_gate() = runTest {
+        val setup = buyer(metered = true)
+        val tracker = tracker(setup)
+
+        val deferred = tracker.updateStatus(deal, retries = 1)
+
+        assertEquals(ProofState.DEFERRED, deferred.proofState)
+        assertTrue(setup.notary.proven.isEmpty(), "no proof on mobile data without the user's word")
+
+        tracker.updateStatus(deal, allowCellularProof = true, retries = 1)
+
+        assertEquals(1, setup.notary.proven.size)
     }
 
     @Test
