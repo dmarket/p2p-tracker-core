@@ -2,6 +2,7 @@ package com.dmarket.p2p.tracker.notary
 
 import com.dmarket.p2p.tracker.model.marketplace.ProofSubmission
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.notary.NotaryProver
 import com.dmarket.p2p.tracker.runtime.SteamRoute
@@ -37,7 +38,9 @@ const val PROOF_TOKEN_EXPIRING_REASON: String = "the Steam token is too close to
  * @param steamSessionId the `sessionid` value the tracker's Steam writes send; handed to the host for
  *   cookie-authenticated reads.
  * @param route where the account's Steam traffic goes: each proof is handed the proxy it names, so its Steam leg is a
- *   tunnel through it, and tells it how that went. `null`: every proof dials Steam directly.
+ *   tunnel through it, and tells it how that went. `null`: every proof dials Steam directly. A route that requires a
+ *   proxy ([SteamRoute.proxyRequired]) and holds none fails the proof at once with [ProofFailure.NotStarted] and
+ *   [STEAM_PROXY_MISSING_DETAIL], before the host is asked: no proof dials Steam directly.
  */
 class HostedNotaryProver(
     private val host: ProofHost,
@@ -66,8 +69,12 @@ class HostedNotaryProver(
             }
             // Read with the token: the proof goes out from the address the account's other Steam traffic does.
             val proxy = route?.proxy
+            val proxyRequired = route?.proxyRequired == true
+            if (proxyRequired && proxy == null) {
+                throw HostedProofException(ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL))
+            }
             val outcome = try {
-                host.prove(HostedProofRequest(request, credential.token, steamSessionId, proxy), upgrade)
+                host.prove(HostedProofRequest(request, credential.token, steamSessionId, proxy, proxyRequired), upgrade)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {

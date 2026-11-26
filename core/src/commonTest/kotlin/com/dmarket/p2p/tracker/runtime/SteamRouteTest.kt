@@ -62,4 +62,29 @@ class SteamRouteTest {
         assertNull(route.unreachableSince)
         assertFalse("203.0.113.7" in route.toString() || "s3cret" in route.toString(), route.toString())
     }
+
+    @Test
+    fun a_required_proxy_is_missing_while_none_is_held_and_the_requirement_is_read_at_each_ask() {
+        held = null
+        var pinned = false
+        val required = SteamRoute(clock, required = { pinned }) { held }
+        assertFalse(required.proxyRequired)
+        assertFalse(required.isProxyMissing, "not required yet: the direct route is still allowed")
+
+        pinned = true
+        assertTrue(required.proxyRequired, "turned on as the tracker runs, not fixed at construction")
+        assertTrue(required.isProxyMissing)
+        assertNull(required.proxy, "and there is no direct route to take instead")
+
+        held = first
+        assertFalse(required.isProxyMissing, "a proxy is held")
+        assertFalse("s3cret" in required.toString() || "203.0.113.7" in required.toString(), required.toString())
+    }
+
+    @Test
+    fun a_route_that_does_not_require_a_proxy_is_never_missing_one() {
+        held = null
+        assertFalse(route.proxyRequired)
+        assertFalse(route.isProxyMissing)
+    }
 }

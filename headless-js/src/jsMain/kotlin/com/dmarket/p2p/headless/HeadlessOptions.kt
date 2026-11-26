@@ -4,6 +4,7 @@ import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
 import com.dmarket.p2p.tracker.model.LifecycleEvent
 import com.dmarket.p2p.tracker.model.toWireJson
+import com.dmarket.p2p.tracker.notary.IssuanceMode
 import com.dmarket.p2p.tracker.port.host.Clock
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import kotlin.time.Instant
@@ -24,6 +25,7 @@ internal class HeadlessOptions(
     val prover: ProverOptions?,
     val onProofOutcome: ((dynamic) -> Unit)?,
     val onProverLine: ((String, String) -> Unit)?,
+    val requireSteamProxy: Boolean = false,
 ) {
     /** The host's clock hook, or `null` for the system clock. */
     fun clock(): Clock? = nowMs?.let { now ->
@@ -50,6 +52,7 @@ internal class HeadlessOptions(
             "prover",
             "onProofOutcome",
             "onProverLine",
+            "requireSteamProxy",
         )
 
         fun parse(options: dynamic): HeadlessOptions {
@@ -69,6 +72,11 @@ internal class HeadlessOptions(
             val prover = if (proverOption != null) ProverOptions.parse(proverOption) else null
             val onProofOutcome = optional<(dynamic) -> Unit>(options.onProofOutcome, "onProofOutcome", "function")
             val onProverLine = optional<(String, String) -> Unit>(options.onProverLine, "onProverLine", "function")
+            val requireSteamProxy = optional<Boolean>(options.requireSteamProxy, "requireSteamProxy", "boolean") ?: false
+            // In proxy issuance the notary dials Steam itself, never through the account's proxy: no proof could run.
+            require(!requireSteamProxy || prover == null || prover.mode != IssuanceMode.PROXY) {
+                "requireSteamProxy needs prover.mode mpc: in proxy mode Steam is not reached through the Steam proxy"
+            }
             return HeadlessOptions(
                 dataDir,
                 baseUrl,
@@ -80,6 +88,7 @@ internal class HeadlessOptions(
                 prover,
                 onProofOutcome,
                 onProverLine,
+                requireSteamProxy,
             )
         }
 

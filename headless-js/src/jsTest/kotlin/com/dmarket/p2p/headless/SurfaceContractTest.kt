@@ -38,6 +38,8 @@ class SurfaceContractTest {
         "start",
         "steamNotLinkedCode",
         "steamProxyInvalidCode",
+        "steamProxyLockedCode",
+        "steamProxyRequiredCode",
         "stop",
         "trackerState",
     )
@@ -58,6 +60,7 @@ class SurfaceContractTest {
                 "noProver",
                 "offerWritesDisabled",
                 "proofTokenExpiring",
+                "steamProxyMissing",
                 "steamProxyUnreachable",
                 "steamSessionMissing",
                 "tokenExpiringDefer",
@@ -74,6 +77,8 @@ class SurfaceContractTest {
         assertEquals("cancel_offer", entry.directiveActions().cancelOffer)
         assertEquals("P2P_STEAM_NOT_LINKED", entry.steamNotLinkedCode())
         assertEquals("STEAM_PROXY_INVALID", entry.steamProxyInvalidCode())
+        assertEquals("STEAM_PROXY_LOCKED", entry.steamProxyLockedCode())
+        assertEquals("STEAM_PROXY_REQUIRED", entry.steamProxyRequiredCode())
         assertEquals(1_800_000.0, entry.minWriteTokenLifetimeMs())
         assertEquals(60_000.0, entry.maxClockSkewMs())
         assertEquals("wss://api.dmarket.com/provenance/v1/", entry.defaultNotaryUrl())
@@ -97,6 +102,8 @@ class SurfaceContractTest {
         }
         assertTrue("steamNotLinkedCode(): ${JSON.stringify(entry.steamNotLinkedCode())};" in types)
         assertTrue("steamProxyInvalidCode(): ${JSON.stringify(entry.steamProxyInvalidCode())};" in types)
+        assertTrue("steamProxyLockedCode(): ${JSON.stringify(entry.steamProxyLockedCode())};" in types)
+        assertTrue("steamProxyRequiredCode(): ${JSON.stringify(entry.steamProxyRequiredCode())};" in types)
     }
 
     @Test

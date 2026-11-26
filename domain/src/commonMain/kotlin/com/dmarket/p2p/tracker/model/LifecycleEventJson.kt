@@ -279,6 +279,11 @@ fun LifecycleEvent.toWireJson(): String = buildJsonObject {
             putJsonArray("dealIds") { event.dealIds.forEach { add(it) } }
             put("detail", event.detail)
         }
+        is LifecycleEvent.SteamProxyMissing -> {
+            put("event", "SteamProxyMissing")
+            putJsonArray("dealIds") { event.dealIds.forEach { add(it) } }
+            put("detail", event.detail)
+        }
         LifecycleEvent.SteamProxyRecovered -> put("event", "SteamProxyRecovered")
         is LifecycleEvent.CycleCompleted -> {
             put("event", "CycleCompleted")

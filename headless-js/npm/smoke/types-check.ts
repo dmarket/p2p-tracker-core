@@ -17,6 +17,8 @@ import {
     start,
     steamNotLinkedCode,
     steamProxyInvalidCode,
+    steamProxyLockedCode,
+    steamProxyRequiredCode,
     stop,
     trackerState,
     type HeadlessTrackerOptions,
@@ -86,6 +88,7 @@ const options: HeadlessTrackerOptions = {
         void line;
     },
     nowMs: () => Date.now(),
+    requireSteamProxy: true,
 };
 
 // @ts-expect-error an option the tracker does not have
@@ -193,6 +196,8 @@ async function host(): Promise<void> {
     const dealDeadlines: Readonly<Record<string, number>> = state.dealDeadlines;
     const steamProxyUnreachable: boolean = state.steamProxyUnreachable;
     const steamProxyUnreachableSinceMs: number | null = state.steamProxyUnreachableSinceMs;
+    const steamProxy: "set" | "none" = state.steamProxy;
+    const steamProxyRequired: boolean = state.steamProxyRequired;
     // @ts-expect-error the proxy is never readable back
     void state.proxy;
     // @ts-expect-error the state is read-only
@@ -212,6 +217,8 @@ async function host(): Promise<void> {
         dealDeadlines,
         steamProxyUnreachable,
         steamProxyUnreachableSinceMs,
+        steamProxy,
+        steamProxyRequired,
     ];
 
     await stop(handle);
@@ -222,9 +229,12 @@ const createOffer: "create_offer" = directiveActions().createOffer;
 const alreadyTraded: "already_traded" = failedCancelKinds().alreadyTraded;
 const notLinked: "P2P_STEAM_NOT_LINKED" = steamNotLinkedCode();
 const proxyInvalid: "STEAM_PROXY_INVALID" = steamProxyInvalidCode();
+const proxyLocked: "STEAM_PROXY_LOCKED" = steamProxyLockedCode();
+const proxyRequired: "STEAM_PROXY_REQUIRED" = steamProxyRequiredCode();
+const proxyMissing: "no Steam proxy is held, and this tracker requires one" = reasons().steamProxyMissing;
 // @ts-expect-error the constants are frozen
 reasons().noProver = "changed";
 const durations: [number, number] = [minWriteTokenLifetimeMs(), maxClockSkewMs()];
 const version: string = headlessVersion();
 const childEntry: () => void = runProverChild;
-void [reasonTexts, createOffer, alreadyTraded, notLinked, proxyInvalid, durations, version, childEntry, host];
+void [reasonTexts, createOffer, alreadyTraded, notLinked, proxyInvalid, proxyLocked, proxyRequired, proxyMissing, durations, version, childEntry, host];

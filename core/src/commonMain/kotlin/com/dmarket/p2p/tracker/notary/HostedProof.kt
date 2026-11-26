@@ -16,15 +16,19 @@ import kotlinx.serialization.Serializable
  *   `steamLoginSecure` cookie built from the token. The same value the tracker's own Steam writes send.
  * @property steamProxy the proxy the account's Steam traffic goes through: the proof's Steam leg is a `CONNECT`
  *   tunnel through it, never a direct connection. `null` to dial Steam directly. A secret like the token.
+ * @property steamProxyRequired whether the account may not reach Steam directly (the host's `requireSteamProxy`, or a
+ *   proxy held once): a host that finds no [steamProxy] then starts nothing, and its prover's Steam leg is only ever
+ *   a tunnel it can verify.
  */
 class HostedProofRequest(
     val request: NotaryProofRequest,
     val steamAccessToken: String,
     val steamSessionId: String,
     val steamProxy: SteamProxy? = null,
+    val steamProxyRequired: Boolean = false,
 ) {
     override fun toString(): String = "HostedProofRequest(request=$request, steamAccessToken=<redacted>, steamSessionId=<redacted>, " +
-        "steamProxy=${steamProxy?.let { "<redacted>" }})"
+        "steamProxy=${steamProxy?.let { "<redacted>" }}, steamProxyRequired=$steamProxyRequired)"
 }
 
 /**

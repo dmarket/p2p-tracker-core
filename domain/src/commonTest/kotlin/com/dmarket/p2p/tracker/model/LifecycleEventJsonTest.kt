@@ -34,6 +34,12 @@ class LifecycleEventJsonTest {
         assertEquals("the Steam proxy refused the tunnel (407)", down["detail"]?.jsonPrimitive?.content)
         assertEquals(emptyList(), parse(LifecycleEvent.SteamProxyUnreachable(emptyList(), "x"))["dealIds"]!!.jsonArray.toList())
 
+        val missing = parse(LifecycleEvent.SteamProxyMissing(listOf("deal1"), "a token push named no Steam proxy"))
+        assertEquals(setOf("event", "dealIds", "detail"), missing.keys)
+        assertEquals("SteamProxyMissing", missing["event"]?.jsonPrimitive?.content)
+        assertEquals(listOf("deal1"), missing["dealIds"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("a token push named no Steam proxy", missing["detail"]?.jsonPrimitive?.content)
+
         val back = parse(LifecycleEvent.SteamProxyRecovered)
         assertEquals(setOf("event"), back.keys)
         assertEquals("SteamProxyRecovered", back["event"]?.jsonPrimitive?.content)
@@ -433,6 +439,7 @@ class LifecycleEventJsonTest {
             LifecycleEvent.ProofDeferred("d-1", "offer"),
             LifecycleEvent.RateLimited("steam", null),
             LifecycleEvent.SteamProxyUnreachable(listOf("deal1"), "the Steam proxy refused the tunnel (407)"),
+            LifecycleEvent.SteamProxyMissing(listOf("deal1"), "a token push named no Steam proxy"),
             LifecycleEvent.SteamProxyRecovered,
             LifecycleEvent.CycleCompleted(0, 0, 0, 0),
         )

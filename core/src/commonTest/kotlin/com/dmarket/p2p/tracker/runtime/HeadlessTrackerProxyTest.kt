@@ -1,6 +1,7 @@
 package com.dmarket.p2p.tracker.runtime
 
 import com.dmarket.p2p.tracker.client.SteamProxyUnreachableException
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyRefusal
 import com.dmarket.p2p.tracker.credential.steam.SteamProxyUpdate
 import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.model.LifecycleEvent
@@ -282,7 +283,11 @@ class HeadlessTrackerProxyTest {
         )
         assertEquals(false, moved(SteamProxyUpdate.Keep))
         assertEquals(true, moved(SteamProxyUpdate.Use(otherProxy)))
-        assertEquals(true, moved(SteamProxyUpdate.Clear))
+        assertEquals(
+            SteamPushResult.ProxyRefused(SteamProxyRefusal.LOCKED),
+            tracker.pushSteamToken(token, SteamProxyUpdate.Clear),
+            "pinned to a proxy: none is refused, not a move",
+        )
     }
 
     @Test
@@ -296,7 +301,7 @@ class HeadlessTrackerProxyTest {
     }
 
     @Test
-    fun a_renewal_that_names_no_proxy_keeps_the_held_one_and_only_an_explicit_clear_goes_direct() = runTest {
+    fun a_renewal_that_names_no_proxy_keeps_the_held_one_and_clear_never_goes_direct_once_one_was_held() = runTest {
         val tracker = tracker()
         tracker.pushTradingApiKey(PUBLIC_KEY, SECRET_SEED)
         tracker.pushSteamToken(token, SteamProxyUpdate.Use(proxy))
@@ -307,8 +312,9 @@ class HeadlessTrackerProxyTest {
         tracker.cycle()
         assertTrue(steamSent.isNotEmpty() && steamSent.all { (_, through) -> through == proxy }, "the renewed token still goes through it")
 
-        assertIs<SteamPushResult.Held>(tracker.pushSteamToken(renewed, SteamProxyUpdate.Clear))
-        assertEquals(null, tracker.steamRoute.proxy, "dropped on the host's explicit word only")
+        assertEquals(SteamPushResult.ProxyRefused(SteamProxyRefusal.LOCKED), tracker.pushSteamToken(renewed, SteamProxyUpdate.Clear))
+        assertEquals(proxy, tracker.steamRoute.proxy, "pinned: not even the host's explicit word drops it")
+        assertEquals("set" to true, tracker.state().let { (if (it.steamProxyHeld) "set" else "none") to it.steamProxyRequired })
         // A fresh create, so the next cycle surely calls Steam.
         heartbeatBody = heartbeatBody.replace("dir-1", "dir-2").replace("deal-1", "deal-2").replace("asset-7", "asset-8")
         val before = steamSent.size
@@ -317,7 +323,7 @@ class HeadlessTrackerProxyTest {
         tracker.cycle()
         val after = steamSent.drop(before)
         assertTrue(after.any { (request, _) -> request.url.encodedPath.endsWith("/tradeoffer/new/send") }, "$after")
-        assertTrue(after.all { (_, through) -> through == null }, "with the proxy cleared, Steam is reached directly")
+        assertTrue(after.all { (_, through) -> through == proxy }, "a refused clear left every Steam call on the proxy")
     }
 
     private companion object {

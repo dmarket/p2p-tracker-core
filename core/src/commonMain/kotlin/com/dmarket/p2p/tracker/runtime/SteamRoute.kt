@@ -15,17 +15,45 @@ import kotlin.time.Instant
  * ignored, and pushing another proxy (or none) ends the problem with the old one: [isUnreachable] is about the
  * current proxy only.
  *
+ * While [proxyRequired] there is no direct route: a transport or a prover that finds no proxy held sends nothing
+ * ([isProxyMissing]). It is asked at each connection, since it turns on as the tracker runs: [required] is the host's
+ * own `requireSteamProxy` or the session's pin, set by the first proxy it held.
+ *
  * Holds the proxy as the session holds the token; [toString] says nothing of it.
  */
-class SteamRoute(private val clock: Clock, private val current: () -> SteamProxy?) {
+class SteamRoute(private val clock: Clock, private val required: () -> Boolean = { false }, private val current: () -> SteamProxy?) {
     /** A proxy no connection got through: what the last attempt said, and since when none has. */
     private class Outage(val proxy: SteamProxy, val detail: String, val since: Instant)
 
     // No @Volatile: JS is single-threaded; JVM callers share one scope, as for the session.
     private var outage: Outage? = null
+    private val moveListeners = mutableListOf<() -> Unit>()
 
-    /** The proxy every Steam connection must go through now; `null` to connect directly. */
+    /**
+     * The proxy every Steam connection must go through now; `null` to connect directly, or, with [proxyRequired], not
+     * to connect at all.
+     */
     val proxy: SteamProxy? get() = current()
+
+    /** Whether no Steam connection may go out directly now: every one goes through a proxy, or is not made. */
+    val proxyRequired: Boolean get() = required()
+
+    /** Whether a proxy is required and none is held: nothing reaches Steam until one is. */
+    val isProxyMissing: Boolean get() = proxyRequired && current() == null
+
+    /**
+     * Calls [listener] each time a push moves the account to another proxy (or none, where that is allowed): a
+     * transport ends what it has in flight on the old route, so nothing opened before a first proxy goes on directly
+     * after it.
+     */
+    fun onProxyMoved(listener: () -> Unit) {
+        moveListeners += listener
+    }
+
+    /** A push moved the account to another proxy: told to every [onProxyMoved] listener, at once. */
+    fun proxyMoved() {
+        moveListeners.forEach { runCatching { it() } }
+    }
 
     /** Whether the last attempt through the current proxy failed. */
     val isUnreachable: Boolean get() = currentOutage() != null
@@ -50,5 +78,6 @@ class SteamRoute(private val clock: Clock, private val current: () -> SteamProxy
     /** The outage of the proxy in use; one of a proxy since replaced, or dropped, is over. */
     private fun currentOutage(): Outage? = outage?.takeIf { it.proxy == current() }
 
-    override fun toString(): String = "SteamRoute(proxy=${proxy?.let { "<redacted>" }}, unreachable=$isUnreachable)"
+    override fun toString(): String =
+        "SteamRoute(proxy=${proxy?.let { "<redacted>" }}, required=$proxyRequired, unreachable=$isUnreachable, missing=$isProxyMissing)"
 }

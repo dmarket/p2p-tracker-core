@@ -9,6 +9,7 @@ import com.dmarket.p2p.tracker.model.SteamId
 import com.dmarket.p2p.tracker.model.TrackerMode
 import com.dmarket.p2p.tracker.model.marketplace.HeartbeatResponse
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
+import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.port.host.EventObserver
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeDeviceIdStore
@@ -138,6 +139,68 @@ class PushedSteamSessionTest {
         session.vault.writeSteamCredential(SteamCredential("other", SteamId(THEIRS), clock.now() + 1.hours))
 
         assertEquals(mine, session.vault.readSteamCredential())
+    }
+
+    // ---- the proxy: optional, sticky once set ------------------------------------------------------
+
+    private val proxy = SteamProxy.parse("http://trader:s3cret-pass@203.0.113.7:3128")
+    private val other = SteamProxy.parse("http://trader:other-pass@203.0.113.8:3128")
+
+    @Test
+    fun a_session_that_never_held_a_proxy_holds_tokens_without_one_and_is_not_pinned() = runTest {
+        assertIs<SteamPushResult.Held>(session.push(token(), SteamProxyUpdate.Keep))
+        assertIs<SteamPushResult.Held>(session.push(token(), SteamProxyUpdate.Clear))
+        assertNull(session.proxy)
+        assertFalse(session.proxyPinned, "optional: an account that never set a proxy reaches Steam directly")
+    }
+
+    @Test
+    fun once_a_proxy_is_held_null_is_refused_locked_and_changes_nothing_while_renewals_and_replacements_go_on() = runTest {
+        assertIs<SteamPushResult.Held>(session.push(token(), SteamProxyUpdate.Use(proxy)))
+        assertTrue(session.proxyPinned)
+
+        val renewal = assertIs<SteamPushResult.Held>(session.push(token(lifetimeHours = 23)), "token-only keeps the proxy")
+        assertFalse(renewal.proxyChanged)
+        assertEquals(proxy, session.proxy)
+        val held = assertNotNull(session.credential)
+
+        assertEquals(
+            SteamPushResult.ProxyRefused(SteamProxyRefusal.LOCKED),
+            session.push(token(lifetimeHours = 22), SteamProxyUpdate.Clear),
+        )
+        assertEquals(proxy, session.proxy, "null after set: the proxy stays")
+        assertEquals(held, session.credential, "and so does the token")
+
+        val moved = assertIs<SteamPushResult.Held>(session.push(token(), SteamProxyUpdate.Use(other)), "replacing it is allowed")
+        assertTrue(moved.proxyChanged)
+        assertEquals(other, session.proxy)
+        assertEquals(SteamPushResult.ProxyRefused(SteamProxyRefusal.LOCKED), session.push(token(), SteamProxyUpdate.Clear), "still pinned")
+    }
+
+    @Test
+    fun a_refused_token_with_a_proxy_does_not_pin_the_session() = runTest {
+        assertIs<SteamPushResult.Held>(session.push(token()))
+        val wrong = assertIs<SteamPushResult.WrongAccount>(session.push(token(THEIRS), SteamProxyUpdate.Use(proxy)))
+        assertEquals(SteamId(THEIRS), wrong.tokenSteamId)
+        assertFalse(session.proxyPinned)
+        assertIs<SteamPushResult.Held>(session.push(token(), SteamProxyUpdate.Clear), "never pinned, so null is still allowed")
+    }
+
+    @Test
+    fun with_a_proxy_required_no_push_leaves_none_held_and_a_refused_one_changes_nothing() = runTest {
+        val strict = PushedSteamSession(clock, requireProxy = true) { linked }
+
+        for (update in listOf(SteamProxyUpdate.Keep, SteamProxyUpdate.Clear)) {
+            assertEquals(SteamPushResult.ProxyRefused(SteamProxyRefusal.REQUIRED), strict.push(token(), update), "$update with none held")
+        }
+        assertNull(strict.credential, "no token is held without a proxy")
+        assertNull(strict.proxy)
+
+        assertIs<SteamPushResult.Held>(strict.push(token(), SteamProxyUpdate.Use(proxy)))
+        assertIs<SteamPushResult.Held>(strict.push(token(lifetimeHours = 23)), "a renewal keeps the proxy, so it is held")
+        assertEquals(proxy, strict.proxy)
+        assertEquals(SteamPushResult.ProxyRefused(SteamProxyRefusal.LOCKED), strict.push(token(), SteamProxyUpdate.Clear))
+        assertEquals(proxy, strict.proxy)
     }
 
     // ---- what the loop sees --------------------------------------------------------------------------

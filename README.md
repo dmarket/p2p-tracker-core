@@ -55,6 +55,7 @@ DMarket backend** — that audit boundary is why the clients are open-source.
 - [Build & run](#build--run)
 - [Installing](#installing)
 - [Usage](#usage)
+  - [Headless host: the Steam proxy](#headless-host-the-steam-proxy)
 - [Testing](#testing)
 - [Current limitations (v1)](#current-limitations-v1)
 - [Docs](#docs)
@@ -140,7 +141,7 @@ function; all side effects are ports.** Everything below follows from that.
 |---|---|---|
 | **`:domain`** | `model/` (immutable types, enums, value-class ids, `Deal`/`P2PDealState`/`Directive`/`TrackedDeal`/`TradeStatusReport`), `engine/` (the pure `DirectivePlanner` + `TrackerTick` + `DecisiveTransitions` + `ProofFreshness` + `TerminalClassification`), `policy/` (`CadencePolicy`, `ExponentialBackoff`), `game/` (`GameAdapter`, `Cs2GameAdapter`, `GameRegistry`), `port/` (interfaces only), `wire/` (`@Serializable` DTOs + mappers + `TrackerJson`), `net/` (`NetworkRedaction`), `config/` (`TrackerConfig` tunables). | **Pure, zero-IO.** No Ktor, no platform APIs. Compiler-enforced. The audited surface. |
 | **`:core`** | Ktor `MarketplaceClient` + `SteamReadClient`; the `TradeTrackerLoop` driver; `SteamCredentialProvider` / `MarketplaceCredentialProvider` + session refreshers; `HeadlessTracker`, the loop composed for a host with no browser (pushed Trading API key and Steam session, held in memory; proofs through a host-run prover, each notary upgrade signed with the key); `expect`/`actual` adapters (`Scheduler`, `CredentialVault`, `Clock`, HTTP engine); the `@JsExport` JS facade. | **IO + platform glue.** Depends on `:domain` only. |
-| **`:headless-js`** | `:core`'s `HeadlessTracker` for a Node.js host, published on its own as `@dmarket/p2p-tracker-headless`: `createHeadlessTracker({dataDir, …})`, `start` / `cycle` / `stop`, `pushTradingApiKey` / `pushSteamToken`, `trackerState`, and the fixed strings a host matches events against. The host gets plain objects keyed by `type`, events as JSON strings, and a handle that is an empty frozen object; the pushed key and token stay inside the library, and so do the file store for each account's loop state (`dataDir`) and the prover processes: each proof runs in a `prover-child.mjs` forked from the package, whose `pkg/` and `transport/` carry the same pinned prover as `@dmarket/p2p-tracker-core`. A token may be pushed with the HTTP proxy its account's Steam traffic goes through (`pushSteamToken(handle, token, {proxy: "http://user:pass@host:port"})`; a renewal without `proxy` keeps it, `proxy: null` drops it): every Steam call and every proof's Steam leg is then a `CONNECT` tunnel through it, per tracker, and fails rather than go direct (`SteamProxyUnreachable` / `SteamProxyRecovered`); DMarket and the notary are never proxied, and the proxy is never readable back. Types are the package's handwritten `index.d.ts`. | `commonMain` holds the prover IPC, its backoff and output redaction; `jsMain` the facade and the Node actuals. Built from this module alone: the extension's package carries none of it. Not published yet. |
+| **`:headless-js`** | `:core`'s `HeadlessTracker` for a Node.js host, published on its own as `@dmarket/p2p-tracker-headless`: `createHeadlessTracker({dataDir, …})`, `start` / `cycle` / `stop`, `pushTradingApiKey` / `pushSteamToken`, `trackerState`, and the fixed strings a host matches events against. The host gets plain objects keyed by `type`, events as JSON strings, and a handle that is an empty frozen object; the pushed key and token stay inside the library, and so do the file store for each account's loop state (`dataDir`) and the prover processes: each proof runs in a `prover-child.mjs` forked from the package, whose `pkg/` and `transport/` carry the same pinned prover as `@dmarket/p2p-tracker-core`. A token may be pushed with the HTTP proxy its account's Steam traffic goes through (`pushSteamToken(handle, token, {proxy: "http://user:pass@host:port"})`; a renewal without `proxy` keeps it, another URL replaces it): every Steam call and every proof's Steam leg is then a `CONNECT` tunnel through it, per tracker, and fails rather than go direct (`SteamProxyUnreachable` / `SteamProxyRecovered`); DMarket and the notary are never proxied, and the proxy is never readable back. The proxy is optional but sticky once set: from the first one held the tracker never goes direct again, and `proxy: null` is refused (`STEAM_PROXY_LOCKED`); `requireSteamProxy: true` starts it that way, for a host restarting an account that uses one (see [Headless host: the Steam proxy](#headless-host-the-steam-proxy)). Types are the package's handwritten `index.d.ts`. | `commonMain` holds the prover IPC, its backoff and output redaction; `jsMain` the facade and the Node actuals. Built from this module alone: the extension's package carries none of it. Not published yet. |
 | **`:sdk-node`** | The tracker for a trader's bot host on Node.js, with no browser and no UI, one process per Steam account. The loop, the pushed secrets and their rules are `:core`'s `HeadlessTracker`: the bot pushes the DMarket Trading API key and a Steam access token with the `web` or `web:community` audience, both stay in memory, every DMarket call is signed with the key, a key for another DMarket account is refused with `409 DMARKET_KEY_ACCOUNT_CHANGED` (switching accounts is a restart), and the Steam writes carry the session in explicit headers. The heartbeat says `foreground: true` only while the token has 40 minutes left, 10 more than a create needs, so a deal accepted while DMarket still counts the seller present gets its create; without a usable token it goes on with `foreground: false` and touches nothing on Steam. It beats 5 s inside the ttl DMarket advertises (not below 30 s), and reads Steam no more often than the browser does. State lives in `<dataDir>/<linkedSteamId>/`; `steamWrites: false` in the config sends no offer write; a create that never reached Steam is never reported `FAILED`, and one Steam did not answer (or answered EResult 16) is settled from the account's sent offers instead; a cancel is read from Steam's answer on any HTTP status and, when that leaves it open, from its offer's state, and one Steam did not answer whose offer cannot be read reports nothing; a 429 is honoured with `Retry-After` and a jittered backoff. This module is the shell around it: a local, bearer-protected management API (`PUT /v1/dmarket/key`, `PUT /v1/steam/session`, `GET /v1/health`), health with a closed problem vocabulary graded by severity (`down` — `DMARKET_KEY_MISSING`, `DMARKET_AUTH_FAILED`, `CLOCK_SKEW`, `DMARKET_UNREACHABLE`, `STEAM_NOT_LINKED` — answers 503; `degraded` and `info` (`SDK_UPDATE_DUE`) answer 200), structured logs, the config file and the entry point. Each TLSN proof runs the extension's wasm prover in a process forked per proof (`prover` in the config): the Steam token goes to it over IPC, the notary upgrade is signed with the key when the process asks and carries no bearer, a process that does not connect within 30 s or still proves 240 s after is killed, and an out-of-memory kill takes the process, not the SDK. | `commonMain` is platform-free and unit-tested on the JVM and Node; `jsMain` holds the Node actuals (file storage for non-secret state, the HTTP listener, the entry point). Not published yet. |
 | **`:debug-harness`** | Two things, split by whether they need a browser: `C1ReportProbes` + `SecretRedaction` (`commonMain`, platform-free, unit-tested) — the **client half of a contract conformance check**, one callable probe per report/write endpoint, so a backend can be verified against the real client and deserializer; and a dev-only Chrome MV3 debug console (`createDebugSession` / `DebugSession`, `jsMain`) that exposes those plus the live browser paths (scrape / refresh / vault / Steam + DMarket reads and writes). | Dev-only. **Never published** (no publish config; the extension's npm package is built from `:core` alone, the headless one from `:headless-js`) and nothing depends on it, so none of this reaches a consumer. Must not expand `:core`'s audited `@JsExport` surface. Diagnostics **redact secrets by default** — see below. |
 
@@ -637,6 +638,39 @@ with `level = null`. Tunables live in `TrackerConfig.steamProfile`
 > param names are config-driven, a pivot to a `key=` model is a config + small auth change, not a
 > rewrite. No `@JsExport` factory is shipped yet — add a `createBrowserSteamProfileReader()` (mirroring
 > `createBrowserSteamClient()`) when a JS consumer needs it.
+
+### Headless host: the Steam proxy
+
+`@dmarket/p2p-tracker-headless` sends an account's Steam traffic (every HTTP call, its redirects, and the Steam leg of
+every proof) through the HTTP proxy pushed with its token. **The proxy is optional, but once set it is never bypassed.**
+
+```js
+const tracker = createHeadlessTracker({ dataDir, requireSteamProxy: accountUsesProxy });
+await pushSteamToken(tracker, token, { proxy: "http://user:pass@host:3128" }); // first push, and after every restart
+await pushSteamToken(tracker, renewedToken);                                    // renewal: keeps the proxy
+trackerState(tracker).steamProxy;          // "set" | "none" — never the proxy itself
+trackerState(tracker).steamProxyRequired;  // true once a proxy was held, or with requireSteamProxy
+```
+
+- **Never set:** Steam is reached directly, as before.
+- **Set once:** the tracker is pinned. Another proxy may replace it; `proxy: null` rejects with an `Error` whose `code`
+  is `steamProxyLockedCode()` (`STEAM_PROXY_LOCKED`) and changes nothing. A proxy that is down holds Steam work
+  (`SteamProxyUnreachable`, writes deferred, proofs `proxy_unreachable`); nothing falls back to a direct connection.
+- **Restarts:** the proxy is a secret and lives in memory only, so a new tracker starts without it. A host that knows
+  the account uses one (its own non-secret marker or config switch) passes `requireSteamProxy: true`: until a token is
+  pushed with a proxy no token is held (a push without one rejects coded `steamProxyRequiredCode()`,
+  `STEAM_PROXY_REQUIRED`), no Steam call or proof is made (`SteamProxyMissing`, ended by `SteamProxyRecovered`), and
+  the state says `steamProxy: "none"`, `steamProxyRequired: true`. Going back to direct is the operator's explicit act:
+  drop that marker or switch and restart.
+- **The first proxy:** a direct Steam call or proof still in flight when it is pushed is cut (the call aborted, the
+  prover process killed and the proof run again), so nothing started direct goes on direct after it.
+- **Proofs:** the prover's Steam leg is the tunnel, handed to the transport (`wrapTcpSocket`), or wrapped in the
+  transport's own `TcpIoChannel`; only a prover package with neither leaves the dial to its generic `connectTcp`, which
+  must then provably read and write the tunnel it was given, or the dial is refused. `prover.mode: "proxy"` (the notary
+  dials Steam) is refused with a proxy.
+
+Map the three proxy codes (`STEAM_PROXY_INVALID`, `STEAM_PROXY_LOCKED`, `STEAM_PROXY_REQUIRED`) to a 400: the caller
+asked for something refused. Steam logins and Steam Guard confirmations made outside the tracker need the same proxy.
 
 ### Custom wiring (JVM / Android / iOS)
 

@@ -6,6 +6,7 @@ import com.dmarket.p2p.headless.node.nodeProcess
 import com.dmarket.p2p.headless.node.nodeUrl
 import com.dmarket.p2p.tracker.config.NotaryConfig
 import com.dmarket.p2p.tracker.config.TrackerConfig
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedProofRequest
 import com.dmarket.p2p.tracker.notary.NotaryUpgradeHeaders
@@ -30,16 +31,19 @@ import kotlin.js.Promise
  *  - the notary: a `ws` socket with the upgrade headers the SDK signs when asked, and no `bearer.` entry;
  *  - the target: the transport's Node `connectTcp` to the target's port 443 ([ProverSettings.targetAddress] on a test
  *    stand), or with [ToChild.Prove.steamProxy] a `CONNECT` tunnel through the account's proxy and never a direct
- *    dial ([proxiedTcpConnector]); a dial timeout and the leg's failure recorded ([recordedTargetChannel]).
+ *    dial ([proxiedTcpConnector]); a dial timeout and the leg's failure recorded ([recordedTargetChannel]). With
+ *    [ProverSettings.requireSteamProxy] a proof with no proxy is not started: the direct connector is never used.
  *
  * The prover's threads run as worker threads ([installBrowserWorker]). Its trace goes to stdout, which the SDK
  * logs redacted. A failure is classified from what the sockets saw and the prover's words ([ProofFailures]).
  */
 class NodeWasmProver(private val clock: Clock) : ChildProver {
     override suspend fun prove(proof: ToChild.Prove, headers: suspend () -> NotaryUpgradeHeaders): ChildResult {
-        installBrowserWorker()
         val settings = proof.settings
         val proxy = proof.steamProxy?.let { runCatching { SteamProxy.parse(it) }.getOrNull() ?: return refusedProxy() }
+        // Refused before anything is set up: no worker, no wasm, no socket.
+        if (proxy == null && settings.requireSteamProxy) return ChildResult.Failed(ProofFailure.NotStarted(STEAM_PROXY_MISSING_DETAIL))
+        installBrowserWorker()
         val record = ProverSessionRecord()
         val host = WasmProverHost(
             assetUrl = { path -> fileUrl(nodePath.join(settings.assetsDir, path) as String) },

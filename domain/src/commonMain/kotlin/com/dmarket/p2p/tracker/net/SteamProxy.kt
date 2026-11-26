@@ -9,6 +9,13 @@ import kotlin.io.encoding.Base64
 const val STEAM_PROXY_UNREACHABLE_REASON: String = "not sent: the Steam proxy could not be reached"
 
 /**
+ * What a Steam transport or prover of a tracker that requires a Steam proxy (by the host's option, or pinned by a proxy
+ * once held) says when it finds none held: it sends nothing, and nothing directly. Coded [STEAM_PROXY_UNREACHABLE_CODE]
+ * on a request's error, so a write it held back is deferred as for a proxy that cannot be reached.
+ */
+const val STEAM_PROXY_MISSING_DETAIL: String = "no Steam proxy is held, and this tracker requires one"
+
+/**
  * The `code` a Steam transport puts on the error of a connection it could not open through the proxy, so the HTTP
  * layer can tell it from a failure past the proxy and never mistake it for Steam not answering.
  */

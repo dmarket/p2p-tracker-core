@@ -23,6 +23,7 @@ import com.dmarket.p2p.tracker.credential.marketplace.KeyChange
 import com.dmarket.p2p.tracker.credential.marketplace.PushedTradingApiKey
 import com.dmarket.p2p.tracker.credential.marketplace.TradingKeyPushResult
 import com.dmarket.p2p.tracker.credential.steam.PushedSteamSession
+import com.dmarket.p2p.tracker.credential.steam.SteamProxyRefusal
 import com.dmarket.p2p.tracker.credential.steam.SteamProxyUpdate
 import com.dmarket.p2p.tracker.credential.steam.SteamPushResult
 import com.dmarket.p2p.tracker.game.Cs2GameAdapter
@@ -53,6 +54,7 @@ import com.dmarket.p2p.tracker.model.marketplace.dealDeadlines
 import com.dmarket.p2p.tracker.model.steam.SteamCredential
 import com.dmarket.p2p.tracker.model.steam.TradeDraft
 import com.dmarket.p2p.tracker.net.NetworkRedaction
+import com.dmarket.p2p.tracker.net.STEAM_PROXY_MISSING_DETAIL
 import com.dmarket.p2p.tracker.net.SteamProxy
 import com.dmarket.p2p.tracker.notary.HostedNotaryProver
 import com.dmarket.p2p.tracker.port.host.Clock
@@ -132,6 +134,9 @@ class HeadlessPlatform(
  *   Steam call goes out, and none falls back to a direct connection, until one gets through it or another proxy (or
  *   none) is pushed. The proxy itself is never in the state.
  * @property steamProxyUnreachableSince since when, while [steamProxyUnreachable].
+ * @property steamProxyHeld whether a Steam proxy is held with the token: never which one.
+ * @property steamProxyRequired whether no Steam traffic may go direct: the host's `requireSteamProxy`, or a proxy held
+ *   once (the tracker pins itself to one; another may replace it, none may not).
  */
 data class HeadlessTrackerState(
     val hasTradingApiKey: Boolean,
@@ -147,7 +152,12 @@ data class HeadlessTrackerState(
     val dealDeadlines: Map<DealId, Instant> = emptyMap(),
     val steamProxyUnreachable: Boolean = false,
     val steamProxyUnreachableSince: Instant? = null,
+    val steamProxyHeld: Boolean = false,
+    val steamProxyRequired: Boolean = false,
 ) {
+    /** Whether a proxy is required and none is held: nothing reaches Steam until a token is pushed with one. */
+    val steamProxyMissing: Boolean get() = steamProxyRequired && !steamProxyHeld
+
     /** Whether [clockOffset] is past what the gateway's signature check allows. */
     val clockSkewed: Boolean get() = clockOffset?.let { it.absoluteValue > HeadlessTracker.MAX_CLOCK_SKEW } ?: false
 }
@@ -188,6 +198,12 @@ data class HeadlessTrackerState(
  *   leased — the writers are not even built, and the loop drops such a directive unreported, so its lease lapses to
  *   a device that writes. Reads, reports and the heartbeat are unchanged.
  * @param random the draws behind the 429 backoff's jitter and the loop's own.
+ * @param requireSteamProxy fail closed without a Steam proxy from the start, for a host that knows this account uses
+ *   one (it pinned it before a restart): no token is held without one ([pushSteamToken] refuses a push that would
+ *   leave none, `Clear` included), and a Steam call or a proof that finds none held sends nothing — never directly.
+ *   A write held back for it is deferred, as for an unreachable proxy; the host hears
+ *   [LifecycleEvent.SteamProxyMissing]. Without it the tracker pins itself on the first proxy it holds, from when on
+ *   the same holds. Needs [HeadlessPlatform.steamHttpEngine], which must honour [SteamRoute.proxyRequired].
  */
 class HeadlessTracker(
     private val platform: HeadlessPlatform,
@@ -196,10 +212,17 @@ class HeadlessTracker(
     private val tunables: TrackerConfig = TrackerConfig.defaults(),
     private val steamWrites: Boolean = true,
     private val random: Random = Random.Default,
+    private val requireSteamProxy: Boolean = false,
 ) {
+    init {
+        require(!requireSteamProxy || platform.steamHttpEngine != null) {
+            "requireSteamProxy needs a platform whose Steam engine goes through the proxy"
+        }
+    }
+
     private val clock = platform.clock
     private val key = PushedTradingApiKey(platform.signerFor)
-    internal val steam = PushedSteamSession(clock) { loop.linkedSteamId }
+    internal val steam = PushedSteamSession(clock, requireProxy = requireSteamProxy) { loop.linkedSteamId }
     private val scheduler = CoroutineScheduler(scope)
     private val cycleMutex = Mutex()
     private val storage = AccountScopedStorage(platform.storageFor) { steam.credential?.subjectSteamId }
@@ -227,10 +250,13 @@ class HeadlessTracker(
     }
 
     /** Where the Steam traffic goes: the proxy pushed with the token, read by every Steam connection, and its health. */
-    internal val steamRoute = SteamRoute(clock) { steam.proxy }
+    internal val steamRoute = SteamRoute(clock, required = { requireSteamProxy || steam.proxyPinned }) { steam.proxy }
 
     /** The proxy the last [reportSteamRoute] told the host was unreachable; `null` after none, or after its return. */
     private var reportedDownProxy: SteamProxy? = null
+
+    /** Whether the host was last told the required proxy is missing ([reportProxyMissing]). */
+    private var reportedProxyMissing = false
 
     private val steamSessionId = newSteamSessionId()
     private val authenticator = TradingApiAuthenticator({ key.key }, clock, platform.signerFor)
@@ -295,11 +321,29 @@ class HeadlessTracker(
      * detail, and no recovery in between.
      */
     private suspend fun reportSteamRoute() {
+        reportProxyMissing()
         val down = steamRoute.proxy?.takeIf { steamRoute.isUnreachable }
         if (down == reportedDownProxy) return
         reportedDownProxy = down
         val event = if (down != null) {
             LifecycleEvent.SteamProxyUnreachable(loop.trackedDealIds.map { it.value }, steamRoute.detail ?: "no detail")
+        } else {
+            LifecycleEvent.SteamProxyRecovered
+        }
+        runCatching { observer.onEvent(event) }
+    }
+
+    /**
+     * Tells the host when a required proxy is missing ([LifecycleEvent.SteamProxyMissing]) and when a token was held
+     * with one after it ([LifecycleEvent.SteamProxyRecovered]); once each, not every cycle or push.
+     */
+    private suspend fun reportProxyMissing() {
+        val missing = steamRoute.isProxyMissing
+        if (missing == reportedProxyMissing) return
+        // Set before the event: a push and a cycle's end that both report it say it once.
+        reportedProxyMissing = missing
+        val event = if (missing) {
+            LifecycleEvent.SteamProxyMissing(loop.trackedDealIds.map { it.value }, STEAM_PROXY_MISSING_DETAIL)
         } else {
             LifecycleEvent.SteamProxyRecovered
         }
@@ -408,12 +452,21 @@ class HeadlessTracker(
      * neither. Every Steam call and every proof's Steam leg tunnels through the held proxy; one that cannot fails and
      * is never sent directly. [SteamProxyUpdate.Use] is refused ([SteamPushResult.Invalid]) on a platform with no
      * [HeadlessPlatform.steamHttpEngine], which could not honour it. Nothing returns or reports the proxy.
+     *
+     * The proxy is optional but sticky: once one has been held, [SteamProxyUpdate.Clear] is refused
+     * ([SteamPushResult.ProxyRefused], [SteamProxyRefusal.LOCKED]) and changes nothing. With `requireSteamProxy` a push
+     * that would leave no proxy held is refused too ([SteamProxyRefusal.REQUIRED]); while none is held that is told
+     * once as [LifecycleEvent.SteamProxyMissing], and the push that holds one ends it
+     * ([LifecycleEvent.SteamProxyRecovered]).
      */
     suspend fun pushSteamToken(accessToken: String, proxy: SteamProxyUpdate = SteamProxyUpdate.Keep): SteamPushResult {
         if (proxy is SteamProxyUpdate.Use && platform.steamHttpEngine == null) return SteamPushResult.Invalid(PROXY_UNSUPPORTED)
-        return steam.push(accessToken, proxy).also {
-            if (it is SteamPushResult.Held) nudge()
-        }
+        val push = steam.push(accessToken, proxy)
+        // What went out on the old route stops now: a direct call in flight must not follow a redirect past a first proxy.
+        if (push is SteamPushResult.Held && push.proxyChanged) steamRoute.proxyMoved()
+        reportProxyMissing()
+        if (push is SteamPushResult.Held) nudge()
+        return push
     }
 
     fun state(): HeadlessTrackerState {
@@ -432,6 +485,8 @@ class HeadlessTracker(
             dealDeadlines = dealDeadlines,
             steamProxyUnreachable = steamRoute.isUnreachable,
             steamProxyUnreachableSince = steamRoute.unreachableSince,
+            steamProxyHeld = steamRoute.proxy != null,
+            steamProxyRequired = steamRoute.proxyRequired,
         )
     }
 

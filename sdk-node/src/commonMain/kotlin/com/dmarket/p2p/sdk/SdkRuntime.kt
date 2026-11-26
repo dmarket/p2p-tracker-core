@@ -139,6 +139,11 @@ class SdkRuntime(
             log.info("steam token held", "steamId" to push.steamId.value, "expiresAt" to push.expiresAt.toString())
             PushOutcome.Held
         }
+        // This shell never pushes a proxy, so never pins one: kept for completeness.
+        is SteamPushResult.ProxyRefused -> {
+            log.warn("steam token refused", "reason" to push.refusal.message)
+            PushOutcome.Invalid(push.refusal.code, push.refusal.message)
+        }
         is SteamPushResult.WrongAccount -> {
             health.tokenRefused(push.tokenSteamId, push.linkedSteamId)
             val expected = push.linkedSteamId?.value ?: "the account of the token already held"

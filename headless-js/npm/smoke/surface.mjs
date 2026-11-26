@@ -23,6 +23,8 @@ const FACADE = [
   'start',
   'steamNotLinkedCode',
   'steamProxyInvalidCode',
+  'steamProxyLockedCode',
+  'steamProxyRequiredCode',
   'stop',
   'trackerState',
 ];

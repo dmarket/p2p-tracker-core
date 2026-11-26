@@ -61,6 +61,8 @@ internal fun SteamPushResult.toJs(): dynamic {
             o.type = "invalid"
             o.reason = reason
         }
+        // The facade rejects these with a coded error before they get here.
+        is SteamPushResult.ProxyRefused -> error("a refused proxy is a rejection, not a result")
     }
     return o
 }
@@ -85,5 +87,8 @@ internal fun HeadlessTrackerState.toJs(): dynamic {
     // Whether the proxy pushed with the token is unreachable, never the proxy itself.
     o.steamProxyUnreachable = steamProxyUnreachable
     o.steamProxyUnreachableSinceMs = steamProxyUnreachableSince.epochMs()
+    // Whether a proxy is held (`set`/`none`) and whether one must be: never which one.
+    o.steamProxy = if (steamProxyHeld) "set" else "none"
+    o.steamProxyRequired = steamProxyRequired
     return o
 }

@@ -495,8 +495,18 @@ sealed interface LifecycleEvent {
     data class SteamProxyUnreachable(val dealIds: List<String>, val detail: String) : LifecycleEvent
 
     /**
-     * The [SteamProxyUnreachable] problem is over: a connection went through the proxy, or the host pushed another
-     * proxy, or none.
+     * A tracker that requires a Steam proxy (headless `requireSteamProxy`) holds none: nothing reaches Steam, nothing
+     * goes out directly, no create is sent and none is reported failed, and a token push without a proxy is refused.
+     * Emitted once when the problem starts — the first cycle or push that finds it, so right after a start — and
+     * [SteamProxyRecovered] ends it, once a token is held with a proxy.
+     *
+     * [dealIds] are the deals the tracker was tracking then (none, before a heartbeat); [detail] is fixed words.
+     */
+    data class SteamProxyMissing(val dealIds: List<String>, val detail: String) : LifecycleEvent
+
+    /**
+     * The [SteamProxyUnreachable] or [SteamProxyMissing] problem is over: a connection went through the proxy, or the
+     * host pushed another proxy (or, where none is required, none).
      */
     data object SteamProxyRecovered : LifecycleEvent
 

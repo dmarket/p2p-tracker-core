@@ -174,6 +174,14 @@ internal const val TARGET_DIAL_TIMEOUT_MS: Int = 15_000
  * as the transport's Node connector adapts a direct one ([tunnelSocket]). The tunnel's failure goes to [onProxyError]
  * in the tunnel's own words — no address, no credential — before it rejects the dial; nothing dials Steam directly
  * instead. Imported on the first dial, like [nodeTcpConnector], so the dial stays lazy.
+ *
+ * The tunnel handed to `wrapTcpSocket` is the socket the transport reads and writes. Without it, the generic entry's
+ * own `TcpIoChannel` is built on the tunnel here, so the transport never dials at all. Only a package exporting
+ * neither leaves the dial to its generic `connectTcp`, and then its use of `connect` is checked, not trusted: a
+ * `connectTcp` that takes no options is refused before anything is dialled, and the channel it resolves must hold the
+ * one tunnel opened for that dial (a reader and a writer taken on its streams, as `TcpIoChannel` takes them). Anything
+ * else is closed, with the tunnel, before the prover writes a byte, and the dial fails ([NOT_THE_TUNNEL]). That refusal
+ * is the Steam leg's, not the proxy's: [onProxyError] is not told, so the proxy is not reported unreachable.
  */
 internal fun proxiedTcpConnector(
     assetsDir: String,
@@ -185,7 +193,7 @@ internal fun proxiedTcpConnector(
     val open = { host: String, port: Int -> openSteamTunnel(proxy, host, port) }
     val dial: dynamic = js(
         """
-        (function (nodeEntry, genericEntry, open, onProxyError, adapt) {
+        (function (nodeEntry, genericEntry, open, onProxyError, adapt, notTheTunnel) {
           let loading = null;
           const tunnel = (host, port) => open(host, port).catch((error) => {
             onProxyError(error && error.message ? error.message : 'the tunnel did not open');
@@ -199,21 +207,67 @@ internal fun proxiedTcpConnector(
               throw error;
             }
           });
-          const generic = (module) => (host, port) => module.connectTcp(host, port, {
-            connect: (targetHost, targetPort) => tunnel(targetHost, targetPort).then(adapt),
-          });
+          const refuse = () => Promise.reject(new Error(notTheTunnel));
+          const generic = (module) => {
+            // The transport's own channel, on the tunnel: nothing of the transport dials.
+            if (typeof module.TcpIoChannel === 'function') {
+              return (host, port) => {
+                if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+                  return Promise.reject(new Error('TCP destination requires a host and a port between 1 and 65535'));
+                }
+                return tunnel(host, port).then((socket) => {
+                  const adapted = adapt(socket);
+                  try {
+                    return new module.TcpIoChannel(adapted);
+                  } catch (error) {
+                    adapted.close();
+                    throw error;
+                  }
+                });
+              };
+            }
+            // A connectTcp with no options parameter could not take the tunnel: it would dial on its own.
+            if (typeof module.connectTcp !== 'function' || module.connectTcp.length < 3) return refuse;
+            return (host, port) => {
+              const opened = [];
+              return module.connectTcp(host, port, {
+                connect: (targetHost, targetPort) => tunnel(targetHost, targetPort).then((socket) => {
+                  const adapted = adapt(socket);
+                  opened.push(adapted);
+                  return adapted;
+                }),
+              }).then((channel) => {
+                const tunnelled = opened.length === 1 && opened[0].readable.locked && opened[0].writable.locked;
+                if (tunnelled) return channel;
+                try {
+                  if (channel && typeof channel.close === 'function') Promise.resolve(channel.close()).catch(() => {});
+                } catch (error) {
+                  // Closing what the transport handed back is best effort; the dial is refused either way.
+                }
+                opened.forEach((socket) => socket.close());
+                return refuse();
+              });
+            };
+          };
           return (host, port) => {
             if (loading === null) {
-              loading = import(nodeEntry).then((module) => module.wrapTcpSocket, () => undefined).then((wrapTcpSocket) =>
-                typeof wrapTcpSocket === 'function' ? handOff(wrapTcpSocket) : import(genericEntry).then(generic));
+              loading = import(nodeEntry).then((module) => module.wrapTcpSocket, () => undefined).then((wrapTcpSocket) => {
+                if (typeof wrapTcpSocket === 'function') return handOff(wrapTcpSocket);
+                return import(genericEntry).then(generic);
+              });
             }
             return loading.then((connect) => connect(host, port));
           };
         })
         """,
     )
-    return dial(nodeEntry, genericEntry, open, onProxyError, tunnelSocket).unsafeCast<(String, Int) -> Promise<Any?>>()
+    return dial(nodeEntry, genericEntry, open, onProxyError, tunnelSocket, NOT_THE_TUNNEL)
+        .unsafeCast<(String, Int) -> Promise<Any?>>()
 }
+
+/** Why a Steam dial through the proxy failed when the prover's transport did not provably use the tunnel. */
+internal const val NOT_THE_TUNNEL: String =
+    "the prover's transport did not use the Steam tunnel it was given; its connection was closed before anything was sent"
 
 /**
  * An open tunnel's Node socket as the transport's `TcpSocket` (`readable`, `writable`, `close`): the adaptation the
