@@ -90,7 +90,8 @@ sealed interface CreateOfferResult {
 
     /**
      * Not sent: the request could not leave this host the way it must, so it **never reached Steam** — the Steam
-     * proxy the account's traffic goes through could not be reached, and nothing falls back to a direct connection.
+     * proxy the account's traffic goes through could not be reached, and nothing falls back to a direct connection, or
+     * (mobile) the session's cookies could not be read from the cookie store.
      * Nothing is reported, like a deferred create: the lease lapses and the backend re-leases it. [reason] is a fixed
      * text that names no address and no credential.
      */

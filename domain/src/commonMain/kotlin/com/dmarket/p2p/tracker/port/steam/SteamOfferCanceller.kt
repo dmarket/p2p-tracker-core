@@ -51,8 +51,8 @@ sealed interface CancelOfferResult {
     data class Refused(val error: String) : CancelOfferResult
 
     /**
-     * The transport could not send the cancel at all — the account's Steam proxy could not be reached — so it never
-     * reached Steam: the offer is as it was, and nothing about it needs reading. Deferred, never reported failed.
+     * The transport could not send the cancel at all — the account's Steam proxy could not be reached, or (mobile) the
+     * session's cookies could not be read from the cookie store — so it never reached Steam: the offer is as it was, and nothing about it needs reading. Deferred, never reported failed.
      */
     data class NotSent(val reason: String) : CancelOfferResult
 }

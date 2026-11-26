@@ -29,8 +29,10 @@ import com.dmarket.p2p.tracker.port.host.DeviceKeyValueStore
 import com.dmarket.p2p.tracker.port.host.ElapsedClock
 import com.dmarket.p2p.tracker.port.host.InstallMarker
 import com.dmarket.p2p.tracker.port.host.NetworkConditions
+import com.dmarket.p2p.tracker.port.host.SteamCookieStore
 import com.dmarket.p2p.tracker.port.steam.CreateOfferResult
 import com.dmarket.p2p.tracker.port.steam.SteamWebSessionState
+import com.dmarket.p2p.tracker.support.FakeBrowserCookieStore
 import com.dmarket.p2p.tracker.support.FakeClock
 import com.dmarket.p2p.tracker.support.FakeMarketplaceClient
 import com.dmarket.p2p.tracker.support.fakeMarketplaceCredential
@@ -69,6 +71,10 @@ class MobileSteamSessionTest {
     private inner class Platform : MobileTrackerPlatform(MarketplaceTokenSupplier { fakeMarketplaceCredential("dm-token") }) {
         private val account = mutableMapOf<String, String>()
         override val clock: Clock = this@MobileSteamSessionTest.clock
+
+        /** The WebView store when a test sets it (before the tracker is built); `null` = the sealed vault. */
+        var web: SteamCookieStore? = null
+        override val webCookies: SteamCookieStore? get() = web
 
         // The Android actual reads android.os.SystemClock, which the host tests do not stub.
         override val elapsedClock: ElapsedClock = MonotonicElapsedClock()
@@ -175,6 +181,28 @@ class MobileSteamSessionTest {
         tracker.importSteamSession(session(bob))
         assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.state.value.steamSession)
         assertEquals(SteamWebSessionState.OTHER_ACCOUNT, tracker.checkSteamSession())
+    }
+
+    @Test
+    fun aWebViewStoreThatCannotBeReadIsNeitherAGoneSessionNorALogout() = runTest {
+        val web = FakeBrowserCookieStore(clock)
+        web.signIn("steamcommunity.com", "steamLoginSecure", loginSecure(alice, 20.hours))
+        platform.web = web
+        val tracker = tracker()
+        tracker.onPush(push)
+        assertEquals(SteamWebSessionState.ALIVE, tracker.state.value.steamSession)
+        val credential = platform.vault.readSteamCredential()
+        assertEquals(alice, credential?.subjectSteamId)
+
+        web.failReads = true
+        tracker.onPush(push)
+        tracker.checkSteamSession()
+
+        assertTrue(tracker.state.value.steamSession != SteamWebSessionState.GONE, "${tracker.state.value.steamSession}")
+        assertTrue(tracker.state.value.block != TrackerBlock.STEAM_SESSION_MISSING, "${tracker.state.value.block}")
+        assertEquals(credential, platform.vault.readSteamCredential(), "the credential stays")
+        assertTrue(web.slots.isNotEmpty(), "nothing is cleared")
+        assertTrue(marketplace.heartbeatsSent.none { it.steamSession == SteamWebSessionState.GONE })
     }
 
     @Test
