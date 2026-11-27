@@ -575,7 +575,8 @@ class P2pTracker(
 
     /**
      * The buyer's return from Steam where the permit says "not yet": one cycle that counts against no permit, its proofs
-     * of [dealId] made as the buyer's and their refusal latching nothing ([TradeTrackerLoop.buyerProofWithoutPermit]).
+     * of [dealId] made as the buyer's; a refusal of that late proof is latched, its report goes once unproven and is no
+     * PROOF_REFUSED ([TradeTrackerLoop.buyerProofWithoutPermit]).
      */
     private suspend fun withoutPermit(s: Session, dealId: DealId, allowCellularProof: Boolean, allowed: Int): StatusUpdate {
         val run = cycle(s, wake = null, manual = true, allowCellularProof, buyerProofsFor = dealId, withoutPermit = true)
