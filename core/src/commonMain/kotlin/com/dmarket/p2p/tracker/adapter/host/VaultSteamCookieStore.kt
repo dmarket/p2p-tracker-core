@@ -23,19 +23,15 @@ import kotlinx.coroutines.sync.withLock
 class VaultSteamCookieStore(private val vault: SteamCookieVault, private val clock: Clock) : SteamCookieStore {
     private val mutex = Mutex()
 
-    override suspend fun cookieHeader(url: String): String? {
-        val target = Url(url)
-        val now = clock.now().epochSeconds
-        return vault.readSteamCookies()
-            .filter { it.appliesTo(target) && !it.expiredAt(now) }
-            .joinToString("; ") { "${it.name}=${it.value}" }
-            .ifEmpty { null }
-    }
+    override suspend fun cookieHeader(url: String): String? = live(url).joinToString("; ") { "${it.name}=${it.value}" }.ifEmpty { null }
 
-    override suspend fun value(url: String, name: String): String? {
+    override suspend fun value(url: String, name: String): String? = live(url).firstOrNull { it.name == name }?.value
+
+    /** The stored cookies that apply to [url] and have not expired. */
+    private suspend fun live(url: String): List<SteamCookie> {
         val target = Url(url)
         val now = clock.now().epochSeconds
-        return vault.readSteamCookies().firstOrNull { it.name == name && it.appliesTo(target) && !it.expiredAt(now) }?.value
+        return vault.readSteamCookies().filter { it.appliesTo(target) && !it.expiredAt(now) }
     }
 
     /**
